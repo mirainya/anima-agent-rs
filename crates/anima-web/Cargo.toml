@@ -1,0 +1,22 @@
+[package]
+name = "anima-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "anima-web"
+path = "src/main.rs"
+
+[dependencies]
+anima-types = { path = "../anima-types" }
+anima-sdk = { path = "../anima-sdk" }
+anima-runtime = { path = "../anima-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+crossbeam-channel.workspace = true
+axum = { version = "0.8", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tokio-stream = { version = "0.1", features = ["sync"] }

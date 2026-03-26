@@ -16,6 +16,7 @@ Thumbs.db
 # Env
 .env
 .env.*
+opencode.json
 
 # Temp
 .temp/

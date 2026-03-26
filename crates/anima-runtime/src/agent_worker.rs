@@ -22,6 +22,15 @@ use crate::agent_executor::TaskExecutor;
 use crate::agent_types::{make_task_result, MakeTaskResult, Task, TaskResult};
 use crate::support::now_ms;
 
+/// Worker 当前正在执行的任务信息
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurrentTaskInfo {
+    pub task_id: String,
+    pub task_type: String,
+    pub started_ms: u64,
+    pub content_preview: String,
+}
+
 /// 单个工作者智能体，封装了 SDK 客户端和任务执行器。
 /// 通过原子标志 `running` / `busy` 实现无锁的状态管理。
 pub struct WorkerAgent {
@@ -31,6 +40,7 @@ pub struct WorkerAgent {
     running: AtomicBool,
     busy: AtomicBool,
     metrics: Mutex<WorkerMetrics>,
+    current_task: Mutex<Option<CurrentTaskInfo>>,
     #[allow(dead_code)] // stored for future task timeout enforcement
     timeout_ms: u64,
 }
@@ -50,6 +60,7 @@ pub struct WorkerStatus {
     pub id: String,
     pub status: String,
     pub metrics: WorkerMetrics,
+    pub current_task: Option<CurrentTaskInfo>,
 }
 
 impl WorkerAgent {
@@ -66,6 +77,7 @@ impl WorkerAgent {
             running: AtomicBool::new(false),
             busy: AtomicBool::new(false),
             metrics: Mutex::new(WorkerMetrics::default()),
+            current_task: Mutex::new(None),
             timeout_ms: timeout_ms.unwrap_or(60_000),
         }
     }
@@ -102,6 +114,7 @@ impl WorkerAgent {
             id: self.id.clone(),
             status: status.to_string(),
             metrics: self.metrics.lock().clone(),
+            current_task: self.current_task.lock().clone(),
         }
     }
 
@@ -149,9 +162,28 @@ impl WorkerAgent {
                 notify: notify.as_deref(),
             };
 
+            // 记录当前任务信息
+            let content_preview = task
+                .payload
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .chars()
+                .take(80)
+                .collect::<String>();
+            *worker.current_task.lock() = Some(CurrentTaskInfo {
+                task_id: task.id.clone(),
+                task_type: task.task_type.clone(),
+                started_ms: now_ms(),
+                content_preview,
+            });
+
             let start = now_ms();
             let result = worker.execute_task(&task);
             let duration_ms = now_ms().saturating_sub(start);
+
+            // 清除当前任务
+            *worker.current_task.lock() = None;
             {
                 let mut metrics = worker.metrics.lock();
                 metrics.total_duration_ms += duration_ms;

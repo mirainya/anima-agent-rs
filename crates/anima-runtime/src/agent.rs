@@ -24,10 +24,10 @@ pub use crate::agent_executor::{SdkTaskExecutor, TaskExecutor};
 pub use crate::agent_types::{
     make_task, make_task_result, ExecutionPlan, MakeTask, MakeTaskResult, Task, TaskResult,
 };
-pub use crate::agent_worker::{WorkerAgent, WorkerMetrics, WorkerPool, WorkerPoolStatus, WorkerStatus};
+pub use crate::agent_worker::{CurrentTaskInfo, WorkerAgent, WorkerMetrics, WorkerPool, WorkerPoolStatus, WorkerStatus};
 use crate::agent_classifier::AgentClassifier;
 use crate::agent_orchestrator::AgentOrchestrator;
-use crate::bus::{make_outbound, Bus, InboundMessage, MakeOutbound, OutboundMessage};
+use crate::bus::{make_outbound, make_internal, Bus, InboundMessage, MakeInternal, MakeOutbound, OutboundMessage};
 use crate::bus::{ControlSignal};
 use crate::channel::SessionStore;
 use crate::support::{make_api_cache_key, now_ms, ContextManager, LruCache, MetricsCollector};
@@ -245,7 +245,9 @@ impl CoreAgent {
             } else {
                 self.metrics.counter_inc("cache_misses");
                 self.metrics.counter_inc("tasks_submitted");
+                self.publish_worker_event("task_start", &inbound_msg, &plan.plan_type);
                 let result = AgentOrchestrator::execute_plan(&self.worker_pool, &plan, &opencode_session_id);
+                self.publish_worker_event("task_end", &inbound_msg, &plan.plan_type);
                 if result.status == "success" {
                     self.metrics.counter_inc("tasks_completed");
                     if let Some(value) = result.result.clone() {
@@ -258,7 +260,9 @@ impl CoreAgent {
             }
         } else {
             self.metrics.counter_inc("tasks_submitted");
+            self.publish_worker_event("task_start", &inbound_msg, &plan.plan_type);
             let result = AgentOrchestrator::execute_plan(&self.worker_pool, &plan, &opencode_session_id);
+            self.publish_worker_event("task_end", &inbound_msg, &plan.plan_type);
             if result.status == "success" {
                 self.metrics.counter_inc("tasks_completed");
             } else {
@@ -402,6 +406,32 @@ impl CoreAgent {
         });
         let _ = self.bus.publish_outbound(outbound.clone());
         outbound
+    }
+
+    /// 发布 Worker 进度事件到 internal bus，供 Web UI 等消费
+    fn publish_worker_event(&self, event: &str, inbound_msg: &InboundMessage, task_type: &str) {
+        let worker_statuses = self.worker_pool.status().workers;
+        for w in &worker_statuses {
+            let status = if event == "task_start" && w.status == "busy" {
+                "busy"
+            } else if event == "task_end" {
+                "idle"
+            } else {
+                &w.status
+            };
+            let _ = self.bus.publish_internal(make_internal(MakeInternal {
+                source: "core-agent".into(),
+                payload: json!({
+                    "event": format!("worker_{}", event),
+                    "worker_id": w.id,
+                    "status": status,
+                    "task_type": task_type,
+                    "channel": inbound_msg.channel,
+                    "message_id": inbound_msg.id,
+                }),
+                ..Default::default()
+            }));
+        }
     }
 
     fn send_error_response(

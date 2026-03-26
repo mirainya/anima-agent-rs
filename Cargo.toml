@@ -4,6 +4,7 @@ members = [
     "crates/anima-sdk",
     "crates/anima-runtime",
     "crates/anima-cli",
+    "crates/anima-web",
     "crates/anima-testkit",
 ]
 default-members = ["crates/anima-cli"]

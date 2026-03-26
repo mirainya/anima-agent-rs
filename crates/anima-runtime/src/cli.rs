@@ -223,9 +223,16 @@ impl Channel for CliChannel {
 
     fn send_message(&self, _target: &str, message: &str, opts: SendOptions) -> SendResult {
         self.output.lock().unwrap().push(message.to_string());
+
+        // 直接写 stdout，让用户能实时看到回复
+        let mut stdout = io::stdout();
+        let _ = writeln!(stdout, "\n{}", message);
         if opts.stage.as_deref() == Some("final") || opts.stage.is_none() {
             self.output.lock().unwrap().push(self.prompt.clone());
+            let _ = write!(stdout, "{}", self.prompt);
         }
+        let _ = stdout.flush();
+
         ok(None)
     }
 
