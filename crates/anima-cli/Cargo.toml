@@ -1,0 +1,15 @@
+[package]
+name = "anima-agent-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "anima-agent-rs"
+path = "src/main.rs"
+
+[dependencies]
+anima-sdk = { path = "../anima-sdk" }
+anima-runtime = { path = "../anima-runtime" }
+anima-types = { path = "../anima-types" }
+serde_json.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "anima-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anima-types = { path = "../anima-types" }
+anima-sdk = { path = "../anima-sdk" }
+indexmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+uuid.workspace = true
+parking_lot.workspace = true
+reqwest.workspace = true
+regex.workspace = true
+lazy_static.workspace = true
