@@ -1,3 +1,13 @@
+//! 消息调度器核心模块
+//!
+//! Dispatcher 是消息分发的中枢，负责：
+//! 1. 接收消息并放入内部队列
+//! 2. 通过 Balancer 选择目标（负载均衡）
+//! 3. 通过 ChannelRegistry 查找通道并发送消息
+//! 4. 处理发送失败的重试逻辑
+//!
+//! 支持 Running / Paused / Draining / Stopped 四种运行状态。
+
 use crate::support::now_ms;
 use crate::bus::Bus;
 use crate::channel::{err, ChannelRegistry, SendOptions, SendResult};
@@ -13,6 +23,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+/// 消息调度器
+///
+/// 持有通道注册表、负载均衡器集合和内部消息队列，
+/// 协调消息从入队到最终发送的完整流程。
 pub struct Dispatcher {
     config: DispatcherConfig,
     registry: Arc<ChannelRegistry>,
@@ -42,6 +56,7 @@ impl Dispatcher {
         self.stats.clone()
     }
 
+    /// 为指定通道绑定负载均衡器
     pub fn add_balancer(&self, channel: impl Into<String>, balancer: Arc<Balancer>) {
         self.balancers.lock().unwrap().insert(channel.into(), balancer);
     }
@@ -86,12 +101,14 @@ impl Dispatcher {
         self.runtime.set_state(DispatcherState::Stopped);
     }
 
+    /// 排空队列：持续处理直到队列为空，然后停止
     pub fn drain(&self) {
         self.runtime.set_state(DispatcherState::Draining);
         while self.drain_one().is_some() {}
         self.runtime.set_state(DispatcherState::Stopped);
     }
 
+    /// 将消息放入调度队列
     pub fn enqueue(&self, message: DispatchMessage) {
         self.queue.enqueue(DispatchEnvelope::from_message(message));
     }
@@ -100,6 +117,8 @@ impl Dispatcher {
         self.queue.enqueue(envelope);
     }
 
+    /// 从队列取出一条消息并尝试分发
+    /// 发送失败时根据失败阶段判断是否需要重试入队
     pub fn drain_one(&self) -> Option<SendResult> {
         match self.runtime.current_state() {
             DispatcherState::Paused | DispatcherState::Stopped => return None,
@@ -162,6 +181,8 @@ impl Dispatcher {
             .collect()
     }
 
+    /// 核心分发逻辑：选择目标 → 查找通道 → 发送消息
+    /// 每个阶段的失败都会记录诊断信息
     pub fn dispatch(&self, message: &DispatchMessage) -> SendResult {
         self.runtime.set_state(DispatcherState::Running);
 
@@ -275,6 +296,8 @@ impl Dispatcher {
         result
     }
 
+    /// 通过负载均衡器为消息选择目标
+    /// 无对应 balancer 时返回空选择（消息将直接按 account_id 路由）
     fn select_target(&self, message: &DispatchMessage) -> Selection {
         let Some(balancer) = self.get_balancer(&message.channel) else {
             return Selection {
@@ -306,10 +329,13 @@ impl Dispatcher {
         }
     }
 
+    /// 发送前更新目标负载计数（+1）
     fn before_send(&self, balancer: &Balancer, target: &Target) {
         let _ = balancer.update_load(&target.id, LoadUpdate::Inc);
     }
 
+    /// 发送后更新负载和健康状态
+    /// 成功时减少活跃计数并记录成功；失败时记录错误并更新熔断器
     fn after_dispatch(
         &self,
         balancer: Option<&Balancer>,
@@ -333,12 +359,15 @@ impl Dispatcher {
     }
 }
 
+/// 负载均衡选择结果（内部类型）
 struct Selection {
     balancer: Option<Arc<Balancer>>,
     selected_target: Option<Target>,
     balancer_miss_reason: Option<BalancerMissReason>,
 }
 
+/// 启动调度器的队列消费循环（独立线程）
+/// 持续从队列中取出消息并分发，直到 Stopped 或 Draining 完成
 pub fn start_dispatch_scheduler(dispatcher: Arc<Dispatcher>) -> thread::JoinHandle<()> {
     dispatcher.start();
     thread::spawn(move || loop {
@@ -363,6 +392,8 @@ pub fn start_dispatch_scheduler(dispatcher: Arc<Dispatcher>) -> thread::JoinHand
     })
 }
 
+/// 启动出站消息循环（独立线程）
+/// 从 Bus 的出站通道接收消息，转换为 DispatchMessage 后入队并立即尝试分发
 pub fn start_dispatcher_outbound_loop(
     bus: Arc<Bus>,
     dispatcher: Arc<Dispatcher>,

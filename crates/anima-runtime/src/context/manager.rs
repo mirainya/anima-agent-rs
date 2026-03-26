@@ -1,3 +1,9 @@
+//! 上下文管理器模块
+//!
+//! 提供高层级的上下文管理能力，封装键值存储、快照/恢复、会话历史等功能。
+//! `ContextManager` 是 Agent 运行时的核心组件之一，负责维护对话上下文状态，
+//! 并通过快照机制支持上下文的时间点回溯。内置 GC 自动清理过期快照。
+
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -5,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 use crate::support::now_ms;
 
+/// 上下文快照，记录某个 key 在特定时间点的值
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextSnapshot {
     pub id: String,
@@ -14,6 +21,7 @@ pub struct ContextSnapshot {
     pub timestamp_ms: u64,
 }
 
+/// 上下文管理器的操作统计
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ContextStats {
     pub reads: u64,
@@ -27,6 +35,7 @@ pub struct ContextStats {
     pub entries: usize,
 }
 
+/// 管理器运行状态
 #[derive(Debug, Clone, PartialEq)]
 pub struct ManagerStatus {
     pub id: String,
@@ -34,9 +43,15 @@ pub struct ManagerStatus {
     pub stats: ContextStats,
 }
 
+/// 快照数量上限
 const MAX_SNAPSHOTS: usize = 500;
+/// 快照最大存活时间（1 小时）
 const SNAPSHOT_MAX_AGE_MS: u64 = 3_600_000; // 1 hour
 
+/// 上下文管理器，提供键值存储、快照回溯和会话历史管理
+///
+/// 线程安全，所有状态通过 Mutex/AtomicBool 保护。
+/// gc_running 控制是否启用过期快照的自动清理。
 #[derive(Debug, Default)]
 pub struct ContextManager {
     id: String,
@@ -91,6 +106,7 @@ impl ContextManager {
         deleted
     }
 
+    /// 获取或创建上下文值（惰性初始化模式）
     pub fn get_or_create<F>(&self, key: &str, default_fn: F) -> Value
     where
         F: FnOnce() -> Value,
@@ -103,6 +119,7 @@ impl ContextManager {
         value
     }
 
+    /// 为指定 key 创建快照，达到容量上限时优先淘汰过期快照，其次淘汰最旧快照
     pub fn snapshot(&self, key: &str) -> Option<ContextSnapshot> {
         let value = self.get_context(key)?;
         let snapshot = ContextSnapshot {
@@ -138,6 +155,7 @@ impl ContextManager {
         Some(snapshot)
     }
 
+    /// 从快照恢复上下文值
     pub fn restore(&self, snapshot_id: &str) -> Option<ContextSnapshot> {
         let snapshot = self.snapshots.lock().get(snapshot_id).cloned()?;
         self.set_context(&snapshot.key, snapshot.value.clone());
@@ -154,6 +172,7 @@ impl ContextManager {
             .collect()
     }
 
+    /// 向指定会话的历史记录追加一条消息（存储在 "session:{id}:history" 键下）
     pub fn add_to_session_history(&self, session_id: &str, entry: Value) {
         let key = format!("session:{session_id}:history");
         let mut current = self.get_context(&key).unwrap_or_else(|| json!([]));
@@ -170,6 +189,7 @@ impl ContextManager {
             .unwrap_or_default()
     }
 
+    /// 清除指定会话的所有上下文数据（匹配 "session:{id}*" 前缀的所有键）
     pub fn clear_session_context(&self, session_id: &str) {
         let pattern = format!("session:{session_id}*");
         for key in self.list_keys(&pattern) {
@@ -177,6 +197,7 @@ impl ContextManager {
         }
     }
 
+    /// 停止 GC 并清空所有上下文和快照
     pub fn close(&self) {
         self.gc_running.store(false, Ordering::SeqCst);
         self.contexts.lock().clear();
@@ -186,7 +207,7 @@ impl ContextManager {
         stats.snapshots = 0;
     }
 
-    /// Remove snapshots older than `SNAPSHOT_MAX_AGE_MS`. Returns count removed.
+    /// 清理超过 SNAPSHOT_MAX_AGE_MS 的过期快照，返回清理数量
     pub fn gc_old_snapshots(&self) -> usize {
         let now = now_ms();
         let mut snapshots = self.snapshots.lock();

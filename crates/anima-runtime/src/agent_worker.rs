@@ -1,3 +1,14 @@
+//! # Worker 与 WorkerPool
+//!
+//! 本模块实现了任务执行的核心工作单元：
+//! - `WorkerAgent`：单个工作者，负责接收并执行一个任务（线程安全、支持并发提交）
+//! - `WorkerPool`：工作者池，管理多个 WorkerAgent 的生命周期，提供任务分发与负载均衡
+//!
+//! 设计要点：
+//! - 每个 WorkerAgent 同一时刻只处理一个任务（通过 `busy` 原子标志保证）
+//! - WorkerPool 使用 Condvar 等待可用 Worker，避免忙轮询
+//! - 任务提交后通过 crossbeam channel 异步返回结果
+
 use anima_sdk::facade::Client as SdkClient;
 use parking_lot::{Condvar, Mutex};
 use serde_json::{json, Value};
@@ -11,6 +22,8 @@ use crate::agent_executor::TaskExecutor;
 use crate::agent_types::{make_task_result, MakeTaskResult, Task, TaskResult};
 use crate::support::now_ms;
 
+/// 单个工作者智能体，封装了 SDK 客户端和任务执行器。
+/// 通过原子标志 `running` / `busy` 实现无锁的状态管理。
 pub struct WorkerAgent {
     id: String,
     client: SdkClient,
@@ -22,6 +35,7 @@ pub struct WorkerAgent {
     timeout_ms: u64,
 }
 
+/// Worker 的运行指标统计
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WorkerMetrics {
     pub tasks_completed: u64,
@@ -30,6 +44,7 @@ pub struct WorkerMetrics {
     pub total_duration_ms: u64,
 }
 
+/// Worker 的当前状态快照（stopped / busy / idle）
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkerStatus {
     pub id: String,
@@ -38,6 +53,7 @@ pub struct WorkerStatus {
 }
 
 impl WorkerAgent {
+    /// 创建新的 WorkerAgent，自动生成 UUID 作为唯一标识
     pub fn new(
         client: SdkClient,
         executor: Arc<dyn TaskExecutor>,
@@ -89,6 +105,9 @@ impl WorkerAgent {
         }
     }
 
+    /// 提交任务给此 Worker 执行。
+    /// 返回一个 Receiver，调用方可通过它异步获取执行结果。
+    /// 如果 Worker 未运行或正忙，会立即返回失败结果。
     pub fn submit_task(
         self: &Arc<Self>,
         task: Task,
@@ -108,6 +127,7 @@ impl WorkerAgent {
             return rx;
         }
 
+        // 用 swap 原子地检查并设置 busy 标志，防止并发提交
         if self.busy.swap(true, Ordering::SeqCst) {
             let _ = tx.send(make_task_result(MakeTaskResult {
                 task_id: task.id,
@@ -158,8 +178,10 @@ impl WorkerAgent {
         rx
     }
 
+    /// 根据任务类型分发执行：api-call / session-create / transform / query
     fn execute_task(&self, task: &Task) -> ExecuteResult {
         match task.task_type.as_str() {
+            // 调用 SDK 发送 prompt 到已有会话
             "api-call" => {
                 let session_id = task
                     .payload
@@ -182,6 +204,7 @@ impl WorkerAgent {
                     ),
                 }
             }
+            // 创建新的 SDK 会话
             "session-create" => match self.executor.create_session(&self.client) {
                 Ok(result) => {
                     if let Some(session_id) = result.get("id").and_then(Value::as_str) {
@@ -192,6 +215,7 @@ impl WorkerAgent {
                 }
                 Err(error) => ExecuteResult::failure(error),
             },
+            // 数据透传，直接返回 payload 中的 data
             "transform" => {
                 if let Some(data) = task.payload.get("data") {
                     ExecuteResult::success(data.clone())
@@ -199,6 +223,7 @@ impl WorkerAgent {
                     ExecuteResult::failure("Missing transform data")
                 }
             }
+            // 按路径查询 context 中的嵌套字段
             "query" => {
                 let query = task.payload.get("query").and_then(Value::as_array);
                 let context = task.payload.get("context");
@@ -226,12 +251,14 @@ impl WorkerAgent {
     }
 }
 
+/// 任务执行的内部结果，仅在 WorkerAgent 内部使用
 struct ExecuteResult {
     status: String,
     result: Option<Value>,
     error: Option<String>,
 }
 
+/// Panic 安全守卫：无论任务执行是否 panic，都会在 drop 时清除 busy 标志并唤醒等待者。
 /// Guard that clears the busy flag and notifies the condvar on drop (including panics).
 struct PanicGuard<'a> {
     busy: &'a AtomicBool,
@@ -265,6 +292,8 @@ impl ExecuteResult {
     }
 }
 
+/// 工作者池，管理一组 WorkerAgent 的生命周期。
+/// 使用 round-robin + Condvar 实现负载均衡和等待机制。
 pub struct WorkerPool {
     workers: Mutex<Vec<Arc<WorkerAgent>>>,
     worker_available: Arc<Condvar>,
@@ -278,6 +307,7 @@ pub struct WorkerPool {
     max_size: usize,
 }
 
+/// WorkerPool 的状态快照
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkerPoolStatus {
     pub status: String,
@@ -286,6 +316,7 @@ pub struct WorkerPoolStatus {
 }
 
 impl WorkerPool {
+    /// 创建工作者池，初始化 `initial_size` 个 Worker（默认 2，最少 1）
     pub fn new(
         client: SdkClient,
         executor: Arc<dyn TaskExecutor>,
@@ -316,6 +347,7 @@ impl WorkerPool {
         }
     }
 
+    /// 设置动态伸缩的最小/最大 Worker 数量
     /// Set min/max bounds for dynamic scaling.
     pub fn with_bounds(mut self, min_size: usize, max_size: usize) -> Self {
         self.min_size = min_size.max(1);
@@ -361,6 +393,7 @@ impl WorkerPool {
         }
     }
 
+    /// 动态调整池大小到 target（受 min/max 约束），返回调整后的实际大小
     /// Dynamically scale the pool to `target` workers (clamped to min/max bounds).
     pub fn scale_to(&self, target: usize) -> usize {
         let target = target.clamp(self.min_size, self.max_size);
@@ -391,6 +424,8 @@ impl WorkerPool {
         workers.len()
     }
 
+    /// 向池中提交任务。会等待可用 Worker（最多 max_wait_ms），超时则返回失败。
+    /// 内部使用 Condvar 避免忙轮询，Worker 完成任务后会唤醒等待者。
     pub fn submit_task(&self, task: Task) -> crossbeam_channel::Receiver<TaskResult> {
         let (tx, rx) = crossbeam_channel::bounded(1);
         if !self.is_running() {
@@ -440,6 +475,7 @@ impl WorkerPool {
         }
     }
 
+    /// 使用 round-robin 策略查找下一个空闲 Worker
     fn next_available_worker(&self) -> Option<Arc<WorkerAgent>> {
         let workers = self.workers.lock();
         if workers.is_empty() {

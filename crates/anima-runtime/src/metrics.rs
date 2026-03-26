@@ -1,6 +1,17 @@
+//! 指标收集与导出模块
+//!
+//! 提供四种指标类型：
+//! - Counter（计数器）：只增不减，适合统计请求数、错误数等
+//! - Gauge（仪表盘）：可增可减，适合统计当前连接数、队列长度等
+//! - Histogram（直方图）：按桶分布统计，适合统计延迟分布
+//! - Summary（摘要）：记录原始值用于百分位计算
+//!
+//! 支持注册动态 Gauge 函数和导出 Prometheus 格式文本。
+
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 
+/// 直方图值：按预定义桶边界统计分布
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct HistogramValue {
     pub buckets: Vec<u64>,
@@ -9,6 +20,7 @@ pub struct HistogramValue {
     pub count: u64,
 }
 
+/// 摘要值：保留最近 max_size 个原始值，用于计算百分位
 #[derive(Debug, Clone, PartialEq)]
 pub struct SummaryValue {
     pub values: Vec<f64>,
@@ -28,6 +40,7 @@ impl Default for SummaryValue {
     }
 }
 
+/// 指标快照：某一时刻所有指标的不可变副本
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MetricsSnapshot {
     pub counters: IndexMap<String, u64>,
@@ -36,6 +49,10 @@ pub struct MetricsSnapshot {
     pub summaries: IndexMap<String, SummaryValue>,
 }
 
+/// 指标收集器
+///
+/// 线程安全的指标注册与收集中心，支持动态 Gauge 函数注册。
+/// 所有指标名称会自动加上 prefix 前缀（默认 "anima"）。
 pub struct MetricsCollector {
     prefix: String,
     counters: Mutex<IndexMap<String, u64>>,
@@ -71,6 +88,10 @@ impl MetricsCollector {
         }
     }
 
+    /// 预注册 Agent 运行时常用的指标（计数器、仪表盘、直方图）
+    ///
+    /// 包括消息处理、任务执行、缓存命中、Worker 状态等核心指标，
+    /// 以及消息延迟和任务耗时的直方图桶配置。
     pub fn register_agent_metrics(&self) {
         for key in [
             "messages_received",
@@ -117,6 +138,7 @@ impl MetricsCollector {
         *self.counters.lock().entry(name.into()).or_insert(0) += value;
     }
 
+    /// 记录直方图观测值，自动落入对应的桶
     pub fn histogram_record(&self, name: &str, value: u64) {
         let mut histograms = self.histograms.lock();
         let histogram = histograms
@@ -157,6 +179,7 @@ impl MetricsCollector {
         gauges.insert("workers_idle".into(), idle as i64);
     }
 
+    /// 注册摘要指标，可指定保留的最大样本数
     pub fn register_summary(&self, name: &str, max_size: Option<usize>) {
         self.summaries.lock().entry(name.into()).or_insert_with(|| SummaryValue {
             max_size: max_size.unwrap_or(1000),
@@ -164,6 +187,7 @@ impl MetricsCollector {
         });
     }
 
+    /// 记录摘要观测值，超过 max_size 时以环形缓冲方式覆盖最旧的值
     pub fn summary_record(&self, name: &str, value: f64) {
         let mut summaries = self.summaries.lock();
         let summary = summaries.entry(name.into()).or_default();
@@ -172,7 +196,7 @@ impl MetricsCollector {
         if summary.values.len() < summary.max_size {
             summary.values.push(value);
         } else if !summary.values.is_empty() {
-            // Rotate: replace oldest
+            // 环形缓冲：用 count 取模定位覆盖位置
             let idx = (summary.count as usize - 1) % summary.max_size;
             summary.values[idx] = value;
         }
@@ -182,13 +206,15 @@ impl MetricsCollector {
         self.summaries.lock().get(name).cloned()
     }
 
+    /// 注册动态 Gauge 函数，snapshot 时会自动调用获取最新值
     pub fn register_gauge_fn(&self, name: &str, value_fn: Box<dyn Fn() -> i64 + Send + Sync>) {
         self.gauge_fns.lock().insert(name.into(), value_fn);
     }
 
+    /// 生成当前所有指标的不可变快照（会触发动态 Gauge 函数求值）
     pub fn snapshot(&self) -> MetricsSnapshot {
         let mut gauges = self.gauges.lock().clone();
-        // Evaluate gauge functions
+        // 执行所有注册的动态 Gauge 函数，将结果合并到快照中
         for (name, func) in self.gauge_fns.lock().iter() {
             gauges.insert(name.clone(), func());
         }
@@ -204,6 +230,7 @@ impl MetricsCollector {
         &self.prefix
     }
 
+    /// 导出 Prometheus 文本格式的指标数据，可直接用于 /metrics 端点
     pub fn render_prometheus(&self) -> String {
         let snapshot = self.snapshot();
         let mut lines = Vec::new();

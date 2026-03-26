@@ -1,3 +1,10 @@
+//! 并行任务池模块
+//!
+//! 提供批量任务的并行执行能力。核心概念：
+//! - 将一组任务按 `max_concurrent` 分块并发提交给 `WorkerPool`
+//! - 支持 fail-fast（任一失败立即中止）和最低成功率阈值两种提前终止策略
+//! - 同时保留了向后兼容的简单 `execute` 接口
+
 use crate::agent_types::{make_task_result, MakeTaskResult, Task, TaskResult};
 use crate::agent_worker::WorkerPool;
 use crate::support::now_ms;
@@ -8,6 +15,7 @@ use uuid::Uuid;
 
 // ── Config ─────────────────────────────────────────────────────────
 
+/// 并行池配置：控制并发度、超时、失败策略
 #[derive(Debug, Clone)]
 pub struct ParallelPoolConfig {
     pub max_concurrent: usize,
@@ -29,6 +37,7 @@ impl Default for ParallelPoolConfig {
 
 // ── Parallel Task / Result ─────────────────────────────────────────
 
+/// 单个并行任务的包装，附带独立超时配置
 #[derive(Debug, Clone)]
 pub struct ParallelTask {
     pub id: String,
@@ -36,6 +45,7 @@ pub struct ParallelTask {
     pub timeout_ms: Option<u64>,
 }
 
+/// 批量执行的汇总结果，包含成功/失败/超时计数和成功率
 #[derive(Debug, Clone)]
 pub struct ParallelResult {
     pub batch_id: String,
@@ -49,6 +59,7 @@ pub struct ParallelResult {
 
 // ── Metrics ────────────────────────────────────────────────────────
 
+/// 并行池累计指标
 #[derive(Debug, Clone, Default)]
 pub struct ParallelPoolMetrics {
     pub batches_executed: u64,
@@ -60,6 +71,7 @@ pub struct ParallelPoolMetrics {
 
 // ── Pool ───────────────────────────────────────────────────────────
 
+/// 并行任务池：将任务分块提交给 WorkerPool 并收集结果
 pub struct ParallelPool {
     worker_pool: Arc<WorkerPool>,
     running: AtomicBool,
@@ -88,6 +100,7 @@ impl ParallelPool {
 
     // ── Existing API (backward compatible) ─────────────────────────
 
+    /// 向后兼容接口：顺序提交所有任务，任一失败则直接返回失败结果
     pub fn execute(&self, tasks: Vec<Task>) -> TaskResult {
         let results = tasks
             .into_iter()
@@ -132,6 +145,11 @@ impl ParallelPool {
 
     // ── New batch API ──────────────────────────────────────────────
 
+    /// 批量执行任务，支持并发分块、超时、fail-fast 和最低成功率阈值
+    ///
+    /// 任务按 `max_concurrent` 分块提交，每块内并发执行。
+    /// 两种提前终止条件：fail-fast 模式下任一失败立即中止；
+    /// 或当剩余任务全部成功也无法达到 `min_success_ratio` 时提前退出。
     pub fn execute_batch(
         &self,
         tasks: Vec<Task>,
@@ -188,6 +206,7 @@ impl ParallelPool {
                 if result.status == "success" {
                     successful += 1;
                 } else if !result.error.as_deref().map_or(false, |e| e.contains("timed out")) {
+                    // 超时任务已在上面的 match 分支中计数，这里只统计非超时的失败
                     failed += 1;
                 }
 
@@ -199,7 +218,7 @@ impl ParallelPool {
                 }
             }
 
-            // Check min_success_ratio mid-batch
+            // 乐观估算：即使剩余任务全部成功，成功率仍低于阈值则提前终止
             let total_so_far = results.len();
             if total_so_far > 0 {
                 let _ratio = successful as f64 / total_so_far as f64;

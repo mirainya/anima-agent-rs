@@ -1,3 +1,11 @@
+//! 任务编排器模块
+//!
+//! 负责将复杂请求分解为子任务并协调执行。核心概念：
+//! - 通过正则匹配的分解规则（DecompositionRule）将请求拆分为子任务
+//! - 子任务之间可声明依赖关系，编排器自动进行拓扑排序和并行分组
+//! - 同一组内无依赖的子任务可并行执行，不同组按依赖顺序串行
+//! - 同时提供静态方法 `execute_plan` / `execute_single_task` 用于直接执行 ExecutionPlan
+
 use crate::agent_parallel_pool::ParallelPool;
 use crate::agent_specialist_pool::SpecialistPool;
 use crate::agent_types::{
@@ -17,6 +25,7 @@ use uuid::Uuid;
 
 // ── SubTask ───────────────────────────────────────────────────────────
 
+/// 子任务状态
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubTaskStatus {
     Pending,
@@ -25,6 +34,10 @@ pub enum SubTaskStatus {
     Failed,
 }
 
+/// 子任务：编排计划中的最小执行单元
+///
+/// 每个子任务声明自己的依赖（dependencies）、所需专家类型（specialist_type），
+/// 运行时状态和结果通过 Mutex 保护以支持并发更新。
 pub struct SubTask {
     pub id: String,
     pub parent_id: String,
@@ -43,6 +56,8 @@ pub struct SubTask {
 }
 
 // ── OrchestrationPlan ─────────────────────────────────────────────────
+
+/// 编排计划状态
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanStatus {
     Created,
@@ -51,6 +66,7 @@ pub enum PlanStatus {
     Failed,
 }
 
+/// 编排计划的执行进度
 #[derive(Debug, Clone, Default)]
 pub struct PlanProgress {
     pub completed_count: u32,
@@ -58,6 +74,10 @@ pub struct PlanProgress {
     pub failed_count: u32,
 }
 
+/// 编排计划：包含子任务集合、拓扑执行顺序和并行分组
+///
+/// `execution_order` 是拓扑排序后的线性顺序，
+/// `parallel_groups` 将其进一步划分为可并行执行的批次。
 pub struct OrchestrationPlan {
     pub id: String,
     pub trace_id: String,
@@ -72,6 +92,7 @@ pub struct OrchestrationPlan {
 
 // ── Config / Metrics ──────────────────────────────────────────────────
 
+/// 编排器配置
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
     pub default_timeout_ms: u64,
@@ -89,6 +110,7 @@ impl Default for OrchestratorConfig {
     }
 }
 
+/// 编排器累计指标
 #[derive(Debug, Clone, Default)]
 pub struct OrchestratorMetrics {
     pub plans_created: u64,
@@ -100,12 +122,15 @@ pub struct OrchestratorMetrics {
 }
 
 // ── Decomposition Rules ───────────────────────────────────────────────
+
+/// 分解规则：通过正则匹配请求文本，决定如何拆分子任务
 struct DecompositionRule {
     pattern: Regex,
     name: String,
     subtask_templates: Vec<SubTaskTemplate>,
 }
 
+/// 子任务模板：定义子任务的名称、类型、专家类型和依赖关系
 struct SubTaskTemplate {
     name: String,
     task_type: String,
@@ -113,6 +138,7 @@ struct SubTaskTemplate {
     dependencies: Vec<String>,
 }
 
+// 预定义的任务分解规则表（web-app、api、refactor 等场景）
 lazy_static! {
     static ref TASK_DECOMPOSITION_RULES: Vec<DecompositionRule> = vec![
         DecompositionRule {
@@ -227,6 +253,10 @@ lazy_static! {
 }
 
 // ── AgentOrchestrator ─────────────────────────────────────────────────
+
+/// 任务编排器：将复杂请求分解为子任务，按依赖关系编排执行
+///
+/// 核心流程：decompose_task → topological_sort → compute_parallel_groups → execute
 pub struct AgentOrchestrator {
     id: String,
     specialist_pool: Arc<SpecialistPool>,
@@ -301,6 +331,11 @@ impl AgentOrchestrator {
     }
 
     // ── Task Decomposition ────────────────────────────────────────
+
+    /// 将请求文本分解为编排计划
+    ///
+    /// 匹配预定义规则生成子任务，无匹配时创建单个 generic 子任务。
+    /// 自动计算拓扑排序和并行分组。
     pub fn decompose_task(&self, request: &str, trace_id: &str) -> OrchestrationPlan {
         let plan_id = Uuid::new_v4().to_string();
         let matched_rule = TASK_DECOMPOSITION_RULES
@@ -388,6 +423,7 @@ impl AgentOrchestrator {
             created_at: now_ms(),
         }
     }
+    /// 拓扑排序：基于子任务依赖关系生成线性执行顺序（DFS 后序）
     fn topological_sort(subtasks: &IndexMap<String, Arc<SubTask>>) -> Vec<String> {
         let mut order: Vec<String> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
@@ -420,6 +456,7 @@ impl AgentOrchestrator {
         order
     }
 
+    /// 计算并行分组：将拓扑序列划分为多个批次，同批次内的子任务无相互依赖可并行执行
     fn compute_parallel_groups(
         subtasks: &IndexMap<String, Arc<SubTask>>,
         execution_order: &[String],
@@ -444,7 +481,7 @@ impl AgentOrchestrator {
             }
 
             if group.is_empty() {
-                // Safety: avoid infinite loop if deps are unresolvable
+                // 安全兜底：依赖无法解析时（如循环依赖），强制推进避免死循环
                 still_remaining.drain(..).for_each(|n| group.push(n));
             }
 
@@ -458,6 +495,8 @@ impl AgentOrchestrator {
     }
 
     // ── Orchestration ─────────────────────────────────────────────
+
+    /// 编排入口：分解请求 → 存储计划 → 执行 → 清理 → 更新指标
     pub fn orchestrate(&self, request: &str) -> TaskResult {
         let trace_id = Uuid::new_v4().to_string();
         let started = now_ms();
@@ -499,12 +538,16 @@ impl AgentOrchestrator {
         result
     }
 
+    /// 执行编排计划：按并行分组逐组执行子任务
+    ///
+    /// 组内只有一个任务或未启用并行时串行执行，否则并发提交后收集结果。
+    /// 任一子任务失败则整个计划标记为 Failed 并提前返回。
     pub fn execute_orchestration_plan(&self, plan: &OrchestrationPlan) -> TaskResult {
         *plan.status.lock().unwrap_or_else(|e| e.into_inner()) = PlanStatus::Running;
 
         for group in &plan.parallel_groups {
             if group.len() == 1 || !self.config.enable_parallel {
-                // Execute sequentially
+                // 单任务组或未启用并行：逐个串行执行
                 for name in group {
                     let result = self.execute_subtask(plan, name);
                     if result.status != "success" {
@@ -514,7 +557,7 @@ impl AgentOrchestrator {
                     }
                 }
             } else {
-                // Execute in parallel: submit all, then collect
+                // 多任务组且启用并行：先全部提交，再统一收集结果
                 let mut receivers = Vec::new();
                 for name in group {
                     if let Some(subtask) = plan.subtasks.get(name) {
@@ -539,7 +582,7 @@ impl AgentOrchestrator {
                         receivers.push((name.clone(), rx));
                     }
                 }
-                // Collect results
+                // 收集并行结果，记录第一个失败结果
                 let mut failed = false;
                 let mut fail_result: Option<TaskResult> = None;
                 for (name, rx) in receivers {
@@ -611,6 +654,7 @@ impl AgentOrchestrator {
         })
     }
 
+    /// 执行单个子任务：有专家类型时路由到专家池，否则直接提交到 WorkerPool
     fn execute_subtask(&self, plan: &OrchestrationPlan, name: &str) -> TaskResult {
         let subtask = match plan.subtasks.get(name) {
             Some(st) => st,
@@ -677,6 +721,8 @@ impl AgentOrchestrator {
     }
 
     // ── Backward-compatible associated functions ──────────────────
+
+    /// 根据 ExecutionPlan 的类型分发执行（Single/Sequential/Parallel/SpecialistRoute/Direct）
     pub fn execute_plan(
         worker_pool: &Arc<WorkerPool>,
         plan: &ExecutionPlan,
@@ -691,6 +737,7 @@ impl AgentOrchestrator {
                 Self::execute_single_task(worker_pool, task, session_id)
             }
             ExecutionPlanKind::Sequential => {
+                // 串行执行：每个任务的结果作为下一个任务的 previous-result 传递
                 let mut last_result: Option<Value> = None;
                 let mut last_task_result: Option<TaskResult> = None;
                 for mut task in plan.tasks.iter().cloned() {
@@ -716,10 +763,12 @@ impl AgentOrchestrator {
                 last_task_result.unwrap_or_else(|| Self::failure("No tasks executed"))
             }
             ExecutionPlanKind::Parallel => {
+                // 并行执行：将所有任务一次性提交到 ParallelPool
                 let pool = ParallelPool::new(worker_pool.clone());
                 pool.execute(plan.tasks.iter().cloned().collect())
             }
             ExecutionPlanKind::SpecialistRoute => {
+                // 专家路由：取第一个任务，注入 session-id 后路由到指定专家
                 let specialist = plan.specialist.clone().unwrap_or_else(|| "default".into());
                 let mut task = match plan.tasks.front().cloned() {
                     Some(t) => t,
@@ -749,6 +798,7 @@ impl AgentOrchestrator {
         }
     }
 
+    /// 执行单个任务：注入 session-id 后提交到 WorkerPool
     pub fn execute_single_task(
         worker_pool: &Arc<WorkerPool>,
         mut task: Task,
@@ -766,6 +816,7 @@ impl AgentOrchestrator {
         Self::wait_for_task(worker_pool, task)
     }
 
+    /// 同步等待任务结果，通道关闭时返回失败
     pub fn wait_for_task(worker_pool: &Arc<WorkerPool>, task: Task) -> TaskResult {
         let rx = worker_pool.submit_task(task.clone());
         rx.recv().unwrap_or_else(|_| {
@@ -781,6 +832,7 @@ impl AgentOrchestrator {
         })
     }
 
+    /// 构造一个通用失败结果
     fn failure(error: impl Into<String>) -> TaskResult {
         make_task_result(MakeTaskResult {
             task_id: Uuid::new_v4().to_string(),

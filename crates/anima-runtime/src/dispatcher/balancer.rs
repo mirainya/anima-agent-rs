@@ -1,3 +1,14 @@
+//! 负载均衡器模块
+//!
+//! 提供多策略负载均衡能力，支持：
+//! - RoundRobin（轮询）、Weighted（加权轮询）、LeastConnections（最少连接）、Hashing（一致性哈希）
+//!
+//! 可选的运行时特性：
+//! - 熔断器：对连续失败的目标自动熔断（Open → HalfOpen → Closed）
+//! - 健康检查：基于心跳 TTL 判断目标是否存活
+//!
+//! 选择目标时会综合考虑状态、健康度、熔断状态，并生成详细的诊断信息。
+
 use crate::dispatcher::router::{constant_hashing_index, round_robin_index};
 use crate::support::now_ms;
 use indexmap::IndexMap;
@@ -7,27 +18,38 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use uuid::Uuid;
 
+/// 目标节点状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TargetStatus {
+    /// 可用，参与负载均衡选择
     Available,
+    /// 忙碌，暂时不接受新请求
     Busy,
+    /// 离线，不参与任何选择
     Offline,
 }
 
+/// 目标节点的负载信息
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct TargetLoad {
+    /// 当前活跃请求数
     pub active: usize,
+    /// 历史总请求数
     pub total: usize,
+    /// 累计错误数
     pub errors: usize,
     pub last_error_at: Option<u64>,
 }
 
 
+/// 负载均衡目标节点
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Target {
     pub id: String,
+    /// 权重（Weighted 策略使用，值越大被选中概率越高）
     pub weight: usize,
+    /// 最大并发容量
     pub capacity: usize,
     pub metadata: Value,
     pub status: TargetStatus,
@@ -47,6 +69,7 @@ impl Target {
     }
 }
 
+/// 创建目标节点的可选参数
 #[derive(Debug, Clone, Default)]
 pub struct TargetOptions {
     pub weight: Option<usize>,
@@ -56,6 +79,7 @@ pub struct TargetOptions {
     pub load: Option<TargetLoad>,
 }
 
+/// 创建目标节点的便捷函数
 pub fn make_target(id: Option<String>, opts: TargetOptions) -> Target {
     Target {
         id: id.unwrap_or_else(|| Uuid::new_v4().to_string()),
@@ -67,25 +91,38 @@ pub fn make_target(id: Option<String>, opts: TargetOptions) -> Target {
     }
 }
 
+/// 负载均衡策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BalancerStrategy {
+    /// 轮询：按顺序依次选择
     RoundRobin,
+    /// 加权轮询：按权重比例分配
     Weighted,
+    /// 最少连接：选择当前活跃连接最少的目标
     LeastConnections,
+    /// 一致性哈希：相同 key 路由到同一目标
     Hashing,
 }
 
+/// Balancer 内置的熔断器状态（与 circuit_breaker 模块独立）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CircuitState {
+    /// 正常
     Closed,
+    /// 熔断中
     Open,
+    /// 半开试探
     HalfOpen,
 }
 
+/// 熔断器配置
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CircuitBreakerConfig {
+    /// 触发熔断的连续失败次数
     pub failure_threshold: usize,
+    /// 恢复所需的连续成功次数
     pub success_threshold: usize,
+    /// 熔断冷却时间（毫秒），超时后进入 HalfOpen
     pub cooldown_ms: u64,
 }
 
@@ -99,9 +136,12 @@ impl Default for CircuitBreakerConfig {
     }
 }
 
+/// 健康检查策略
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthPolicy {
+    /// 心跳超时时间（毫秒），超过此时间未收到心跳则判定为不健康
     pub heartbeat_ttl_ms: u64,
+    /// 是否在每次选择目标时自动刷新健康状态
     pub check_on_select: bool,
 }
 
@@ -114,6 +154,7 @@ impl Default for HealthPolicy {
     }
 }
 
+/// 运行时配置，包含可选的熔断器和健康检查策略
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BalancerRuntimeConfig {
     pub circuit_breaker: Option<CircuitBreakerConfig>,
@@ -126,6 +167,7 @@ impl BalancerRuntimeConfig {
     }
 }
 
+/// 目标节点的运行时健康信息
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetHealth {
     pub healthy: bool,
@@ -151,6 +193,7 @@ impl Default for TargetHealth {
     }
 }
 
+/// 创建 Balancer 的选项
 #[derive(Debug, Clone)]
 pub struct BalancerOptions {
     pub id: Option<String>,
@@ -174,14 +217,20 @@ impl Default for BalancerOptions {
     }
 }
 
+/// 负载更新操作类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadUpdate {
+    /// 新增一个活跃请求
     Inc,
+    /// 完成一个活跃请求
     Dec,
+    /// 请求出错（减少活跃数并累加错误数）
     Error,
+    /// 重置活跃计数为 0
     Reset,
 }
 
+/// 目标被排除的原因（用于诊断）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TargetExcludeReason {
     StatusBusy,
@@ -193,6 +242,7 @@ pub enum TargetExcludeReason {
     HashingKeyMissing,
 }
 
+/// 目标被选中的原因（对应使用的策略）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SelectionReason {
     RoundRobin,
@@ -201,6 +251,7 @@ pub enum SelectionReason {
     Hashing,
 }
 
+/// 选择失败的原因
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BalancerMissReason {
     NoTargetsConfigured,
@@ -212,6 +263,7 @@ pub enum BalancerMissReason {
     StrategyReturnedNone,
 }
 
+/// 单个目标的诊断信息（每次选择时生成）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BalancerTargetDiagnostic {
     pub target_id: String,
@@ -225,6 +277,7 @@ pub struct BalancerTargetDiagnostic {
     pub capacity: usize,
 }
 
+/// 一次选择过程的完整诊断信息
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BalancerSelectionDiagnostic {
     pub selection_key: Option<String>,
@@ -236,6 +289,7 @@ pub struct BalancerSelectionDiagnostic {
     pub miss_reason: Option<BalancerMissReason>,
 }
 
+/// 诊断信息的外部快照
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BalancerDiagnosticsSnapshot {
     pub last_selection: Option<BalancerSelectionDiagnostic>,
@@ -272,6 +326,7 @@ impl BalancerDiagnosticsState {
     }
 }
 
+/// Balancer 统计快照
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BalancerStatsSnapshot {
     pub selections: usize,
@@ -293,6 +348,7 @@ impl BalancerStats {
     }
 }
 
+/// 单个目标的综合状态（合并了 Target 和 TargetHealth 信息）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalancerTargetStatus {
     pub status: TargetStatus,
@@ -308,6 +364,7 @@ pub struct BalancerTargetStatus {
     pub circuit_opened_at: Option<u64>,
 }
 
+/// Balancer 整体状态快照
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalancerStatusSnapshot {
     pub id: String,
@@ -321,6 +378,7 @@ pub struct BalancerStatusSnapshot {
     pub stats: BalancerStatsSnapshot,
 }
 
+/// Balancer 聚合指标（用于监控面板）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BalancerMetrics {
     pub total_targets: usize,
@@ -335,6 +393,10 @@ pub struct BalancerMetrics {
     pub total_errors: usize,
 }
 
+/// 负载均衡器
+///
+/// 管理一组目标节点，根据配置的策略选择最合适的目标。
+/// 线程安全（内部使用 Mutex），支持运行时动态增删目标。
 pub struct Balancer {
     id: String,
     strategy: BalancerStrategy,
@@ -385,6 +447,7 @@ impl Balancer {
         self.runtime.as_ref()
     }
 
+    /// 添加目标节点，同时初始化其健康信息（如果启用了运行时特性）
     pub fn add_target(&self, target: Target) -> Target {
         let mut targets = self.targets.lock().unwrap();
         targets.insert(target.id.clone(), target.clone());
@@ -395,6 +458,7 @@ impl Balancer {
         target
     }
 
+    /// 移除目标节点，同时清理健康信息并重新对齐轮询游标
     pub fn remove_target(&self, target_id: &str) -> Option<Target> {
         let mut targets = self.targets.lock().unwrap();
         let removed = targets.shift_remove(target_id);
@@ -426,6 +490,7 @@ impl Balancer {
             .collect()
     }
 
+    /// 更新目标的负载计数
     pub fn update_load(&self, target_id: &str, op: LoadUpdate) -> Option<TargetLoad> {
         let mut targets = self.targets.lock().unwrap();
         let target = targets.get_mut(target_id)?;
@@ -490,6 +555,8 @@ impl Balancer {
         self.diagnostics.lock().unwrap().snapshot()
     }
 
+    /// 记录目标成功，更新健康状态
+    /// HalfOpen 状态下连续成功达阈值时自动关闭熔断器
     pub fn record_target_success(&self, target_id: &str) -> Option<TargetHealth> {
         let _ = self.targets.lock().unwrap().get(target_id)?;
         let now = now_ms();
@@ -513,6 +580,8 @@ impl Balancer {
         Some(health.clone())
     }
 
+    /// 记录目标失败，更新健康状态
+    /// Closed 状态下连续失败达阈值时触发熔断；HalfOpen 状态下任何失败立即重新熔断
     pub fn record_target_failure(&self, target_id: &str) -> Option<TargetHealth> {
         let _ = self.targets.lock().unwrap().get(target_id)?;
         let now = now_ms();
@@ -537,6 +606,7 @@ impl Balancer {
         Some(health.clone())
     }
 
+    /// 记录目标心跳，更新最后心跳时间和健康状态
     pub fn record_target_heartbeat(&self, target_id: &str, healthy: bool) -> Option<TargetHealth> {
         let _ = self.targets.lock().unwrap().get(target_id)?;
         let now = now_ms();
@@ -562,6 +632,8 @@ impl Balancer {
         Some(health.clone())
     }
 
+    /// 刷新单个目标的健康状态
+    /// 检查熔断器冷却超时（Open → HalfOpen）和心跳过期
     pub fn refresh_target_health(&self, target_id: &str, now_ms: u64) -> Option<TargetHealth> {
         let _ = self.targets.lock().unwrap().get(target_id)?;
         if self.runtime.is_none() {
@@ -597,6 +669,7 @@ impl Balancer {
         }
     }
 
+    /// 判断目标是否可路由（状态为 Available、健康、且熔断器未打开）
     pub fn is_target_routable(&self, target_id: &str, now_ms: u64) -> bool {
         let Some(target) = self.get_target(target_id) else {
             return false;
@@ -629,6 +702,8 @@ impl Balancer {
         self.set_target_status(target_id, TargetStatus::Offline)
     }
 
+    /// 选择一个目标节点（核心入口）
+    /// 先刷新所有目标健康状态，再根据策略从候选集中选择
     pub fn select_target(&self, key: Option<&str>) -> Option<Target> {
         let targets = self.targets.lock().unwrap().clone();
         let selection = self.compute_selection(targets, key);
@@ -738,6 +813,12 @@ impl Balancer {
         }
     }
 
+    /// 核心选择计算逻辑
+    /// 1. 过滤出 Available 状态的目标
+    /// 2. 如果启用运行时特性，进一步过滤健康且熔断器未打开的目标
+    /// 3. 优先从 Closed 状态的候选中选择，其次 HalfOpen
+    /// 4. 根据策略（RoundRobin/Weighted/LeastConnections/Hashing）执行选择
+    /// 5. 生成完整的诊断信息
     fn compute_selection(
         &self,
         targets: IndexMap<String, Target>,
@@ -971,6 +1052,7 @@ impl Balancer {
         }
     }
 
+    /// 轮询选择
     fn select_round_robin(&self, targets: &[Target]) -> Option<Target> {
         let mut cursor = self.round_robin_cursor.lock().unwrap();
         let next = round_robin_index(*cursor, targets.len())?;
@@ -978,6 +1060,7 @@ impl Balancer {
         targets.get(next).cloned()
     }
 
+    /// 加权轮询：将每个目标按权重展开后做轮询
     fn select_weighted(&self, targets: &[Target]) -> Option<Target> {
         let weighted: Vec<Target> = targets
             .iter()
@@ -989,6 +1072,7 @@ impl Balancer {
         weighted.get(next).cloned()
     }
 
+    /// 最少连接选择：选择当前 active 最小的目标
     fn select_least_connections(&self, targets: &[Target]) -> Option<Target> {
         targets
             .iter()
@@ -996,12 +1080,14 @@ impl Balancer {
             .cloned()
     }
 
+    /// 一致性哈希选择：需要 key，无 key 时返回 None
     fn select_hashing(&self, targets: &[Target], key: Option<&str>) -> Option<Target> {
         let hashing_key = key?;
         let index = constant_hashing_index(hashing_key, targets.len())?;
         targets.get(index).cloned()
     }
 
+    /// 移除目标后重新对齐轮询游标，防止越界
     fn realign_cursor(&self, len: usize) {
         let mut cursor = self.round_robin_cursor.lock().unwrap();
         *cursor = if len == 0 {
@@ -1011,6 +1097,7 @@ impl Balancer {
         };
     }
 
+    /// 确保目标有对应的健康记录（懒初始化）
     fn ensure_target_health(&self, target_id: &str) {
         let mut runtime_health = self.runtime_health.lock().unwrap();
         runtime_health

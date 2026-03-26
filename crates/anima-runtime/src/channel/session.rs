@@ -1,3 +1,10 @@
+//! 会话管理模块
+//!
+//! 管理通道中的用户会话生命周期。每个会话绑定到一个通道和账户，
+//! 携带独立的上下文（context）和消息历史（history）。
+//! `SessionStore` 通过多级索引（ID、路由键、通道+账户）实现高效查找，
+//! 并支持会话的创建、更新、关闭和统计。
+
 use crate::channel::message::{extract_session_id, make_session_routing_key};
 use crate::support::now_ms;
 use indexmap::IndexMap;
@@ -5,6 +12,7 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 use uuid::Uuid;
 
+/// 会话实体，表示一个用户与通道之间的交互上下文
 #[derive(Debug, Clone)]
 pub struct Session {
     pub id: String,
@@ -16,6 +24,7 @@ pub struct Session {
     pub last_active: u64,
 }
 
+/// 创建会话时的可选参数
 #[derive(Debug, Default)]
 pub struct SessionCreateOptions {
     pub id: Option<String>,
@@ -25,6 +34,7 @@ pub struct SessionCreateOptions {
     pub account_id: Option<String>,
 }
 
+/// 查找会话时的匹配条件，按优先级依次尝试：session_id → routing_key → account_id
 #[derive(Debug, Default)]
 pub struct FindSessionOptions {
     pub session_id: Option<String>,
@@ -32,6 +42,7 @@ pub struct FindSessionOptions {
     pub account_id: Option<String>,
 }
 
+/// 会话统计信息
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionStats {
     pub total: usize,
@@ -39,13 +50,21 @@ pub struct SessionStats {
     pub active_last_hour: usize,
 }
 
+/// 会话存储的内部状态，维护三个索引以支持不同维度的查找
 #[derive(Debug, Default)]
 struct SessionStoreState {
+    /// 主索引：session_id → Session
     sessions: IndexMap<String, Session>,
+    /// 路由键索引：routing_key → session_id
     by_routing_key: IndexMap<String, String>,
+    /// 通道+账户索引：channel → account_id → [session_id]
     by_channel: IndexMap<String, IndexMap<String, Vec<String>>>,
 }
 
+/// 会话存储，线程安全的会话管理器
+///
+/// 通过 Mutex 保护内部状态，支持并发访问。
+/// 提供会话的 CRUD、历史记录管理和统计查询。
 #[derive(Debug, Default)]
 pub struct SessionStore {
     state: Mutex<SessionStoreState>,
@@ -56,6 +75,7 @@ impl SessionStore {
         Self::default()
     }
 
+    /// 创建新会话并建立所有索引映射
     pub fn create_session(&self, channel: &str, opts: SessionCreateOptions) -> Session {
         let session_id = opts.id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let routing_key = opts
@@ -128,6 +148,7 @@ impl SessionStore {
         self.state.lock().unwrap().sessions.len()
     }
 
+    /// 增量合并更新会话上下文（浅合并 JSON 对象的顶层字段）
     pub fn update_session_context(
         &self,
         session_id: &str,
@@ -148,18 +169,22 @@ impl SessionStore {
         Some(session.clone())
     }
 
+    /// 向会话的 context.history 数组追加一条消息记录
     pub fn add_to_history(&self, session_id: &str, message: Value) -> Option<Session> {
         let mut state = self.state.lock().unwrap();
         let session = state.sessions.get_mut(session_id)?;
         if !session.context.is_object() {
             session.context = json!({});
         }
-        let obj = session.context.as_object_mut().unwrap();
-        let history = obj.entry("history").or_insert_with(|| json!([]));
-        if !history.is_array() {
-            *history = json!([]);
+        if let Some(obj) = session.context.as_object_mut() {
+            let history = obj.entry("history").or_insert_with(|| json!([]));
+            if !history.is_array() {
+                *history = json!([]);
+            }
+            if let Some(arr) = history.as_array_mut() {
+                arr.push(message);
+            }
         }
-        history.as_array_mut().unwrap().push(message);
         session.last_active = now_ms();
         Some(session.clone())
     }
@@ -178,6 +203,7 @@ impl SessionStore {
         Some(session.clone())
     }
 
+    /// 关闭会话并清理所有索引（路由键索引、通道索引）
     pub fn close_session(&self, session_id: &str) -> Option<Session> {
         let mut state = self.state.lock().unwrap();
         let session = state.sessions.shift_remove(session_id)?;
@@ -239,6 +265,7 @@ impl SessionStore {
         }
     }
 
+    /// 查找或创建会话，按优先级依次尝试：session_id → routing_key → 从 routing_key 提取 session_id → 新建
     pub fn find_or_create_session(&self, channel_name: &str, opts: FindSessionOptions) -> Session {
         if let Some(session_id) = opts.session_id.as_deref() {
             if let Some(session) = self.get_session(session_id) {
@@ -271,15 +298,16 @@ impl SessionStore {
     }
 }
 
+/// 浅合并两个 JSON 对象（仅合并顶层字段，非对象类型直接覆盖）
 fn merge_json_object(target: &mut Value, update: &Value) {
     if !target.is_object() || !update.is_object() {
         *target = update.clone();
         return;
     }
 
-    let target_obj = target.as_object_mut().unwrap();
-    let update_obj = update.as_object().unwrap();
-    for (key, value) in update_obj {
-        target_obj.insert(key.clone(), value.clone());
+    if let (Some(target_obj), Some(update_obj)) = (target.as_object_mut(), update.as_object()) {
+        for (key, value) in update_obj {
+            target_obj.insert(key.clone(), value.clone());
+        }
     }
 }

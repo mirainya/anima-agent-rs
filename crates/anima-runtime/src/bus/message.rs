@@ -1,7 +1,18 @@
+//! 消息类型定义模块
+//!
+//! 定义了消息总线中流转的所有消息类型：
+//! - InboundMessage / OutboundMessage：外部通信消息（入站/出站）
+//! - InternalMessage：组件间内部通信消息，支持请求/响应/事件三种模式
+//! - ControlMessage：系统控制信号（关闭、暂停、扩缩容等）
+//!
+//! 每种消息都配有对应的 Builder 结构体（MakeXxx）和工厂函数（make_xxx），
+//! 自动填充 ID、时间戳等默认值。
+
 use serde_json::json;
 use uuid::Uuid;
 use crate::support::now_ms;
 
+/// 入站消息：从外部渠道进入系统的用户消息
 #[derive(Debug, Clone, PartialEq)]
 pub struct InboundMessage {
     pub id: String,
@@ -14,6 +25,7 @@ pub struct InboundMessage {
     pub metadata: serde_json::Value,
 }
 
+/// 出站消息：系统向外部渠道发送的响应消息
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutboundMessage {
     pub id: String,
@@ -27,6 +39,7 @@ pub struct OutboundMessage {
     pub sender_id: Option<String>,
 }
 
+/// 构建入站消息，自动生成 UUID 并填充默认值
 pub fn make_inbound(input: MakeInbound) -> InboundMessage {
     InboundMessage {
         id: Uuid::new_v4().to_string(),
@@ -40,6 +53,7 @@ pub fn make_inbound(input: MakeInbound) -> InboundMessage {
     }
 }
 
+/// 构建出站消息，自动生成 UUID 并填充默认值
 pub fn make_outbound(input: MakeOutbound) -> OutboundMessage {
     OutboundMessage {
         id: Uuid::new_v4().to_string(),
@@ -54,6 +68,7 @@ pub fn make_outbound(input: MakeOutbound) -> OutboundMessage {
     }
 }
 
+/// 入站消息的构建参数
 #[derive(Debug, Default)]
 pub struct MakeInbound {
     pub channel: String,
@@ -65,6 +80,7 @@ pub struct MakeInbound {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// 出站消息的构建参数
 #[derive(Debug, Default)]
 pub struct MakeOutbound {
     pub channel: String,
@@ -77,8 +93,9 @@ pub struct MakeOutbound {
     pub sender_id: Option<String>,
 }
 
-// ── Internal Bus Messages ──────────────────────────────────────────
+// ── 内部总线消息 ──────────────────────────────────────────────────
 
+/// 内部消息类型：区分请求/响应/事件三种通信模式
 #[derive(Debug, Clone, PartialEq)]
 #[derive(Default)]
 pub enum InternalMessageType {
@@ -89,6 +106,10 @@ pub enum InternalMessageType {
 }
 
 
+/// 内部消息：组件间通信的载体
+///
+/// 支持 trace_id 进行分布式追踪，priority 控制处理优先级，
+/// ttl 防止过期消息堆积。
 #[derive(Debug, Clone, PartialEq)]
 pub struct InternalMessage {
     pub id: String,
@@ -103,6 +124,7 @@ pub struct InternalMessage {
     pub ttl: u64,
 }
 
+/// 内部消息的构建参数
 #[derive(Debug, Default)]
 pub struct MakeInternal {
     pub source: String,
@@ -115,6 +137,7 @@ pub struct MakeInternal {
     pub trace_id: Option<String>,
 }
 
+/// 构建内部消息，自动生成 ID/trace_id/时间戳，默认优先级 5，默认 TTL 30 秒
 pub fn make_internal(input: MakeInternal) -> InternalMessage {
     InternalMessage {
         id: Uuid::new_v4().to_string(),
@@ -132,8 +155,9 @@ pub fn make_internal(input: MakeInternal) -> InternalMessage {
     }
 }
 
-// ── Control Bus Messages ───────────────────────────────────────────
+// ── 控制总线消息 ──────────────────────────────────────────────────
 
+/// 控制信号类型：用于系统生命周期管理
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlSignal {
     Shutdown,
@@ -145,6 +169,7 @@ pub enum ControlSignal {
     ConfigReload,
 }
 
+/// 控制消息：携带控制信号和可选的附加数据
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlMessage {
     pub id: String,
@@ -154,6 +179,7 @@ pub struct ControlMessage {
     pub timestamp: u64,
 }
 
+/// 控制消息的构建参数
 #[derive(Debug)]
 pub struct MakeControl {
     pub signal: ControlSignal,
@@ -161,6 +187,7 @@ pub struct MakeControl {
     pub payload: Option<serde_json::Value>,
 }
 
+/// 构建控制消息
 pub fn make_control(input: MakeControl) -> ControlMessage {
     ControlMessage {
         id: Uuid::new_v4().to_string(),

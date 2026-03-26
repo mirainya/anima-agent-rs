@@ -1,3 +1,16 @@
+//! # 核心智能体模块
+//!
+//! 本模块定义了 Anima 运行时的核心智能体架构，分为两层：
+//! - `Agent`：对外门面，提供简洁的创建/启停/消息投递接口
+//! - `CoreAgent`：内部引擎，负责消息循环、会话管理、任务编排、缓存和指标采集
+//!
+//! 消息处理流程：
+//! 1. 入站消息通过 Bus 到达 CoreAgent 的消息循环
+//! 2. 确保会话上下文存在（ensure_context），获取或创建 SDK 会话
+//! 3. AgentClassifier 对消息进行分类，生成执行计划（direct / single / multi-step）
+//! 4. AgentOrchestrator 将计划分发给 WorkerPool 执行
+//! 5. 结果经 extract_response_text 提取后，通过 Bus 发送出站消息
+
 use anima_sdk::facade::Client as SdkClient;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -19,6 +32,7 @@ use crate::bus::{ControlSignal};
 use crate::channel::SessionStore;
 use crate::support::{make_api_cache_key, now_ms, ContextManager, LruCache, MetricsCollector};
 
+/// 单个会话的上下文信息，包含 SDK 会话 ID 和对话历史
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionContext {
     pub session_id: Option<String>,
@@ -27,9 +41,13 @@ pub struct SessionContext {
     pub history: Vec<Value>,
 }
 
+/// 内存中最多保留的会话数，超出时淘汰最早的会话
 const MAX_SESSIONS: usize = 1000;
+/// 每个会话最多保留的历史消息条数
 const MAX_SESSION_HISTORY: usize = 200;
 
+/// 核心智能体，承载消息循环、会话管理、任务调度等核心逻辑。
+/// 通过 Bus 接收入站消息，经分类和编排后交由 WorkerPool 执行。
 pub struct CoreAgent {
     bus: Arc<Bus>,
     _client: SdkClient,
@@ -44,6 +62,7 @@ pub struct CoreAgent {
     control_handle: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
+/// CoreAgent 的运行状态快照，用于健康检查和监控
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoreAgentStatus {
     pub status: String,
@@ -55,6 +74,7 @@ pub struct CoreAgentStatus {
 }
 
 impl CoreAgent {
+    /// 创建 CoreAgent，初始化 WorkerPool、缓存、指标采集器等组件
     pub fn new(
         bus: Arc<Bus>,
         client: SdkClient,
@@ -79,6 +99,9 @@ impl CoreAgent {
         }
     }
 
+    /// 启动智能体：启动 WorkerPool，并创建两个后台线程：
+    /// 1. 控制信号监听线程（处理 Shutdown / Pause / Resume）
+    /// 2. 入站消息循环线程（从 Bus 接收并处理消息）
     pub fn start(self: &Arc<Self>) {
         if self.running.swap(true, Ordering::SeqCst) {
             return;
@@ -134,6 +157,7 @@ impl CoreAgent {
         *self.control_handle.lock() = Some(ctrl_handle);
     }
 
+    /// 停止智能体，关闭 WorkerPool 并等待后台线程退出
     pub fn stop(&self) {
         if !self.running.swap(false, Ordering::SeqCst) {
             return;
@@ -167,6 +191,8 @@ impl CoreAgent {
         }
     }
 
+    /// 处理一条入站消息的完整流程：
+    /// 上下文初始化 → 获取/创建 SDK 会话 → 分类 → 缓存检查 → 编排执行 → 发送响应
     pub fn process_inbound_message(&self, inbound_msg: InboundMessage) {
         let started = now_ms();
         self.metrics.counter_inc("messages_received");
@@ -192,6 +218,7 @@ impl CoreAgent {
             return;
         };
 
+        // 分类消息：direct 类型直接响应，无需走 Worker
         let plan = AgentClassifier::build_plan(&inbound_msg);
         if plan.plan_type == "direct" {
             self.metrics.counter_inc("messages_processed");
@@ -201,6 +228,7 @@ impl CoreAgent {
             return;
         }
 
+        // single 类型先查缓存，命中则直接返回；multi-step 类型不走缓存
         let cache_key = make_api_cache_key(&opencode_session_id, &inbound_msg.content);
         let result = if plan.plan_type == "single" {
             if let Some(cached) = self.result_cache.get(&cache_key) {
@@ -269,6 +297,7 @@ impl CoreAgent {
         }
     }
 
+    /// 获取已有的 SDK 会话 ID，若不存在则通过 WorkerPool 创建新会话
     fn get_or_create_opencode_session(
         &self,
         inbound_msg: &InboundMessage,
@@ -308,6 +337,8 @@ impl CoreAgent {
         Some(session_id)
     }
 
+    /// 确保消息对应的会话上下文存在。
+    /// 若内存中会话数达到上限，淘汰最早插入的会话（LRU 策略）。
     fn ensure_context(&self, inbound_msg: &InboundMessage, key: &str) {
         let chat_id = inbound_msg
             .chat_id
@@ -344,6 +375,7 @@ impl CoreAgent {
         );
     }
 
+    /// 追加消息到会话历史，超过上限时裁剪最早的记录
     fn append_history(&self, key: &str, message: Value) {
         if let Some(ctx) = self.memory.lock().get_mut(key) {
             ctx.history.push(message);
@@ -390,6 +422,9 @@ impl CoreAgent {
     }
 }
 
+/// 对外门面智能体，封装 CoreAgent 提供简洁的公共 API。
+/// 使用者通过 Agent::create 创建实例，调用 start/stop 控制生命周期，
+/// 通过 process_message 投递消息。
 pub struct Agent {
     pub bus: Arc<Bus>,
     pub opencode_client: SdkClient,
@@ -398,6 +433,7 @@ pub struct Agent {
     core_agent: Arc<CoreAgent>,
 }
 
+/// Agent 的运行状态快照
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentStatus {
     pub running: bool,
@@ -405,6 +441,9 @@ pub struct AgentStatus {
 }
 
 impl Agent {
+    /// 创建 Agent 实例，各参数均可选，使用合理默认值：
+    /// - client: 默认连接 127.0.0.1:9711
+    /// - executor: 默认使用 SdkTaskExecutor
     pub fn create(
         bus: Arc<Bus>,
         client: Option<SdkClient>,
@@ -444,6 +483,7 @@ impl Agent {
         self.running.load(Ordering::SeqCst)
     }
 
+    /// 将消息投递到 Bus，由 CoreAgent 的消息循环异步处理
     pub fn process_message(&self, inbound_msg: InboundMessage) {
         let _ = self.bus.publish_inbound(inbound_msg);
     }
@@ -464,6 +504,7 @@ impl Agent {
     }
 }
 
+/// 生成会话内存的 key，格式为 "channel:chat_id"
 fn memory_key(inbound_msg: &InboundMessage) -> String {
     format!(
         "{}:{}",
@@ -475,6 +516,13 @@ fn memory_key(inbound_msg: &InboundMessage) -> String {
     )
 }
 
+/// 从 SDK 响应中提取文本内容。
+/// 支持多种响应格式，按优先级依次尝试：
+/// 1. parts 数组（含 reasoning + text 分区）
+/// 2. data.messages 嵌套结构
+/// 3. content 字符串字段
+/// 4. 直接字符串值
+/// 5. 兜底：序列化为 JSON 字符串
 fn extract_response_text(response: Option<&Value>) -> String {
     let Some(response) = response else {
         return String::new();

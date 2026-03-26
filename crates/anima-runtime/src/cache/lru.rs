@@ -1,8 +1,19 @@
+//! LRU（最近最少使用）缓存模块
+//!
+//! 提供基于 LRU 淘汰策略的键值缓存，支持：
+//! - 可选的 TTL 过期机制
+//! - 自动淘汰最久未访问的条目
+//! - 缓存命中率统计
+//! - 多种缓存键生成工具函数（API/任务/会话）
+//!
+//! 内部使用 IndexMap 保持插入顺序，配合独立的 access_order 向量追踪访问顺序。
+
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use crate::support::now_ms;
 
+/// 缓存条目，存储值及其元数据（创建时间、访问次数、TTL 等）
 #[derive(Debug, Clone, PartialEq)]
 pub struct CacheEntry {
     pub key: String,
@@ -15,6 +26,7 @@ pub struct CacheEntry {
     pub metadata: Value,
 }
 
+/// 缓存统计信息
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CacheStats {
     pub hits: u64,
@@ -26,13 +38,22 @@ pub struct CacheStats {
     pub hit_rate: f64,
 }
 
+/// 淘汰策略 trait：定义缓存满时如何选择被淘汰的条目
 pub trait EvictionPolicy: Send + Sync {
+    /// 选择一个待淘汰的 key
     fn select_for_eviction(&self) -> Option<String>;
+    /// 通知策略某个 key 被访问了（用于更新访问顺序）
     fn on_access(&mut self, key: &str);
+    /// 通知策略某个 key 被写入了
     fn on_set(&mut self, key: &str);
+    /// 通知策略某个 key 被删除了
     fn on_delete(&mut self, key: &str);
 }
 
+/// LRU 淘汰策略实现
+///
+/// 通过维护一个访问顺序向量来追踪 key 的使用情况，
+/// 向量头部是最久未访问的 key，尾部是最近访问的。
 #[derive(Debug)]
 pub struct LruEvictionPolicy {
     access_order: Vec<String>,
@@ -53,6 +74,7 @@ impl Default for LruEvictionPolicy {
 }
 
 impl EvictionPolicy for LruEvictionPolicy {
+    /// 淘汰最久未访问的 key（向量头部）
     fn select_for_eviction(&self) -> Option<String> {
         self.access_order.first().cloned()
     }
@@ -72,6 +94,10 @@ impl EvictionPolicy for LruEvictionPolicy {
     }
 }
 
+/// LRU 缓存
+///
+/// 线程安全的 LRU 缓存实现，支持 TTL 过期和容量上限淘汰。
+/// 使用 parking_lot::Mutex 保证并发安全。
 #[derive(Debug)]
 pub struct LruCache {
     entries: Mutex<IndexMap<String, CacheEntry>>,
@@ -92,6 +118,7 @@ impl LruCache {
         }
     }
 
+    /// 读取缓存，自动处理过期淘汰和访问顺序更新
     pub fn get(&self, key: &str) -> Option<Value> {
         let mut entries = self.entries.lock();
         let expired = entries
@@ -125,7 +152,9 @@ impl LruCache {
         value
     }
 
+    /// 写入缓存，容量满时自动淘汰最久未访问的条目
     pub fn set(&self, key: &str, value: Value, ttl_ms: Option<u64>) -> Value {
+        // 容量已满且不是更新已有 key 时，循环淘汰直到有空间
         loop {
             let entries = self.entries.lock();
             if entries.len() < self.max_entries || entries.contains_key(key) {
@@ -168,6 +197,7 @@ impl LruCache {
         deleted
     }
 
+    /// 缓存穿透保护：命中则返回缓存值，未命中则计算并写入
     pub fn get_or_compute<F>(&self, key: &str, compute_fn: F) -> Value
     where
         F: FnOnce() -> Value,
@@ -195,14 +225,19 @@ impl LruCache {
     }
 }
 
+// ── 缓存键生成工具函数 ───────────────────────────────────────────
+
+/// 生成 API 调用的缓存键（基于会话 ID 和内容哈希）
 pub fn make_api_cache_key(session_id: &str, content: &str) -> String {
     format!("api:{session_id}:{}", stable_hash(content))
 }
 
+/// 生成任务的缓存键（基于任务类型和负载哈希）
 pub fn make_task_cache_key(task_type: &str, payload: &str) -> String {
     format!("task:{task_type}:{}", stable_hash(payload))
 }
 
+/// 生成会话数据的缓存键
 pub fn make_session_cache_key(session_id: &str, data_type: &str) -> String {
     format!("session:{session_id}:{}", stable_hash(data_type))
 }
@@ -214,6 +249,7 @@ fn is_cache_entry_expired(entry: &CacheEntry) -> bool {
     }
 }
 
+/// 粗略估算 JSON 值的内存占用（字节数）
 fn estimate_size(value: &Value) -> usize {
     match value {
         Value::Null => 0,
@@ -225,6 +261,7 @@ fn estimate_size(value: &Value) -> usize {
     }
 }
 
+/// FNV-1a 哈希：用于生成稳定的缓存键，避免直接暴露原始内容
 fn stable_hash(input: &str) -> u64 {
     let mut hash = 1469598103934665603u64;
     for byte in input.as_bytes() {

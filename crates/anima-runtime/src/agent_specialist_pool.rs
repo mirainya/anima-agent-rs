@@ -1,3 +1,12 @@
+//! 专家池模块
+//!
+//! 管理一组具有不同能力（capability）的"专家"（Specialist），
+//! 根据任务类型将任务路由到匹配的专家执行。核心概念：
+//! - 每个专家拥有一组能力标签和独立的 WorkerPool
+//! - 支持三种负载均衡策略：最少负载、轮询、随机
+//! - 找不到匹配专家时可回退到默认 WorkerPool
+//! - 同时保留了旧版 name→pool 的简单映射接口（向后兼容）
+
 use crate::agent_types::{make_task_result, MakeTaskResult, Task, TaskResult};
 use crate::agent_worker::WorkerPool;
 use indexmap::IndexMap;
@@ -10,6 +19,7 @@ use uuid::Uuid;
 // Enums
 // ---------------------------------------------------------------------------
 
+/// 专家状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecialistStatus {
     Active,
@@ -17,10 +27,14 @@ pub enum SpecialistStatus {
     Overloaded,
 }
 
+/// 负载均衡策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadBalanceStrategy {
+    /// 选择当前负载最低的专家
     LeastLoaded,
+    /// 按顺序轮流分配
     RoundRobin,
+    /// 基于计数器的伪随机分配
     Random,
 }
 
@@ -34,6 +48,7 @@ impl Default for LoadBalanceStrategy {
 // Metrics structs
 // ---------------------------------------------------------------------------
 
+/// 单个专家的运行时指标（原子计数器，线程安全）
 #[derive(Debug, Default)]
 pub struct SpecialistMetrics {
     pub tasks_completed: AtomicU64,
@@ -41,6 +56,7 @@ pub struct SpecialistMetrics {
     pub total_duration_ms: AtomicU64,
 }
 
+/// 专家池级别的汇总指标
 #[derive(Debug, Clone, Default)]
 pub struct SpecialistPoolMetrics {
     pub total_tasks: u64,
@@ -54,6 +70,7 @@ pub struct SpecialistPoolMetrics {
 // Specialist
 // ---------------------------------------------------------------------------
 
+/// 专家实例：持有独立的 WorkerPool、能力列表和运行时指标
 pub struct Specialist {
     pub id: String,
     pub name: String,
@@ -70,6 +87,7 @@ pub struct Specialist {
 // SpecialistInfo — cloneable snapshot
 // ---------------------------------------------------------------------------
 
+/// 专家信息的可克隆快照，用于对外查询（避免暴露内部锁）
 #[derive(Debug, Clone)]
 pub struct SpecialistInfo {
     pub id: String,
@@ -99,6 +117,7 @@ impl Specialist {
 // Config & registration options
 // ---------------------------------------------------------------------------
 
+/// 专家池配置
 #[derive(Debug, Clone)]
 pub struct SpecialistPoolConfig {
     pub default_timeout_ms: u64,
@@ -118,6 +137,7 @@ impl Default for SpecialistPoolConfig {
     }
 }
 
+/// 注册专家时的参数
 pub struct RegisterSpecialistOpts {
     pub id: String,
     pub name: String,
@@ -131,6 +151,11 @@ pub struct RegisterSpecialistOpts {
 // SpecialistPool
 // ---------------------------------------------------------------------------
 
+/// 专家池：管理专家注册、能力索引和任务路由
+///
+/// 内部维护两套注册机制：
+/// - `specialists`：旧版 name→WorkerPool 映射（向后兼容）
+/// - `specialist_registry` + `capabilities`：新版基于能力的路由
 pub struct SpecialistPool {
     default_pool: Arc<WorkerPool>,
     config: SpecialistPoolConfig,
@@ -180,6 +205,7 @@ impl SpecialistPool {
     // Legacy backward-compatible methods
     // -----------------------------------------------------------------------
 
+    /// 旧版注册：按名称关联一个 WorkerPool
     pub fn register(&self, specialist: impl Into<String>, worker_pool: Arc<WorkerPool>) {
         self.specialists
             .lock()
@@ -187,6 +213,7 @@ impl SpecialistPool {
             .insert(specialist.into(), worker_pool);
     }
 
+    /// 旧版解析：按名称查找 WorkerPool，找不到则返回默认池
     pub fn resolve(&self, specialist: &str) -> Arc<WorkerPool> {
         self.specialists
             .lock()
@@ -196,6 +223,7 @@ impl SpecialistPool {
             .unwrap_or_else(|| self.default_pool.clone())
     }
 
+    /// 旧版执行：通过名称路由任务到对应的 WorkerPool
     pub fn execute(&self, specialist: &str, task: Task) -> TaskResult {
         let pool = self.resolve(specialist);
         let rx = pool.submit_task(task.clone());
@@ -233,6 +261,7 @@ impl SpecialistPool {
     // New specialist registry methods
     // -----------------------------------------------------------------------
 
+    /// 注册新专家并建立能力索引
     pub fn register_specialist(&self, opts: RegisterSpecialistOpts) {
         let specialist = Arc::new(Specialist {
             id: opts.id.clone(),
@@ -260,6 +289,10 @@ impl SpecialistPool {
         }
     }
 
+    /// 注销专家并清理能力索引
+    ///
+    /// 锁顺序：先获取 registry 读取能力列表并释放，再锁 capabilities 清理索引，
+    /// 最后再锁 registry 执行删除。这个顺序与 pick_specialist_for 一致，避免 ABBA 死锁。
     pub fn unregister_specialist(&self, id: &str) -> bool {
         // Step 1: lock registry to retrieve the specialist and clone its
         // capabilities, then immediately drop the registry lock.
@@ -333,6 +366,7 @@ impl SpecialistPool {
         self.capabilities.lock().unwrap().keys().cloned().collect()
     }
 
+    /// 为专家动态添加能力标签
     pub fn add_capability(&self, specialist_id: &str, capability: &str) {
         let registry = self.specialist_registry.lock().unwrap();
         if let Some(specialist) = registry.get(specialist_id) {
@@ -354,6 +388,7 @@ impl SpecialistPool {
         }
     }
 
+    /// 移除专家的某个能力标签
     pub fn remove_capability(&self, specialist_id: &str, capability: &str) {
         let registry = self.specialist_registry.lock().unwrap();
         if let Some(specialist) = registry.get(specialist_id) {
@@ -375,6 +410,9 @@ impl SpecialistPool {
     // Routing
     // -----------------------------------------------------------------------
 
+    /// 基于能力的任务路由：按 task_type 查找匹配专家，找不到则回退到默认池
+    ///
+    /// 执行流程：查找专家 → 跟踪负载 → 提交任务 → 更新指标
     pub fn route_task(&self, task: Task) -> TaskResult {
         self.pool_total_tasks.fetch_add(1, Ordering::SeqCst);
 
@@ -444,13 +482,14 @@ impl SpecialistPool {
         result
     }
 
-    /// Pick a specialist for the given capability using the configured strategy.
+    /// 根据配置的负载均衡策略，从匹配能力的活跃专家中选择一个
     fn pick_specialist_for(&self, capability: &str) -> Option<Arc<Specialist>> {
         let caps = self.capabilities.lock().unwrap();
         let ids = caps.get(capability)?;
         if ids.is_empty() {
             return None;
         }
+        // 先克隆 ids 再释放 capabilities 锁，避免与 registry 锁交叉持有
         let ids = ids.clone();
         drop(caps);
 
@@ -479,7 +518,7 @@ impl SpecialistPool {
                 Some(candidates[i].clone())
             }
             LoadBalanceStrategy::Random => {
-                // Simple deterministic hash based on counter to avoid extra deps
+                // 用 LCG 常数做简单哈希散列，避免引入额外随机数依赖
                 let idx = self.round_robin_counter.fetch_add(1, Ordering::SeqCst);
                 let hash = idx.wrapping_mul(6364136223846793005).wrapping_add(1);
                 let i = (hash as usize) % candidates.len();

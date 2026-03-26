@@ -1,3 +1,12 @@
+//! 上下文存储模块
+//!
+//! 实现两级存储架构（L1 内存 + L2 文件），用于管理 Agent 运行时的上下文数据。
+//! - L1（`MemoryStorage`）：基于 LRU 淘汰策略的内存存储，访问速度快
+//! - L2（`FileStorage`）：基于文件系统的持久化存储，容量大但速度慢
+//! - `TieredStorage`：组合 L1/L2，自动根据访问频率进行数据升降级（promote/demote）
+//!
+//! 所有条目支持 TTL 过期机制。
+
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -5,6 +14,7 @@ use crate::support::now_ms;
 
 // ── Context Entry ───────────────────────────────────────────────────
 
+/// 上下文条目，存储键值对及其元数据（层级、访问统计、TTL 等）
 #[derive(Debug, Clone)]
 pub struct ContextEntry {
     pub key: String,
@@ -18,6 +28,7 @@ pub struct ContextEntry {
 }
 
 impl ContextEntry {
+    /// 判断条目是否已过期（基于 TTL）
     pub fn is_expired(&self) -> bool {
         match self.ttl_ms {
             Some(ttl) => now_ms().saturating_sub(self.created_at_ms) > ttl,
@@ -26,14 +37,18 @@ impl ContextEntry {
     }
 }
 
+/// 存储层级标识
 #[derive(Debug, Clone, PartialEq)]
 pub enum StorageTier {
+    /// L1 内存层
     L1,
+    /// L2 文件层
     L2,
 }
 
 // ── Storage Trait ───────────────────────────────────────────────────
 
+/// 上下文存储的统一接口，L1 和 L2 都实现此 trait
 pub trait ContextStorage: Send + Sync {
     fn get_entry(&self, key: &str) -> Option<ContextEntry>;
     fn set_entry(&self, key: &str, value: Value, opts: EntryOpts) -> ContextEntry;
@@ -44,6 +59,7 @@ pub trait ContextStorage: Send + Sync {
     fn entry_count(&self) -> usize;
 }
 
+/// 条目写入选项
 #[derive(Debug, Clone, Default)]
 pub struct EntryOpts {
     pub ttl_ms: Option<u64>,
@@ -52,6 +68,10 @@ pub struct EntryOpts {
 
 // ── L1 Memory Storage ───────────────────────────────────────────────
 
+/// L1 内存存储，基于 LRU 淘汰策略
+///
+/// 使用 IndexMap 保持插入顺序，配合 lru_order 向量实现 LRU 追踪。
+/// 达到容量上限时自动淘汰最久未访问的条目。
 pub struct MemoryStorage {
     entries: Mutex<IndexMap<String, ContextEntry>>,
     lru_order: Mutex<Vec<String>>,
@@ -67,12 +87,14 @@ impl MemoryStorage {
         }
     }
 
+    /// 将 key 移到 LRU 队列末尾（标记为最近访问）
     fn touch_lru(&self, key: &str) {
         let mut order = self.lru_order.lock();
         order.retain(|k| k != key);
         order.push(key.to_string());
     }
 
+    /// 淘汰 LRU 队列头部（最久未访问）的条目
     fn evict_lru(&self) {
         let mut entries = self.entries.lock();
         let mut order = self.lru_order.lock();
@@ -162,6 +184,10 @@ impl ContextStorage for MemoryStorage {
 
 // ── L2 File Storage ─────────────────────────────────────────────────
 
+/// L2 文件存储，将上下文条目持久化为 JSON 文件
+///
+/// 每个 key 对应一个 JSON 文件，文件名通过特殊字符转义避免路径冲突。
+/// 维护内存中的元数据缓存以加速查询。
 pub struct FileStorage {
     base_path: String,
     metadata_cache: Mutex<IndexMap<String, ContextEntry>>,
@@ -177,6 +203,7 @@ impl FileStorage {
         }
     }
 
+    /// 将 key 中的特殊字符转义为安全的文件名
     fn key_to_filename(key: &str) -> String {
         key.replace('/', "_SLASH_")
             .replace('\\', "_BSLASH_")
@@ -341,8 +368,11 @@ impl ContextStorage for FileStorage {
 
 // ── Tiered Storage Trait ────────────────────────────────────────────
 
+/// 分层存储行为 trait，定义数据在 L1/L2 之间的升降级策略
 pub trait TieredStorageTrait: Send + Sync {
+    /// 将数据从 L2 提升到 L1（热数据升级）
     fn promote(&self, key: &str) -> bool;
+    /// 将数据从 L1 降级到 L2（冷数据降级）
     fn demote(&self, key: &str) -> bool;
     fn get_tier(&self, key: &str) -> Option<StorageTier>;
     fn should_promote(&self, entry: &ContextEntry) -> bool;
@@ -351,6 +381,11 @@ pub trait TieredStorageTrait: Send + Sync {
 
 // ── Tiered Storage ──────────────────────────────────────────────────
 
+/// 两级存储实现，组合 L1 内存存储和可选的 L2 文件存储
+///
+/// 读取时先查 L1 再查 L2，写入时同时写入两层。
+/// 根据访问频率自动升级（promote）热数据到 L1，
+/// 根据空闲时间自动降级（demote）冷数据到 L2。
 pub struct TieredStorage {
     pub l1: MemoryStorage,
     pub l2: Option<FileStorage>,
@@ -360,6 +395,7 @@ pub struct TieredStorage {
     demotions: Mutex<u64>,
 }
 
+/// 分层存储配置
 #[derive(Debug, Clone, Default)]
 pub struct TieredStorageConfig {
     pub l1_max_entries: Option<usize>,
@@ -434,6 +470,7 @@ impl TieredStorage {
     }
 
     /// Demote cold entries from L1 to L2.
+    /// 扫描 L1 中的冷数据并批量降级到 L2
     pub fn demote_cold_entries(&self) -> usize {
         let threshold_ms = self.demotion_threshold_ms;
         let now = now_ms();
@@ -544,6 +581,7 @@ impl TieredStorageTrait for TieredStorage {
     }
 }
 
+/// 估算 JSON 值的内存占用大小（字节），用于存储统计
 fn estimate_size(value: &Value) -> usize {
     match value {
         Value::Null => 0,

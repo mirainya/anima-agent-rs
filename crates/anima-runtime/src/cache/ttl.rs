@@ -1,10 +1,19 @@
+//! TTL（生存时间）缓存模块
+//!
+//! 提供基于过期时间的键值缓存，每个条目都有独立的 TTL。
+//! 与 LRU 缓存不同，TTL 缓存的淘汰策略纯粹基于时间：
+//! - 读取时自动检测并清除过期条目
+//! - 支持批量清理过期条目（purge_expired）
+//! - 容量满时优先淘汰剩余 TTL 最短的条目
+
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::Value;
 use crate::support::now_ms;
 
-// ── TTL Cache Entry ─────────────────────────────────────────────────
+// ── TTL 缓存条目 ─────────────────────────────────────────────────
 
+/// 缓存条目，记录值及其生命周期信息
 #[derive(Debug, Clone)]
 pub struct TtlEntry {
     pub key: String,
@@ -27,8 +36,9 @@ impl TtlEntry {
     }
 }
 
-// ── Stats ───────────────────────────────────────────────────────────
+// ── 统计信息 ─────────────────────────────────────────────────────
 
+/// TTL 缓存的运行统计
 #[derive(Debug, Clone, Default)]
 pub struct TtlCacheStats {
     pub hits: u64,
@@ -51,8 +61,12 @@ impl TtlCacheStats {
     }
 }
 
-// ── TTL Cache ───────────────────────────────────────────────────────
+// ── TTL 缓存 ─────────────────────────────────────────────────────
 
+/// 基于过期时间的缓存
+///
+/// 线程安全，默认 TTL 5 分钟，最大容量 5000 条。
+/// 容量满时淘汰剩余 TTL 最短的条目。
 #[derive(Debug)]
 pub struct TtlCache {
     entries: Mutex<IndexMap<String, TtlEntry>>,
@@ -71,9 +85,10 @@ impl TtlCache {
         }
     }
 
+    /// 读取缓存，过期条目会被自动清除并计入 miss
     pub fn get(&self, key: &str) -> Option<Value> {
         let mut entries = self.entries.lock();
-        // Check expiration
+        // 先检查是否过期，过期则立即移除
         if let Some(entry) = entries.get(key) {
             if entry.is_expired() {
                 entries.shift_remove(key);
@@ -83,7 +98,7 @@ impl TtlCache {
                 return None;
             }
         }
-        // Get and update access info
+        // 未过期则更新访问信息并返回
         if let Some(entry) = entries.get_mut(key) {
             entry.access_count += 1;
             entry.accessed_at_ms = now_ms();
@@ -96,13 +111,14 @@ impl TtlCache {
         }
     }
 
+    /// 写入缓存，容量满时先尝试清理过期条目，仍不够则淘汰最早创建的条目
     pub fn set(&self, key: &str, value: Value, ttl_ms: Option<u64>) -> Value {
         let ttl = ttl_ms.unwrap_or(self.default_ttl_ms);
         let mut entries = self.entries.lock();
 
-        // Evict if at capacity
+        // 容量已满且不是更新已有 key 时，需要腾出空间
         if entries.len() >= self.max_entries && !entries.contains_key(key) {
-            // First try to remove expired entries
+            // 优先批量清理过期条目（最多 10 个，避免单次清理耗时过长）
             let expired_keys: Vec<String> = entries
                 .iter()
                 .filter(|(_, e)| e.is_expired())
@@ -116,7 +132,7 @@ impl TtlCache {
                 }
                 self.stats.lock().expirations += expired_keys.len() as u64;
             } else {
-                // Remove oldest entry
+                // 没有过期条目可清理，则淘汰创建时间最早的条目
                 if let Some((oldest_key, _)) = entries
                     .iter()
                     .min_by_key(|(_, e)| e.created_at_ms)
@@ -147,6 +163,7 @@ impl TtlCache {
         self.entries.lock().shift_remove(key).is_some()
     }
 
+    /// 检查 key 是否存在且未过期
     pub fn has(&self, key: &str) -> bool {
         let entries = self.entries.lock();
         entries
@@ -155,6 +172,7 @@ impl TtlCache {
             .unwrap_or(false)
     }
 
+    /// 缓存穿透保护：命中则返回缓存值，未命中则计算并以默认 TTL 写入
     pub fn get_or_compute<F>(&self, key: &str, compute_fn: F) -> Value
     where
         F: FnOnce() -> Value,
@@ -167,6 +185,7 @@ impl TtlCache {
         value
     }
 
+    /// 同 get_or_compute，但允许指定自定义 TTL
     pub fn get_or_compute_with_ttl<F>(&self, key: &str, ttl_ms: u64, compute_fn: F) -> Value
     where
         F: FnOnce() -> Value,
@@ -179,11 +198,12 @@ impl TtlCache {
         value
     }
 
+    /// 查询指定 key 的剩余存活时间（毫秒）
     pub fn remaining_ttl(&self, key: &str) -> Option<u64> {
         self.entries.lock().get(key).map(|e| e.remaining_ttl())
     }
 
-    /// Remove all expired entries. Returns count of removed entries.
+    /// 批量清理所有过期条目，返回清理数量。适合定时任务调用。
     pub fn cleanup_expired(&self) -> usize {
         let mut entries = self.entries.lock();
         let expired_keys: Vec<String> = entries
@@ -220,6 +240,7 @@ impl TtlCache {
     }
 }
 
+/// 粗略估算 JSON 值的内存占用（字节数）
 fn estimate_size(value: &Value) -> usize {
     match value {
         Value::Null => 0,

@@ -1,13 +1,27 @@
+//! 熔断器模块
+//!
+//! 实现经典的三态熔断器模式（Closed → Open → HalfOpen → Closed），
+//! 用于保护下游服务免受级联故障影响。
+//!
+//! 状态转换规则：
+//! - Closed（正常）：连续失败达到阈值 → Open
+//! - Open（熔断）：超时后 → HalfOpen
+//! - HalfOpen（试探）：连续成功达到阈值 → Closed，任意失败 → Open
+
 use crate::support::now_ms;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
 // ── Circuit Breaker States ──────────────────────────────────────────
 
+/// 熔断器状态
 #[derive(Debug, Clone, PartialEq)]
 pub enum CircuitState {
+    /// 正常放行请求
     Closed,
+    /// 熔断中，拒绝所有请求
     Open,
+    /// 半开状态，允许有限请求通过以试探恢复
     HalfOpen,
 }
 
@@ -23,11 +37,16 @@ impl CircuitState {
 
 // ── Configuration ───────────────────────────────────────────────────
 
+/// 熔断器配置参数
 #[derive(Debug, Clone)]
 pub struct CircuitBreakerConfig {
+    /// 触发熔断的连续失败次数
     pub failure_threshold: u64,
+    /// 从 HalfOpen 恢复到 Closed 所需的连续成功次数
     pub success_threshold: u64,
+    /// Open 状态持续时间（毫秒），超时后进入 HalfOpen
     pub timeout_ms: u64,
+    /// HalfOpen 状态下允许通过的最大请求数
     pub half_open_max_calls: u64,
 }
 
@@ -44,6 +63,7 @@ impl Default for CircuitBreakerConfig {
 
 // ── Stats ───────────────────────────────────────────────────────────
 
+/// 熔断器运行统计
 #[derive(Debug, Clone, Default)]
 pub struct CircuitBreakerStats {
     pub total_failures: u64,
@@ -56,15 +76,22 @@ pub struct CircuitBreakerStats {
 
 // ── Result type ─────────────────────────────────────────────────────
 
+/// 熔断器执行结果
 #[derive(Debug)]
 pub enum CircuitBreakerResult<T> {
+    /// 执行成功
     Ok(T),
+    /// 请求被熔断器拒绝（附带建议的重试等待时间）
     Rejected { retry_after_ms: Option<u64> },
+    /// 执行失败
     Failed(String),
 }
 
 // ── Circuit Breaker ─────────────────────────────────────────────────
 
+/// 熔断器核心实现
+///
+/// 线程安全（内部使用 parking_lot::Mutex），可在多线程环境下共享使用。
 pub struct CircuitBreaker {
     pub id: String,
     state: Mutex<CircuitState>,
@@ -109,6 +136,8 @@ impl CircuitBreaker {
         *self.state.lock() == CircuitState::HalfOpen
     }
 
+    /// 判断当前是否允许请求通过
+    /// HalfOpen 状态下受 half_open_max_calls 限制
     pub fn allows_request(&self) -> bool {
         let state = self.state.lock();
         match *state {
@@ -122,6 +151,7 @@ impl CircuitBreaker {
 
     // ── State transitions ───────────────────────────────────────
 
+    /// 校验状态转换是否合法，防止非法跳转
     fn valid_transition(from: &CircuitState, to: &CircuitState) -> bool {
         matches!(
             (from, to),
@@ -142,6 +172,7 @@ impl CircuitBreaker {
         }
     }
 
+    /// 检查 Open 状态是否已超时，超时则转入 HalfOpen 进行试探
     fn check_timeout(&self) {
         let state = self.state.lock().clone();
         if state != CircuitState::Open {
@@ -158,6 +189,8 @@ impl CircuitBreaker {
         }
     }
 
+    /// 记录一次失败
+    /// Closed 状态下累计失败达阈值则熔断；HalfOpen 状态下任何失败立即重新熔断
     fn record_failure(&self, _error: &str) {
         let state = self.state.lock().clone();
         {
@@ -188,6 +221,8 @@ impl CircuitBreaker {
         }
     }
 
+    /// 记录一次成功
+    /// Closed 状态下重置失败计数；HalfOpen 状态下累计成功达阈值则恢复
     fn record_success(&self) {
         let state = self.state.lock().clone();
         {
@@ -218,6 +253,8 @@ impl CircuitBreaker {
 
     // ── Main API ────────────────────────────────────────────────
 
+    /// 在熔断器保护下执行闭包
+    /// 自动处理超时检查、请求放行判断、成功/失败记录
     /// Execute a function with circuit breaker protection.
     pub fn execute<T, F>(&self, f: F) -> CircuitBreakerResult<T>
     where
@@ -278,6 +315,7 @@ impl CircuitBreaker {
     }
 }
 
+/// 熔断器状态快照，用于外部监控和诊断
 #[derive(Debug, Clone)]
 pub struct CircuitBreakerStatus {
     pub id: String,
