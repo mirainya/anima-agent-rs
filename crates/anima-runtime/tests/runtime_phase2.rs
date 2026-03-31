@@ -465,7 +465,12 @@ fn outbound_dispatch_loop_tracks_channel_not_found_and_send_errors() {
     .unwrap();
 
     for _ in 0..20 {
-        if ok_channel.sent_messages().len() == 1 {
+        let snapshot = stats.snapshot();
+        if ok_channel.sent_messages().len() == 1
+            && snapshot.dispatched == 1
+            && snapshot.channel_not_found == 1
+            && snapshot.errors == 1
+        {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));

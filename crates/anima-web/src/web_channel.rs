@@ -21,6 +21,17 @@ pub enum SseEvent {
         status: String,
         task_type: Option<String>,
     },
+    /// 主链路运行时事件
+    #[serde(rename = "runtime_event")]
+    RuntimeEvent {
+        event: String,
+        message_id: String,
+        channel: String,
+        chat_id: Option<String>,
+        sender_id: String,
+        trace_id: String,
+        payload: serde_json::Value,
+    },
     /// 系统指标更新
     #[serde(rename = "metrics")]
     Metrics { data: serde_json::Value },

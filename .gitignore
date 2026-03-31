@@ -20,3 +20,16 @@ opencode.json
 
 # Temp
 .temp/
+
+# Claude / local assistant state
+.claude/
+
+
+# Frontend local dependencies
+/crates/anima-web/frontend/node_modules/
+
+/crates/anima-web/src/static/dist/
+
+/docs/
+
+/crates/anima-web/tests

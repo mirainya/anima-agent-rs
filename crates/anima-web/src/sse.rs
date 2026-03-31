@@ -40,6 +40,40 @@ pub fn start_internal_bus_forwarder(bus: Arc<Bus>, web_channel: Arc<WebChannel>)
                                     task_type,
                                 });
                             }
+                            "message_received" | "session_ready" | "session_create_failed" | "plan_built" | "cache_hit" | "cache_miss" | "message_completed" | "message_failed" => {
+                                web_channel.broadcast(SseEvent::RuntimeEvent {
+                                    event: event_type.to_string(),
+                                    message_id: msg
+                                        .payload
+                                        .get("message_id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    channel: msg
+                                        .payload
+                                        .get("channel")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    chat_id: msg
+                                        .payload
+                                        .get("chat_id")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string()),
+                                    sender_id: msg
+                                        .payload
+                                        .get("sender_id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    trace_id: msg.trace_id.clone(),
+                                    payload: msg
+                                        .payload
+                                        .get("payload")
+                                        .cloned()
+                                        .unwrap_or_default(),
+                                });
+                            }
                             _ => {}
                         }
                     }

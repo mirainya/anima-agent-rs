@@ -32,6 +32,68 @@ use crate::bus::{ControlSignal};
 use crate::channel::SessionStore;
 use crate::support::{make_api_cache_key, now_ms, ContextManager, LruCache, MetricsCollector};
 
+#[derive(Debug, Clone)]
+struct RuntimeErrorInfo {
+    code: &'static str,
+    stage: &'static str,
+    user_message: String,
+    internal_message: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeFailureSnapshot {
+    pub error_code: String,
+    pub error_stage: String,
+    pub message_id: String,
+    pub channel: String,
+    pub chat_id: Option<String>,
+    pub occurred_at_ms: u64,
+    pub internal_message: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RuntimeFailureStatus {
+    pub last_failure: Option<RuntimeFailureSnapshot>,
+    pub counts_by_error_code: indexmap::IndexMap<String, u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeTimelineEvent {
+    pub event: String,
+    pub trace_id: String,
+    pub message_id: String,
+    pub channel: String,
+    pub chat_id: Option<String>,
+    pub sender_id: String,
+    pub recorded_at_ms: u64,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionStageDurations {
+    pub context_ms: u64,
+    pub session_ms: u64,
+    pub classify_ms: u64,
+    pub execute_ms: u64,
+    pub total_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionSummary {
+    pub trace_id: String,
+    pub message_id: String,
+    pub channel: String,
+    pub chat_id: Option<String>,
+    pub plan_type: String,
+    pub status: String,
+    pub cache_hit: bool,
+    pub worker_id: Option<String>,
+    pub error_code: Option<String>,
+    pub error_stage: Option<String>,
+    pub task_duration_ms: u64,
+    pub stages: ExecutionStageDurations,
+}
+
 /// 单个会话的上下文信息，包含 SDK 会话 ID 和对话历史
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionContext {
@@ -57,6 +119,9 @@ pub struct CoreAgent {
     result_cache: Arc<LruCache>,
     metrics: Arc<MetricsCollector>,
     memory: Mutex<indexmap::IndexMap<String, SessionContext>>,
+    failures: Mutex<RuntimeFailureStatus>,
+    timeline: Mutex<Vec<RuntimeTimelineEvent>>,
+    execution_summaries: Mutex<Vec<ExecutionSummary>>,
     running: AtomicBool,
     loop_handle: Mutex<Option<thread::JoinHandle<()>>>,
     control_handle: Mutex<Option<thread::JoinHandle<()>>>,
@@ -71,6 +136,10 @@ pub struct CoreAgentStatus {
     pub context_status: String,
     pub cache_entries: usize,
     pub metrics: crate::support::MetricsSnapshot,
+    pub recent_sessions: Vec<SessionContext>,
+    pub failures: RuntimeFailureStatus,
+    pub runtime_timeline: Vec<RuntimeTimelineEvent>,
+    pub recent_execution_summaries: Vec<ExecutionSummary>,
 }
 
 impl CoreAgent {
@@ -93,6 +162,9 @@ impl CoreAgent {
             result_cache: Arc::new(LruCache::new(Some(1000), Some(5 * 60 * 1000))),
             metrics,
             memory: Mutex::new(indexmap::IndexMap::new()),
+            failures: Mutex::new(RuntimeFailureStatus::default()),
+            timeline: Mutex::new(Vec::new()),
+            execution_summaries: Mutex::new(Vec::new()),
             running: AtomicBool::new(false),
             loop_handle: Mutex::new(None),
             control_handle: Mutex::new(None),
@@ -176,6 +248,10 @@ impl CoreAgent {
     }
 
     pub fn status(&self) -> CoreAgentStatus {
+        let memory = self.memory.lock();
+        let failures = self.failures.lock().clone();
+        let timeline = self.timeline.lock().clone();
+        let summaries = self.execution_summaries.lock().clone();
         CoreAgentStatus {
             status: if self.is_running() {
                 "running"
@@ -183,11 +259,15 @@ impl CoreAgent {
                 "stopped"
             }
             .into(),
-            sessions_count: self.memory.lock().len(),
+            sessions_count: memory.len(),
             worker_pool: self.worker_pool.status(),
             context_status: self.context_manager.status().status,
             cache_entries: self.result_cache.stats().entry_count,
             metrics: self.metrics.snapshot(),
+            recent_sessions: memory.values().rev().take(5).cloned().collect(),
+            failures,
+            runtime_timeline: timeline,
+            recent_execution_summaries: summaries,
         }
     }
 
@@ -197,6 +277,11 @@ impl CoreAgent {
         let started = now_ms();
         self.metrics.counter_inc("messages_received");
         let key = memory_key(&inbound_msg);
+        let context_started = now_ms();
+        self.publish_runtime_event("message_received", &inbound_msg, json!({
+            "memory_key": key,
+            "content_preview": truncate_preview(&inbound_msg.content, 120),
+        }));
         self.ensure_context(&inbound_msg, &key);
         let user_entry = json!({"role": "user", "content": inbound_msg.content.clone()});
         self.append_history(&key, user_entry.clone());
@@ -207,32 +292,93 @@ impl CoreAgent {
         self.context_manager
             .add_to_session_history(&history_session_id, user_entry);
         self.metrics.update_session_gauge(self.memory.lock().len());
+        let context_ms = now_ms().saturating_sub(context_started);
 
-        let Some(opencode_session_id) = self.get_or_create_opencode_session(&inbound_msg, &key)
-        else {
-            self.metrics.counter_inc("messages_failed");
-            self.send_error_response(
-                &inbound_msg,
-                "Failed to create OpenCode session. Make sure opencode-server is running.",
-            );
-            return;
+        let session_started = now_ms();
+        let opencode_session_id = match self.get_or_create_opencode_session(&inbound_msg, &key) {
+            Ok(session_id) => session_id,
+            Err(error_text) => {
+                let error_info = classify_runtime_error(Some(error_text.as_str()), Some("session_create"));
+                self.record_failure(&inbound_msg, &error_info);
+                self.metrics.counter_inc("messages_failed");
+                self.publish_runtime_event("session_create_failed", &inbound_msg, json!({
+                    "memory_key": key,
+                    "error_code": error_info.code,
+                    "error_stage": error_info.stage,
+                    "error_message": error_info.internal_message,
+                }));
+                self.send_error_response(&inbound_msg, &error_info);
+                return;
+            }
         };
+        let session_ms = now_ms().saturating_sub(session_started);
+        self.publish_runtime_event("session_ready", &inbound_msg, json!({
+            "memory_key": key,
+            "opencode_session_id": opencode_session_id.clone(),
+        }));
 
         // 分类消息：direct 类型直接响应，无需走 Worker
+        let classify_started = now_ms();
         let plan = AgentClassifier::build_plan(&inbound_msg);
+        let classify_ms = now_ms().saturating_sub(classify_started);
+        self.publish_runtime_event("plan_built", &inbound_msg, json!({
+            "memory_key": key,
+            "plan_type": plan.plan_type.clone(),
+            "plan_kind": format!("{:?}", plan.kind),
+            "task_count": plan.tasks.len(),
+            "specialist": plan.specialist.clone(),
+        }));
         if plan.plan_type == "direct" {
+            let duration_ms = now_ms().saturating_sub(started);
             self.metrics.counter_inc("messages_processed");
             self.metrics
-                .histogram_record("message_latency", now_ms().saturating_sub(started));
+                .histogram_record("message_latency", duration_ms);
+            self.record_execution_summary(ExecutionSummary {
+                trace_id: inbound_msg.id.clone(),
+                message_id: inbound_msg.id.clone(),
+                channel: inbound_msg.channel.clone(),
+                chat_id: inbound_msg.chat_id.clone(),
+                plan_type: plan.plan_type.clone(),
+                status: "success".into(),
+                cache_hit: false,
+                worker_id: None,
+                error_code: None,
+                error_stage: None,
+                task_duration_ms: 0,
+                stages: ExecutionStageDurations {
+                    context_ms,
+                    session_ms,
+                    classify_ms,
+                    execute_ms: 0,
+                    total_ms: duration_ms,
+                },
+            });
+            self.publish_runtime_event("message_completed", &inbound_msg, json!({
+                "memory_key": key,
+                "plan_type": plan.plan_type,
+                "status": "success",
+                "cached": false,
+                "duration_ms": duration_ms,
+                "response_preview": "Command processed.",
+            }));
             self.send_response(&inbound_msg, "Command processed.");
             return;
         }
 
         // single 类型先查缓存，命中则直接返回；multi-step 类型不走缓存
         let cache_key = make_api_cache_key(&opencode_session_id, &inbound_msg.content);
-        let result = if plan.plan_type == "single" {
+        let plan_type = plan.plan_type.clone();
+        let execute_started = now_ms();
+        let mut cache_hit = false;
+        let result = if plan_type == "single" {
             if let Some(cached) = self.result_cache.get(&cache_key) {
+                cache_hit = true;
                 self.metrics.counter_inc("cache_hits");
+                self.publish_runtime_event("cache_hit", &inbound_msg, json!({
+                    "memory_key": key,
+                    "cache_key": cache_key.clone(),
+                    "plan_type": plan_type.clone(),
+                }));
                 make_task_result(MakeTaskResult {
                     task_id: Uuid::new_v4().to_string(),
                     trace_id: inbound_msg.id.clone(),
@@ -244,10 +390,15 @@ impl CoreAgent {
                 })
             } else {
                 self.metrics.counter_inc("cache_misses");
+                self.publish_runtime_event("cache_miss", &inbound_msg, json!({
+                    "memory_key": key,
+                    "cache_key": cache_key.clone(),
+                    "plan_type": plan_type.clone(),
+                }));
                 self.metrics.counter_inc("tasks_submitted");
-                self.publish_worker_event("task_start", &inbound_msg, &plan.plan_type);
+                self.publish_worker_event("task_start", &inbound_msg, &plan_type);
                 let result = AgentOrchestrator::execute_plan(&self.worker_pool, &plan, &opencode_session_id);
-                self.publish_worker_event("task_end", &inbound_msg, &plan.plan_type);
+                self.publish_worker_event("task_end", &inbound_msg, &plan_type);
                 if result.status == "success" {
                     self.metrics.counter_inc("tasks_completed");
                     if let Some(value) = result.result.clone() {
@@ -260,9 +411,9 @@ impl CoreAgent {
             }
         } else {
             self.metrics.counter_inc("tasks_submitted");
-            self.publish_worker_event("task_start", &inbound_msg, &plan.plan_type);
+            self.publish_worker_event("task_start", &inbound_msg, &plan_type);
             let result = AgentOrchestrator::execute_plan(&self.worker_pool, &plan, &opencode_session_id);
-            self.publish_worker_event("task_end", &inbound_msg, &plan.plan_type);
+            self.publish_worker_event("task_end", &inbound_msg, &plan_type);
             if result.status == "success" {
                 self.metrics.counter_inc("tasks_completed");
             } else {
@@ -271,8 +422,10 @@ impl CoreAgent {
             result
         };
 
+        let total_ms = now_ms().saturating_sub(started);
+        let execute_ms = now_ms().saturating_sub(execute_started);
         self.metrics
-            .histogram_record("message_latency", now_ms().saturating_sub(started));
+            .histogram_record("message_latency", total_ms);
         let worker_statuses = self.worker_pool.status().workers;
         let active = worker_statuses
             .iter()
@@ -291,13 +444,75 @@ impl CoreAgent {
             self.context_manager
                 .add_to_session_history(&history_session_id, assistant_entry);
             self.metrics.counter_inc("messages_processed");
+            self.record_execution_summary(ExecutionSummary {
+                trace_id: inbound_msg.id.clone(),
+                message_id: inbound_msg.id.clone(),
+                channel: inbound_msg.channel.clone(),
+                chat_id: inbound_msg.chat_id.clone(),
+                plan_type: plan_type.clone(),
+                status: result.status.clone(),
+                cache_hit,
+                worker_id: result.worker_id.clone(),
+                error_code: None,
+                error_stage: None,
+                task_duration_ms: result.duration_ms,
+                stages: ExecutionStageDurations {
+                    context_ms,
+                    session_ms,
+                    classify_ms,
+                    execute_ms,
+                    total_ms,
+                },
+            });
+            self.publish_runtime_event("message_completed", &inbound_msg, json!({
+                "memory_key": key,
+                "plan_type": plan_type.clone(),
+                "status": result.status.clone(),
+                "cached": cache_hit,
+                "worker_id": result.worker_id.clone(),
+                "task_duration_ms": result.duration_ms,
+                "message_latency_ms": total_ms,
+                "response_preview": truncate_preview(&response_text, 120),
+                "response_text": response_text,
+            }));
             self.send_response(&inbound_msg, &response_text);
         } else {
+            let error_info = classify_runtime_error(result.error.as_deref(), Some("plan_execute"));
+            self.record_failure(&inbound_msg, &error_info);
             self.metrics.counter_inc("messages_failed");
-            self.send_error_response(
-                &inbound_msg,
-                result.error.as_deref().unwrap_or("Task execution failed"),
-            );
+            self.record_execution_summary(ExecutionSummary {
+                trace_id: inbound_msg.id.clone(),
+                message_id: inbound_msg.id.clone(),
+                channel: inbound_msg.channel.clone(),
+                chat_id: inbound_msg.chat_id.clone(),
+                plan_type: plan_type.clone(),
+                status: result.status.clone(),
+                cache_hit,
+                worker_id: result.worker_id.clone(),
+                error_code: Some(error_info.code.to_string()),
+                error_stage: Some(error_info.stage.to_string()),
+                task_duration_ms: result.duration_ms,
+                stages: ExecutionStageDurations {
+                    context_ms,
+                    session_ms,
+                    classify_ms,
+                    execute_ms,
+                    total_ms,
+                },
+            });
+            self.publish_runtime_event("message_failed", &inbound_msg, json!({
+                "memory_key": key,
+                "plan_type": plan_type,
+                "status": result.status.clone(),
+                "cached": cache_hit,
+                "worker_id": result.worker_id.clone(),
+                "task_duration_ms": result.duration_ms,
+                "message_latency_ms": total_ms,
+                "error_code": error_info.code,
+                "error_stage": error_info.stage,
+                "error": error_info.internal_message,
+            }));
+            self.send_error_response(&inbound_msg, &error_info);
         }
     }
 
@@ -306,14 +521,14 @@ impl CoreAgent {
         &self,
         inbound_msg: &InboundMessage,
         key: &str,
-    ) -> Option<String> {
+    ) -> Result<String, String> {
         if let Some(existing_id) = self
             .memory
             .lock()
             .get(key)
             .and_then(|ctx| ctx.session_id.clone())
         {
-            return Some(existing_id);
+            return Ok(existing_id);
         }
 
         let result = self
@@ -325,20 +540,33 @@ impl CoreAgent {
                 ..Default::default()
             }))
             .recv()
-            .ok()?;
+            .map_err(|error| format!("Failed to receive session-create result: {error}"))?;
+
+        if result.status != "success" {
+            let error_text = result
+                .error
+                .clone()
+                .unwrap_or_else(|| format!("Failed to create session: task status={}", result.status));
+            return Err(error_text);
+        }
+
+        if let Some(error_text) = result.error.clone() {
+            return Err(error_text);
+        }
 
         let session_id = result
             .result
             .as_ref()
             .and_then(|value| value.get("opencode-session-id"))
-            .and_then(Value::as_str)?
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Failed to create session: no ID returned".to_string())?
             .to_string();
 
         self.memory.lock().entry(key.to_string()).and_modify(|ctx| {
             ctx.session_id = Some(session_id.clone());
         });
 
-        Some(session_id)
+        Ok(session_id)
     }
 
     /// 确保消息对应的会话上下文存在。
@@ -408,6 +636,51 @@ impl CoreAgent {
         outbound
     }
 
+    fn record_failure(&self, inbound_msg: &InboundMessage, error: &RuntimeErrorInfo) {
+        let mut failures = self.failures.lock();
+        let count = failures
+            .counts_by_error_code
+            .entry(error.code.to_string())
+            .or_insert(0);
+        *count += 1;
+        failures.last_failure = Some(RuntimeFailureSnapshot {
+            error_code: error.code.to_string(),
+            error_stage: error.stage.to_string(),
+            message_id: inbound_msg.id.clone(),
+            channel: inbound_msg.channel.clone(),
+            chat_id: inbound_msg.chat_id.clone(),
+            occurred_at_ms: now_ms(),
+            internal_message: error.internal_message.clone(),
+        });
+    }
+
+    fn record_timeline_event(&self, event: &str, inbound_msg: &InboundMessage, payload: Value) {
+        let mut timeline = self.timeline.lock();
+        timeline.push(RuntimeTimelineEvent {
+            event: event.to_string(),
+            trace_id: inbound_msg.id.clone(),
+            message_id: inbound_msg.id.clone(),
+            channel: inbound_msg.channel.clone(),
+            chat_id: inbound_msg.chat_id.clone(),
+            sender_id: inbound_msg.sender_id.clone(),
+            recorded_at_ms: now_ms(),
+            payload,
+        });
+        if timeline.len() > 50 {
+            let excess = timeline.len() - 50;
+            timeline.drain(..excess);
+        }
+    }
+
+    fn record_execution_summary(&self, summary: ExecutionSummary) {
+        let mut summaries = self.execution_summaries.lock();
+        summaries.push(summary);
+        if summaries.len() > 20 {
+            let excess = summaries.len() - 20;
+            summaries.drain(..excess);
+        }
+    }
+
     /// 发布 Worker 进度事件到 internal bus，供 Web UI 等消费
     fn publish_worker_event(&self, event: &str, inbound_msg: &InboundMessage, task_type: &str) {
         let worker_statuses = self.worker_pool.status().workers;
@@ -421,6 +694,7 @@ impl CoreAgent {
             };
             let _ = self.bus.publish_internal(make_internal(MakeInternal {
                 source: "core-agent".into(),
+                trace_id: Some(inbound_msg.id.clone()),
                 payload: json!({
                     "event": format!("worker_{}", event),
                     "worker_id": w.id,
@@ -428,27 +702,147 @@ impl CoreAgent {
                     "task_type": task_type,
                     "channel": inbound_msg.channel,
                     "message_id": inbound_msg.id,
+                    "chat_id": inbound_msg.chat_id,
                 }),
                 ..Default::default()
             }));
         }
     }
 
+    fn publish_runtime_event(
+        &self,
+        event: &str,
+        inbound_msg: &InboundMessage,
+        payload: Value,
+    ) {
+        self.record_timeline_event(event, inbound_msg, payload.clone());
+        let _ = self.bus.publish_internal(make_internal(MakeInternal {
+            source: "core-agent".into(),
+            trace_id: Some(inbound_msg.id.clone()),
+            payload: json!({
+                "event": event,
+                "message_id": inbound_msg.id,
+                "channel": inbound_msg.channel,
+                "chat_id": inbound_msg.chat_id,
+                "sender_id": inbound_msg.sender_id,
+                "payload": payload,
+            }),
+            ..Default::default()
+        }));
+    }
+
     fn send_error_response(
         &self,
         inbound_msg: &InboundMessage,
-        error_msg: &str,
+        error: &RuntimeErrorInfo,
     ) -> OutboundMessage {
         let outbound = make_outbound(MakeOutbound {
             channel: inbound_msg.channel.clone(),
             chat_id: inbound_msg.chat_id.clone(),
-            content: format!("Error: {error_msg}"),
+            content: format!("Error [{}]: {}", error.code, error.user_message),
             reply_target: Some(inbound_msg.sender_id.clone()),
             stage: Some("final".into()),
             ..Default::default()
         });
         let _ = self.bus.publish_outbound(outbound.clone());
         outbound
+    }
+}
+
+fn classify_runtime_error(error: Option<&str>, fallback_stage: Option<&'static str>) -> RuntimeErrorInfo {
+    let raw = error.unwrap_or("Unknown runtime error");
+    let raw_lower = raw.to_ascii_lowercase();
+    let is_session_create_stage = fallback_stage == Some("session_create");
+    let is_plan_execute_stage = fallback_stage == Some("plan_execute");
+    let looks_like_session_transport_error = raw_lower.contains("http transport error")
+        || raw_lower.contains("error sending request")
+        || raw_lower.contains("/session)")
+        || raw_lower.contains("/session ")
+        || raw_lower.ends_with("/session")
+        || raw_lower.contains("/session?");
+    let looks_like_upstream_stream_error = raw_lower.contains("empty_stream")
+        || raw_lower.contains("upstream stream closed before first payload")
+        || raw_lower.contains("stream disconnected before completion")
+        || raw_lower.contains("stream closed before response.completed");
+    let looks_like_upstream_timeout = raw_lower.contains("request timeout")
+        || raw_lower.contains("408 request timeout")
+        || raw_lower.contains("timed out")
+        || raw_lower.contains("timeout");
+
+    if raw.contains("OpenCode session")
+        || raw.contains("no ID returned")
+        || raw.contains("Failed to create session")
+        || raw_lower.contains("create session")
+        || raw_lower.contains("session-create")
+        || (is_session_create_stage && looks_like_session_transport_error)
+    {
+        return RuntimeErrorInfo {
+            code: "session_create_failed",
+            stage: "session_create",
+            user_message: "无法创建上游会话，请确认 opencode-server 是否正常运行。".into(),
+            internal_message: raw.to_string(),
+        };
+    }
+
+    if is_plan_execute_stage && looks_like_upstream_timeout {
+        return RuntimeErrorInfo {
+            code: "upstream_timeout",
+            stage: "plan_execute",
+            user_message: "上游模型响应超时，请稍后重试。".into(),
+            internal_message: raw.to_string(),
+        };
+    }
+
+    if is_plan_execute_stage && looks_like_upstream_stream_error {
+        return RuntimeErrorInfo {
+            code: "upstream_stream_failed",
+            stage: "plan_execute",
+            user_message: "上游模型流式响应异常中断，请稍后重试或检查代理服务状态。".into(),
+            internal_message: raw.to_string(),
+        };
+    }
+
+    if raw.contains("Worker pool is not running") || raw.contains("Worker is not running") {
+        return RuntimeErrorInfo {
+            code: "worker_unavailable",
+            stage: "worker_pool",
+            user_message: "当前执行器未就绪，暂时无法处理请求。".into(),
+            internal_message: raw.to_string(),
+        };
+    }
+
+    if raw.contains("Worker is busy") || raw.contains("No available worker") {
+        return RuntimeErrorInfo {
+            code: "worker_capacity_exhausted",
+            stage: "worker_pool",
+            user_message: "当前执行队列繁忙，请稍后再试。".into(),
+            internal_message: raw.to_string(),
+        };
+    }
+
+    if raw.contains("Missing required fields") || raw.contains("Missing query") || raw.contains("Missing transform data") {
+        return RuntimeErrorInfo {
+            code: "invalid_task_payload",
+            stage: fallback_stage.unwrap_or("task_execution"),
+            user_message: "运行时生成了无效任务，请检查主链路任务构建逻辑。".into(),
+            internal_message: raw.to_string(),
+        };
+    }
+
+    if raw.contains("Unknown task type") {
+        return RuntimeErrorInfo {
+            code: "unknown_task_type",
+            stage: fallback_stage.unwrap_or("task_execution"),
+            user_message: "运行时生成了未支持的任务类型。".into(),
+            internal_message: raw.to_string(),
+        };
+    }
+
+    RuntimeErrorInfo {
+        code: "task_execution_failed",
+        stage: fallback_stage.unwrap_or("task_execution"),
+        user_message: "任务执行失败，请查看运行时事件获取详细原因。".into(),
+        internal_message: raw.to_string(),
     }
 }
 
@@ -553,6 +947,15 @@ fn memory_key(inbound_msg: &InboundMessage) -> String {
 /// 3. content 字符串字段
 /// 4. 直接字符串值
 /// 5. 兜底：序列化为 JSON 字符串
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    let truncated = text.chars().take(max_chars).collect::<String>();
+    if text.chars().count() > max_chars {
+        format!("{}…", truncated)
+    } else {
+        truncated
+    }
+}
+
 fn extract_response_text(response: Option<&Value>) -> String {
     let Some(response) = response else {
         return String::new();

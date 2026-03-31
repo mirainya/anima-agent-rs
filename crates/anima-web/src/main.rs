@@ -1,18 +1,8 @@
-mod routes;
-mod sse;
-mod web_channel;
-
 use anima_runtime::bootstrap::RuntimeBootstrapBuilder;
+use anima_web::{routes, sse, web_channel, AppState};
 use axum::Router;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-
-/// Web UI 共享状态
-pub struct AppState {
-    pub runtime: std::sync::Mutex<anima_runtime::bootstrap::RuntimeBootstrap>,
-    pub bus: Arc<anima_runtime::bus::Bus>,
-    pub web_channel: Arc<web_channel::WebChannel>,
-}
 
 fn main() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
@@ -32,6 +22,7 @@ fn main() {
         runtime: std::sync::Mutex::new(runtime),
         bus: bus.clone(),
         web_channel: web_channel.clone(),
+        jobs: std::sync::Mutex::new(anima_web::jobs::JobStore::default()),
     });
 
     // 启动 SSE 事件转发线程：监听 Bus internal 通道，推送给浏览器

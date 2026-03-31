@@ -26,6 +26,7 @@ use crate::support::now_ms;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CurrentTaskInfo {
     pub task_id: String,
+    pub trace_id: String,
     pub task_type: String,
     pub started_ms: u64,
     pub content_preview: String,
@@ -173,6 +174,7 @@ impl WorkerAgent {
                 .collect::<String>();
             *worker.current_task.lock() = Some(CurrentTaskInfo {
                 task_id: task.id.clone(),
+                trace_id: task.trace_id.clone(),
                 task_type: task.task_type.clone(),
                 started_ms: now_ms(),
                 content_preview,

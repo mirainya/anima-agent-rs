@@ -1,0 +1,50 @@
+.app-message-input-bar {
+  display: flex;
+  width: min(920px, 100%);
+  margin: 0 auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(21, 21, 33, 0.9);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.message-composer-meta {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text2);
+}
+
+.message-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  outline: none;
+  font-size: 14px;
+}
+
+.message-input::placeholder {
+  color: var(--text2);
+}
+
+.message-send-btn {
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.message-send-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

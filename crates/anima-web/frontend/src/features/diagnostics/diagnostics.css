@@ -1,0 +1,114 @@
+.diagnostics-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  padding: 12px;
+}
+
+.diagnostics-inspector-collapsed {
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+}
+
+.diagnostics-collapsed-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  color: var(--text2);
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+
+.diagnostics-inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.diagnostics-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.diagnostics-tab {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text2);
+  cursor: pointer;
+}
+
+.diagnostics-tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(108, 92, 231, 0.16);
+}
+
+.diagnostics-panel-body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.app-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.diag-card-react,
+.assignment-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.assignment-card.focus {
+  border-color: var(--accent);
+  background: rgba(108, 92, 231, 0.12);
+}
+
+.diag-title-react {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.diag-line-react {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 6px;
+  word-break: break-word;
+}
+
+.diag-prewrap {
+  white-space: pre-wrap;
+}
+
+.assignment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.assignment-card-top,
+.timeline-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.timeline-row {
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.timeline-row:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
