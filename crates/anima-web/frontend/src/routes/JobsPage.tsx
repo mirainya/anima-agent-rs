@@ -20,11 +20,12 @@ export function JobsPage() {
   const context = getWorkbenchContext(status, jobs, selectedSessionId, selectedJobId);
   const selectedScope = context.scope;
   const selectedSession = context.selectedSession;
+  const selectedJob = context.selectedJob;
   const sessionJobs = context.sessionJobs;
   const visibleJobs = sessionJobs.filter((job) => {
     switch (jobListFilter) {
       case 'active':
-        return !['completed', 'failed'].includes(job.status);
+        return ['queued', 'preparing_context', 'creating_session', 'planning', 'executing', 'waiting_user_input', 'stalled'].includes(job.status);
       case 'review':
         return job.status === 'completed' && !job.review;
       case 'failed':
@@ -35,10 +36,24 @@ export function JobsPage() {
   }).slice().sort((a, b) => a.updated_at_ms - b.updated_at_ms);
 
   const scopeSummary = selectedScope === 'job'
-    ? '当前 Job'
+    ? '当前任务'
     : selectedScope === 'session'
       ? `当前会话 ${shortId(selectedSession?.chat_id ?? null)}`
       : '全部会话';
+
+  const hierarchySummary = visibleJobs.reduce(
+    (summary, job) => {
+      if (job.kind === 'subtask') {
+        summary.subtasks += 1;
+      } else {
+        summary.main += 1;
+      }
+      return summary;
+    },
+    { main: 0, subtasks: 0 },
+  );
+
+  const detailJob = selectedJob ?? visibleJobs[0] ?? null;
 
   const openJobDetails = (jobId: string) => {
     setSelectedJobId(jobId);
@@ -57,12 +72,14 @@ export function JobsPage() {
           </div>
         </div>
         <div className="jobs-toolbar-actions jobs-context-actions">
-          <div className="jobs-toolbar-meta">{scopeSummary} · {visibleJobs.length}/{sessionJobs.length} Jobs</div>
+          <div className="jobs-toolbar-meta">
+            {scopeSummary} · {visibleJobs.length}/{sessionJobs.length} Jobs · 主任务 {hierarchySummary.main} · 子任务 {hierarchySummary.subtasks}
+          </div>
           <div className="jobs-filter-group" role="tablist" aria-label="Job 过滤器">
             {[
               { key: 'all', label: '全部' },
               { key: 'active', label: '进行中' },
-              { key: 'review', label: '待确认' },
+              { key: 'review', label: '待反馈' },
               { key: 'failed', label: '失败' },
             ].map((filter) => (
               <button
@@ -81,14 +98,18 @@ export function JobsPage() {
         </div>
       </div>
 
-      <div className="jobs-main jobs-conversation-stage">
-        <JobsConversation
-          jobs={visibleJobs}
-          selectedSession={selectedSession}
-          selectedSessionId={selectedSessionId}
-          scopeSummary={scopeSummary}
-          onOpenJobDetails={openJobDetails}
-        />
+      <div className="jobs-main jobs-conversation-stage jobs-main-stage">
+        <section className="jobs-main-panel jobs-secondary-panel">
+          <JobsConversation
+            jobs={visibleJobs}
+            selectedJob={detailJob}
+            selectedSession={selectedSession}
+            selectedSessionId={selectedSessionId}
+            scopeSummary={scopeSummary}
+            runtimeTimeline={status?.runtime_timeline ?? []}
+            onOpenJobDetails={openJobDetails}
+          />
+        </section>
       </div>
 
       <div className="jobs-composer-bar">

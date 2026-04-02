@@ -1,4 +1,6 @@
-use anima_runtime::agent::{Agent, TaskExecutor, WorkerAgent, WorkerPool};
+use anima_runtime::agent::{Agent, QuestionAnswerInput, TaskExecutor, WorkerAgent, WorkerPool};
+use anima_runtime::agent_orchestrator::{AgentOrchestrator, OrchestratorConfig};
+use anima_runtime::agent_specialist_pool::SpecialistPool;
 use anima_runtime::bus::{make_inbound, Bus, MakeInbound};
 use anima_runtime::channel::{start_outbound_dispatch, ChannelRegistry, DispatchStats, TestChannel};
 use anima_runtime::Channel;
@@ -13,6 +15,27 @@ struct SlowExecutor;
 
 #[derive(Debug, Default)]
 struct MockExecutor;
+
+#[derive(Debug, Default)]
+struct QuestionFlowExecutor;
+
+#[derive(Debug, Default)]
+struct TextQuestionExecutor;
+
+#[derive(Debug, Default)]
+struct FollowupExecutor;
+
+#[derive(Debug, Default)]
+struct OrchestrationQuestionExecutor;
+
+#[derive(Debug, Default)]
+struct OrchestrationFollowupExecutor;
+
+#[derive(Debug, Default)]
+struct RepeatingUnsatisfiedExecutor;
+
+#[derive(Debug, Default)]
+struct RepeatedQuestionExecutor;
 
 impl TaskExecutor for MockExecutor {
     fn send_prompt(
@@ -34,6 +57,9 @@ impl TaskExecutor for MockExecutor {
 #[derive(Debug, Default)]
 struct FailingExecutor;
 
+#[derive(Debug, Default)]
+struct QuestionLookingErrorExecutor;
+
 impl TaskExecutor for FailingExecutor {
     fn send_prompt(
         &self,
@@ -46,6 +72,204 @@ impl TaskExecutor for FailingExecutor {
 
     fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
         Ok(json!({"id": "mock-session-err"}))
+    }
+}
+
+impl TaskExecutor for QuestionLookingErrorExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        _session_id: &str,
+        _content: Value,
+    ) -> Result<Value, String> {
+        Err(r#"{"question":{"id":"fake-question","prompt":"请确认是否继续","options":["继续","取消"]}}"#.into())
+    }
+
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        Ok(json!({"id": "mock-session-question-looking-error"}))
+    }
+}
+
+impl TaskExecutor for QuestionFlowExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        session_id: &str,
+        content: Value,
+    ) -> Result<Value, String> {
+        let text = content.as_str().unwrap_or("");
+        if text == "Need continuation" {
+            Ok(json!({
+                "question": {
+                    "id": "question-1",
+                    "kind": "input",
+                    "prompt": "请选择继续方式",
+                    "options": ["继续执行", "取消"]
+                }
+            }))
+        } else {
+            Ok(json!({
+                "content": format!("reply[{session_id}]: continued with {text}")
+            }))
+        }
+    }
+
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        Ok(json!({"id": "mock-session-question"}))
+    }
+}
+
+impl TaskExecutor for TextQuestionExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        _session_id: &str,
+        _content: Value,
+    ) -> Result<Value, String> {
+        Ok(json!({
+            "parts": [
+                {
+                    "type": "reasoning",
+                    "text": "I need confirmation before destructive git reset."
+                },
+                {
+                    "type": "text",
+                    "text": "哇！！主人这个操作是危险且不可逆的呐~\n\n请主人明确确认一下是否继续：\n- `确认继续`\n- `只丢弃已跟踪文件修改，不删除未跟踪文件`\n- `先查看当前改动再决定`\n"
+                }
+            ]
+        }))
+    }
+
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        Ok(json!({"id": "mock-session-text-question"}))
+    }
+}
+
+impl TaskExecutor for FollowupExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        session_id: &str,
+        content: Value,
+    ) -> Result<Value, String> {
+        let text = content.as_str().unwrap_or("");
+        if text == "Need better completion" {
+            Ok(json!({
+                "content": "I need more information before I can conclude this task."
+            }))
+        } else {
+            Ok(json!({
+                "content": format!("reply[{session_id}]: final completed answer")
+            }))
+        }
+    }
+
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        Ok(json!({"id": "mock-session-followup"}))
+    }
+}
+
+impl TaskExecutor for OrchestrationQuestionExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        session_id: &str,
+        content: Value,
+    ) -> Result<Value, String> {
+        let text = content.as_str().unwrap_or("");
+        if text.contains("[orchestration/") {
+            Ok(json!({
+                "question": {
+                    "id": "orch-question-1",
+                    "kind": "input",
+                    "prompt": "需要确认 orchestration 是否继续",
+                    "options": ["继续 orchestration", "停止"]
+                }
+            }))
+        } else {
+            Ok(json!({
+                "content": format!("reply[{session_id}]: orchestration continued with {text}")
+            }))
+        }
+    }
+
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        Ok(json!({"id": "mock-session-orch-question"}))
+    }
+}
+
+impl TaskExecutor for OrchestrationFollowupExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        session_id: &str,
+        content: Value,
+    ) -> Result<Value, String> {
+        let text = content.as_str().unwrap_or("");
+        if text.contains("[orchestration/") {
+            Ok(json!({
+                "content": "I need more information before I can conclude this task."
+            }))
+        } else {
+            Ok(json!({
+                "content": format!("reply[{session_id}]: orchestration followup completed")
+            }))
+        }
+    }
+
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        Ok(json!({"id": "mock-session-orch-followup"}))
+    }
+}
+
+impl TaskExecutor for RepeatingUnsatisfiedExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        _session_id: &str,
+        _content: Value,
+    ) -> Result<Value, String> {
+        Ok(json!({
+            "content": "Need more information before proceeding."
+        }))
+    }
+
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        Ok(json!({"id": "mock-session-repeat"}))
+    }
+}
+
+impl TaskExecutor for RepeatedQuestionExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        _session_id: &str,
+        content: Value,
+    ) -> Result<Value, String> {
+        let text = content.as_str().unwrap_or("");
+        if text == "Need repeated question" {
+            Ok(json!({
+                "question": {
+                    "id": "question-1",
+                    "kind": "input",
+                    "prompt": "第一次需要你的确认",
+                    "options": ["继续", "停止"]
+                }
+            }))
+        } else {
+            Ok(json!({
+                "question": {
+                    "id": "question-2",
+                    "kind": "input",
+                    "prompt": "还需要再确认一次",
+                    "options": ["继续执行", "取消"]
+                }
+            }))
+        }
+    }
+
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        Ok(json!({"id": "mock-session-repeated-question"}))
     }
 }
 
@@ -515,6 +739,629 @@ fn agent_classifies_upstream_timeout_during_plan_execution() {
 }
 
 #[test]
+fn agent_submits_question_answer_and_continues_same_session() {
+    let bus = Arc::new(Bus::create());
+    let agent = Agent::create(
+        bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(QuestionFlowExecutor)),
+    );
+    agent.start();
+
+    let inbound = make_inbound(MakeInbound {
+        channel: "test".into(),
+        sender_id: Some("user-question".into()),
+        chat_id: Some("chat-question".into()),
+        content: "Need continuation".into(),
+        ..Default::default()
+    });
+    let job_id = inbound.id.clone();
+    agent.process_message(inbound);
+
+    std::thread::sleep(Duration::from_millis(150));
+    let pending = agent.pending_question_for(&job_id).expect("expected pending question");
+    assert_eq!(pending.question_id, "question-1");
+    assert_eq!(pending.opencode_session_id, "mock-session-question");
+    assert_eq!(pending.raw_question["prompt"], "请选择继续方式");
+    assert_eq!(pending.raw_question["options"][0], "继续执行");
+
+    let waiting_status = agent.status();
+    let waiting_timeline = waiting_status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let waiting_events = waiting_timeline
+        .iter()
+        .map(|event| event.event.as_str())
+        .collect::<Vec<_>>();
+    assert!(waiting_events.contains(&"upstream_response_observed"));
+    assert!(waiting_events.contains(&"requirement_unsatisfied"));
+    assert!(waiting_events.contains(&"user_input_required"));
+    assert!(waiting_events.contains(&"question_asked"));
+    assert!(!waiting_events.contains(&"question_answer_submitted"));
+    assert!(!waiting_events.contains(&"question_resolved"));
+    assert!(!waiting_events.contains(&"message_completed"));
+    let unsatisfied_idx = waiting_events
+        .iter()
+        .position(|event| *event == "requirement_unsatisfied")
+        .unwrap();
+    let user_input_required_idx = waiting_events
+        .iter()
+        .position(|event| *event == "user_input_required")
+        .unwrap();
+    let asked_idx = waiting_events
+        .iter()
+        .position(|event| *event == "question_asked")
+        .unwrap();
+    assert!(unsatisfied_idx < user_input_required_idx);
+    assert!(user_input_required_idx < asked_idx);
+    let waiting_summary = waiting_status
+        .core
+        .recent_execution_summaries
+        .iter()
+        .rev()
+        .find(|item| item.message_id == job_id)
+        .expect("expected waiting execution summary");
+    assert_eq!(waiting_summary.status, "waiting_user_input");
+
+    let continued = agent
+        .submit_question_answer(
+            &job_id,
+            QuestionAnswerInput {
+                question_id: "question-1".into(),
+                source: "user".into(),
+                answer_type: "text".into(),
+                answer: "继续执行".into(),
+            },
+        )
+        .expect("continuation should succeed");
+    assert_eq!(continued.question_id, "question-1");
+    assert!(agent.pending_question_for(&job_id).is_none());
+
+    let outbound = bus
+        .outbound_receiver()
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert!(outbound.content.contains("continued with 继续执行"));
+
+    let status = agent.status();
+    let timeline = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let events = timeline
+        .iter()
+        .map(|event| event.event.as_str())
+        .collect::<Vec<_>>();
+    assert!(events.contains(&"upstream_response_observed"));
+    assert!(events.contains(&"question_asked"));
+    assert!(events.contains(&"question_answer_submitted"));
+    assert!(events.contains(&"question_resolved"));
+    assert!(events.contains(&"message_completed"));
+    let observed_idx = events.iter().position(|event| *event == "upstream_response_observed").unwrap();
+    let asked_idx = events.iter().position(|event| *event == "question_asked").unwrap();
+    assert!(observed_idx < asked_idx);
+    let asked_payload = timeline
+        .iter()
+        .find(|event| event.event == "question_asked")
+        .map(|event| event.payload.clone())
+        .expect("expected question_asked payload");
+    assert_eq!(asked_payload["raw_question"]["prompt"], "请选择继续方式");
+    assert_eq!(asked_payload["raw_question"]["options"][1], "取消");
+    let final_summary = status
+        .core
+        .recent_execution_summaries
+        .iter()
+        .rev()
+        .find(|item| item.message_id == job_id)
+        .expect("expected final execution summary");
+    assert_eq!(final_summary.status, "success");
+
+    agent.stop();
+}
+
+#[test]
+fn agent_continuation_can_return_to_waiting_user_input() {
+    let bus = Arc::new(Bus::create());
+    let agent = Agent::create(
+        bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(RepeatedQuestionExecutor)),
+    );
+    agent.start();
+
+    let inbound = make_inbound(MakeInbound {
+        channel: "test".into(),
+        sender_id: Some("user-repeat-question".into()),
+        chat_id: Some("chat-repeat-question".into()),
+        content: "Need repeated question".into(),
+        ..Default::default()
+    });
+    let job_id = inbound.id.clone();
+    agent.process_message(inbound);
+
+    thread::sleep(Duration::from_millis(150));
+    let first_pending = agent.pending_question_for(&job_id).expect("expected first pending question");
+    assert_eq!(first_pending.question_id, "question-1");
+
+    agent
+        .submit_question_answer(
+            &job_id,
+            QuestionAnswerInput {
+                question_id: "question-1".into(),
+                source: "user".into(),
+                answer_type: "text".into(),
+                answer: "继续".into(),
+            },
+        )
+        .expect("continuation should accept first answer");
+
+    thread::sleep(Duration::from_millis(150));
+    let pending = agent.pending_question_for(&job_id).expect("expected second pending question");
+    assert_eq!(pending.question_id, "question-2");
+    assert_eq!(pending.prompt, "还需要再确认一次");
+
+    let status = agent.status();
+    let timeline = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let events = timeline
+        .iter()
+        .map(|event| event.event.as_str())
+        .collect::<Vec<_>>();
+    assert!(events.contains(&"question_answer_submitted"));
+    assert!(events.contains(&"question_resolved"));
+    assert!(events.contains(&"user_input_required"));
+    assert!(events.contains(&"question_asked"));
+    assert!(!events.contains(&"message_completed"));
+
+    let answer_submitted_idx = events
+        .iter()
+        .rposition(|event| *event == "question_answer_submitted")
+        .unwrap();
+    let resolved_idx = events
+        .iter()
+        .rposition(|event| *event == "question_resolved")
+        .unwrap();
+    let user_input_required_idx = events
+        .iter()
+        .rposition(|event| *event == "user_input_required")
+        .unwrap();
+    let asked_idx = events
+        .iter()
+        .rposition(|event| *event == "question_asked")
+        .unwrap();
+    assert!(answer_submitted_idx < resolved_idx);
+    assert!(resolved_idx < user_input_required_idx);
+    assert!(user_input_required_idx < asked_idx);
+
+    let resolved_payload = timeline
+        .iter()
+        .rev()
+        .find(|event| event.event == "question_resolved")
+        .map(|event| event.payload.clone())
+        .expect("expected question_resolved payload");
+    assert_eq!(resolved_payload["question_id"], "question-1");
+    assert_eq!(resolved_payload["answer_summary"], "继续");
+    assert_eq!(resolved_payload["resolution_source"], "user");
+    assert_eq!(resolved_payload["opencode_session_id"], "mock-session-repeated-question");
+
+    let waiting_summary = status
+        .core
+        .recent_execution_summaries
+        .iter()
+        .rev()
+        .find(|item| item.message_id == job_id)
+        .expect("expected waiting summary after continuation");
+    assert_eq!(waiting_summary.status, "waiting_user_input");
+
+    agent.stop();
+}
+
+#[test]
+fn agent_schedules_followup_before_completion_when_result_is_unsatisfied() {
+    let bus = Arc::new(Bus::create());
+    let agent = Agent::create(
+        bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(FollowupExecutor)),
+    );
+    agent.start();
+
+    let inbound = make_inbound(MakeInbound {
+        channel: "test".into(),
+        sender_id: Some("user-followup".into()),
+        chat_id: Some("chat-followup".into()),
+        content: "Need better completion".into(),
+        ..Default::default()
+    });
+    let job_id = inbound.id.clone();
+    agent.process_message(inbound);
+
+    let outbound = bus
+        .outbound_receiver()
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert!(outbound.content.contains("final completed answer"));
+
+    let status = agent.status();
+    let timeline = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let events = timeline.iter().map(|event| event.event.as_str()).collect::<Vec<_>>();
+    assert!(events.contains(&"requirement_unsatisfied"));
+    assert!(events.contains(&"requirement_followup_scheduled"));
+    assert!(events.contains(&"requirement_satisfied"));
+    assert!(events.contains(&"message_completed"));
+    let unsatisfied_idx = events
+        .iter()
+        .position(|event| *event == "requirement_unsatisfied")
+        .unwrap();
+    let followup_scheduled_idx = events
+        .iter()
+        .position(|event| *event == "requirement_followup_scheduled")
+        .unwrap();
+    let satisfied_idx = events.iter().position(|event| *event == "requirement_satisfied").unwrap();
+    let completed_idx = events.iter().position(|event| *event == "message_completed").unwrap();
+    assert!(unsatisfied_idx < followup_scheduled_idx);
+    assert!(followup_scheduled_idx < satisfied_idx);
+    assert!(satisfied_idx < completed_idx);
+
+    let summary = status
+        .core
+        .recent_execution_summaries
+        .iter()
+        .rev()
+        .find(|item| item.message_id == job_id)
+        .expect("expected execution summary");
+    assert_eq!(summary.status, "success");
+
+    agent.stop();
+}
+
+#[test]
+fn agent_exhausts_followup_when_result_repeats_without_progress() {
+    let bus = Arc::new(Bus::create());
+    let agent = Agent::create(
+        bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(RepeatingUnsatisfiedExecutor)),
+    );
+    agent.start();
+
+    let inbound = make_inbound(MakeInbound {
+        channel: "test".into(),
+        sender_id: Some("user-repeat".into()),
+        chat_id: Some("chat-repeat".into()),
+        content: "Repeat until exhausted".into(),
+        ..Default::default()
+    });
+    let job_id = inbound.id.clone();
+    agent.process_message(inbound);
+
+    let outbound = bus
+        .outbound_receiver()
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert!(outbound.content.contains("requirement_followup_exhausted"));
+
+    let status = agent.status();
+    let timeline = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let events = timeline.iter().map(|event| event.event.as_str()).collect::<Vec<_>>();
+    assert!(events.contains(&"requirement_followup_exhausted"));
+    assert!(events.contains(&"message_failed"));
+    assert!(!events.contains(&"message_completed"));
+
+    let exhausted_payload = timeline
+        .iter()
+        .find(|event| event.event == "requirement_followup_exhausted")
+        .map(|event| event.payload.clone())
+        .expect("expected requirement_followup_exhausted payload");
+    assert_eq!(exhausted_payload["attempted_rounds"], 2);
+    assert_eq!(exhausted_payload["max_rounds"], 3);
+    assert_eq!(exhausted_payload["reason"], "自动 follow-up 得到了重复结果，尚未收敛");
+    assert_eq!(
+        exhausted_payload["missing_requirements"][0],
+        "避免重复前一轮输出，继续给出真正推进结果"
+    );
+    assert!(exhausted_payload["result_fingerprint"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Needmoreinformationbeforeproceeding."));
+
+    let summary = status
+        .core
+        .recent_execution_summaries
+        .iter()
+        .rev()
+        .find(|item| item.message_id == job_id)
+        .expect("expected execution summary");
+    assert_eq!(summary.status, "followup_exhausted");
+
+    agent.stop();
+}
+
+#[test]
+fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
+    let bus = Arc::new(Bus::create());
+    let agent = Agent::create(
+        bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(OrchestrationQuestionExecutor)),
+    );
+    agent.start();
+
+    let inbound = make_inbound(MakeInbound {
+        channel: "web".into(),
+        sender_id: Some("user-orch-question".into()),
+        chat_id: Some("chat-orch-question".into()),
+        content: "create REST API endpoint".into(),
+        ..Default::default()
+    });
+    let job_id = inbound.id.clone();
+    agent.process_message(inbound);
+
+    thread::sleep(Duration::from_millis(200));
+    let pending = agent
+        .pending_question_for(&job_id)
+        .expect("expected orchestration pending question");
+    assert_eq!(pending.question_id, "orch-question-1");
+    assert_eq!(pending.opencode_session_id, "mock-session-orch-question");
+    assert_eq!(pending.raw_question["prompt"], "需要确认 orchestration 是否继续");
+
+    let waiting_status = agent.status();
+    let waiting_timeline = waiting_status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let waiting_events = waiting_timeline
+        .iter()
+        .map(|event| event.event.as_str())
+        .collect::<Vec<_>>();
+    assert!(waiting_events.contains(&"orchestration_selected"));
+    assert!(waiting_events.contains(&"orchestration_plan_created"));
+    assert!(waiting_events.contains(&"orchestration_subtask_started"));
+    assert!(waiting_events.contains(&"orchestration_subtask_completed"));
+    assert!(waiting_events.contains(&"question_asked"));
+    assert!(!waiting_events.contains(&"orchestration_fallback"));
+    assert!(!waiting_events.contains(&"message_completed"));
+
+    let started_payload = waiting_timeline
+        .iter()
+        .find(|event| event.event == "orchestration_subtask_started")
+        .map(|event| event.payload.clone())
+        .expect("expected orchestration_subtask_started payload");
+    assert_eq!(started_payload["original_task_type"], "design");
+    assert_eq!(started_payload["lowered_task_type"], "api-call");
+    assert_eq!(started_payload["execution_mode"], "serial");
+    assert_eq!(started_payload["result_kind"], "upstream");
+
+    let continued = agent
+        .submit_question_answer(
+            &job_id,
+            QuestionAnswerInput {
+                question_id: "orch-question-1".into(),
+                source: "user".into(),
+                answer_type: "text".into(),
+                answer: "继续 orchestration".into(),
+            },
+        )
+        .expect("orchestration continuation should succeed");
+    assert_eq!(continued.question_id, "orch-question-1");
+    assert!(agent.pending_question_for(&job_id).is_none());
+
+    let outbound = bus
+        .outbound_receiver()
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert!(outbound.content.contains("orchestration continued with 继续 orchestration"));
+
+    let status = agent.status();
+    let timeline = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let events = timeline
+        .iter()
+        .map(|event| event.event.as_str())
+        .collect::<Vec<_>>();
+    assert!(events.contains(&"question_answer_submitted"));
+    assert!(events.contains(&"question_resolved"));
+    assert!(events.contains(&"message_completed"));
+    let waiting_summary = waiting_status
+        .core
+        .recent_execution_summaries
+        .iter()
+        .rev()
+        .find(|item| item.message_id == job_id)
+        .expect("expected waiting orchestration summary");
+    assert_eq!(waiting_summary.plan_type, "orchestration-v1");
+    assert_eq!(waiting_summary.status, "waiting_user_input");
+
+    let final_summary = status
+        .core
+        .recent_execution_summaries
+        .iter()
+        .rev()
+        .find(|item| item.message_id == job_id)
+        .expect("expected final orchestration summary");
+    assert_eq!(final_summary.status, "success");
+
+    agent.stop();
+}
+
+#[test]
+fn agent_orchestration_p2_keeps_followup_contract_after_upstream_result() {
+    let bus = Arc::new(Bus::create());
+    let agent = Agent::create(
+        bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(OrchestrationFollowupExecutor)),
+    );
+    agent.start();
+
+    let inbound = make_inbound(MakeInbound {
+        channel: "web".into(),
+        sender_id: Some("user-orch-followup".into()),
+        chat_id: Some("chat-orch-followup".into()),
+        content: "create REST API endpoint".into(),
+        ..Default::default()
+    });
+    let job_id = inbound.id.clone();
+    agent.process_message(inbound);
+
+    let outbound = bus
+        .outbound_receiver()
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert!(outbound.content.contains("orchestration followup completed"));
+
+    let status = agent.status();
+    let timeline = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let events = timeline
+        .iter()
+        .map(|event| event.event.as_str())
+        .collect::<Vec<_>>();
+    assert!(events.contains(&"orchestration_selected"));
+    assert!(events.contains(&"orchestration_plan_created"));
+    assert!(events.contains(&"orchestration_subtask_started"));
+    assert!(events.contains(&"orchestration_subtask_completed"));
+    assert!(events.contains(&"requirement_unsatisfied"));
+    assert!(events.contains(&"requirement_followup_scheduled"));
+    assert!(events.contains(&"requirement_satisfied"));
+    assert!(events.contains(&"message_completed"));
+    assert!(!events.contains(&"orchestration_fallback"));
+
+    let followup_idx = events
+        .iter()
+        .position(|event| *event == "requirement_followup_scheduled")
+        .unwrap();
+    let completed_idx = events
+        .iter()
+        .position(|event| *event == "message_completed")
+        .unwrap();
+    assert!(followup_idx < completed_idx);
+
+    let summary = status
+        .core
+        .recent_execution_summaries
+        .iter()
+        .rev()
+        .find(|item| item.message_id == job_id)
+        .expect("expected orchestration followup summary");
+    assert_eq!(summary.plan_type, "orchestration-v1");
+    assert_eq!(summary.status, "success");
+
+    agent.stop();
+}
+
+#[test]
+fn agent_failure_does_not_create_pending_question() {
+    let bus = Arc::new(Bus::create());
+    let agent = Agent::create(
+        bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(FailingExecutor)),
+    );
+    agent.start();
+
+    let inbound = make_inbound(MakeInbound {
+        channel: "test".into(),
+        sender_id: Some("user-fail".into()),
+        chat_id: Some("chat-fail".into()),
+        content: "please fail".into(),
+        ..Default::default()
+    });
+    let job_id = inbound.id.clone();
+    agent.process_message(inbound);
+
+    thread::sleep(Duration::from_millis(150));
+    assert!(agent.pending_question_for(&job_id).is_none());
+
+    let status = agent.status();
+    let timeline = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let events = timeline.iter().map(|event| event.event.as_str()).collect::<Vec<_>>();
+    assert!(events.contains(&"message_failed"));
+    assert!(!events.contains(&"question_asked"));
+
+    agent.stop();
+}
+
+#[test]
+fn agent_question_like_error_text_does_not_create_pending_question() {
+    let bus = Arc::new(Bus::create());
+    let agent = Agent::create(
+        bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(QuestionLookingErrorExecutor)),
+    );
+    agent.start();
+
+    let inbound = make_inbound(MakeInbound {
+        channel: "test".into(),
+        sender_id: Some("user-question-looking-error".into()),
+        chat_id: Some("chat-question-looking-error".into()),
+        content: "please fail like question".into(),
+        ..Default::default()
+    });
+    let job_id = inbound.id.clone();
+    agent.process_message(inbound);
+
+    thread::sleep(Duration::from_millis(150));
+    assert!(agent.pending_question_for(&job_id).is_none());
+
+    let status = agent.status();
+    let timeline = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == job_id)
+        .collect::<Vec<_>>();
+    let events = timeline.iter().map(|event| event.event.as_str()).collect::<Vec<_>>();
+    assert!(events.contains(&"message_failed"));
+    assert!(!events.contains(&"question_asked"));
+
+    agent.stop();
+}
+
+#[test]
 fn agent_emits_runtime_events_and_recent_sessions_in_status() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -540,7 +1387,7 @@ fn agent_emits_runtime_events_and_recent_sessions_in_status() {
     assert_eq!(outbound.content, "reply[mock-session-1]: Observe me");
 
     let mut events = Vec::new();
-    for _ in 0..12 {
+    for _ in 0..20 {
         if let Ok(msg) = bus.internal_receiver().recv_timeout(Duration::from_millis(200)) {
             if let Some(event) = msg.payload.get("event").and_then(|v| v.as_str()) {
                 events.push(event.to_string());
@@ -554,6 +1401,9 @@ fn agent_emits_runtime_events_and_recent_sessions_in_status() {
     assert!(events.iter().any(|e| e == "message_received"));
     assert!(events.iter().any(|e| e == "session_ready"));
     assert!(events.iter().any(|e| e == "plan_built"));
+    assert!(events.iter().any(|e| e == "worker_task_assigned"));
+    assert!(events.iter().any(|e| e == "api_call_started"));
+    assert!(events.iter().any(|e| e == "upstream_response_observed"));
     assert!(events.iter().any(|e| e == "message_completed"));
 
     let status = agent.status();
@@ -563,24 +1413,44 @@ fn agent_emits_runtime_events_and_recent_sessions_in_status() {
     assert_eq!(status.core.recent_sessions[0].session_id.as_deref(), Some("mock-session-1"));
     assert_eq!(status.core.metrics.gauges["sessions_active"], 1);
 
-    let timeline_events = status
-        .core
-        .runtime_timeline
+    let timeline = &status.core.runtime_timeline;
+    let timeline_events = timeline
         .iter()
         .map(|event| event.event.as_str())
         .collect::<Vec<_>>();
     assert!(timeline_events.contains(&"message_received"));
     assert!(timeline_events.contains(&"session_ready"));
     assert!(timeline_events.contains(&"plan_built"));
+    assert!(timeline_events.contains(&"worker_task_assigned"));
+    assert!(timeline_events.contains(&"api_call_started"));
+    assert!(timeline_events.contains(&"upstream_response_observed"));
     assert!(timeline_events.contains(&"message_completed"));
 
     let message_received_pos = timeline_events.iter().position(|event| *event == "message_received").unwrap();
     let session_ready_pos = timeline_events.iter().position(|event| *event == "session_ready").unwrap();
     let plan_built_pos = timeline_events.iter().position(|event| *event == "plan_built").unwrap();
+    let worker_task_assigned_pos = timeline
+        .iter()
+        .position(|event| {
+            event.event == "worker_task_assigned"
+                && event.payload.get("task_type").and_then(|value| value.as_str()) == Some("api-call")
+        })
+        .unwrap();
+    let api_call_started_pos = timeline
+        .iter()
+        .position(|event| {
+            event.event == "api_call_started"
+                && event.payload.get("task_type").and_then(|value| value.as_str()) == Some("api-call")
+        })
+        .unwrap();
+    let upstream_response_observed_pos = timeline_events.iter().position(|event| *event == "upstream_response_observed").unwrap();
     let message_completed_pos = timeline_events.iter().position(|event| *event == "message_completed").unwrap();
     assert!(message_received_pos < session_ready_pos);
     assert!(session_ready_pos < plan_built_pos);
-    assert!(plan_built_pos < message_completed_pos);
+    assert!(plan_built_pos < worker_task_assigned_pos);
+    assert!(worker_task_assigned_pos < api_call_started_pos);
+    assert!(api_call_started_pos < upstream_response_observed_pos);
+    assert!(upstream_response_observed_pos < message_completed_pos);
 
     assert_eq!(status.core.recent_execution_summaries.len(), 1);
     let summary = &status.core.recent_execution_summaries[0];
@@ -891,6 +1761,72 @@ fn agent_exposes_busy_worker_current_task_during_long_execution() {
     assert!(outbound.content.contains("slow-reply[slow-session-1]"));
 
     agent.stop();
+}
+
+#[test]
+fn runtime_timeline_uses_subtask_metadata_as_job_identity() {
+    let worker_pool = Arc::new(WorkerPool::new(
+        SdkClient::new("http://127.0.0.1:9711"),
+        Arc::new(MockExecutor),
+        Some(2),
+        None,
+        Some(100),
+    ));
+    worker_pool.start();
+    let specialist_pool = Arc::new(SpecialistPool::new(worker_pool.clone()));
+    let orchestrator = AgentOrchestrator::new(worker_pool.clone(), specialist_pool, OrchestratorConfig::default());
+    let plan = orchestrator.decompose_task("build a web app", "main-job-1", "main-job-1");
+    let subtask = plan.subtasks.values().next().unwrap();
+
+    let bus = Arc::new(Bus::create());
+    let agent = Agent::create(
+        bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(MockExecutor)),
+    );
+    agent.start();
+
+    agent.process_message(make_inbound(MakeInbound {
+        channel: "test".into(),
+        sender_id: Some("subtask-user".into()),
+        chat_id: Some("chat-subtask".into()),
+        content: "Run subtask".into(),
+        metadata: Some(json!({
+            "parent_job_id": subtask.parent_job_id,
+            "subtask_id": subtask.id,
+            "plan_id": subtask.parent_id,
+            "specialist_type": subtask.specialist_type,
+        })),
+        ..Default::default()
+    }));
+
+    let outbound = bus
+        .outbound_receiver()
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(outbound.content, "reply[mock-session-1]: Run subtask");
+
+    let status = agent.status();
+    let subtask_events = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == subtask.id)
+        .collect::<Vec<_>>();
+    assert!(!subtask_events.is_empty());
+    assert!(subtask_events.iter().any(|event| event.event == "message_received"));
+    assert!(subtask_events.iter().any(|event| event.event == "plan_built"));
+    assert!(subtask_events.iter().any(|event| event.event == "message_completed"));
+    for event in subtask_events {
+        assert!(!event.trace_id.is_empty());
+        assert_eq!(event.payload["parent_job_id"], "main-job-1");
+        assert_eq!(event.payload["subtask_id"], subtask.id);
+        assert_eq!(event.payload["plan_id"], subtask.parent_id);
+    }
+
+    agent.stop();
+    worker_pool.stop();
 }
 
 #[test]

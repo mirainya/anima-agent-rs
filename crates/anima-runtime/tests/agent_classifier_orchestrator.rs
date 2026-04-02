@@ -119,6 +119,31 @@ fn agent_orchestrator_executes_single_and_sequential_plans() {
 }
 
 #[test]
+fn agent_classifier_detects_web_orchestration_v1_upgrade_conservatively() {
+    let web_complex = make_inbound(MakeInbound {
+        channel: "web".into(),
+        content: "build a web app with frontend and backend".into(),
+        ..Default::default()
+    });
+    assert!(AgentClassifier::should_upgrade_to_orchestration_v1(&web_complex));
+
+    let cli_same_text = make_inbound(MakeInbound {
+        channel: "cli".into(),
+        content: "build a web app with frontend and backend".into(),
+        ..Default::default()
+    });
+    assert!(!AgentClassifier::should_upgrade_to_orchestration_v1(&cli_same_text));
+
+    let forced = make_inbound(MakeInbound {
+        channel: "cli".into(),
+        content: "plain request".into(),
+        metadata: Some(json!({"orchestration-v1": true})),
+        ..Default::default()
+    });
+    assert!(AgentClassifier::should_upgrade_to_orchestration_v1(&forced));
+}
+
+#[test]
 fn agent_orchestrator_executes_parallel_and_specialist_route_skeletons() {
     let worker_pool = Arc::new(WorkerPool::new(
         SdkClient::new("http://127.0.0.1:9711"),

@@ -33,8 +33,8 @@ export function JobWorkbenchDrawer({ isOpen, onClose, jobs, selectedSession, sco
           <section className="jobs-drawer-section jobs-list-pane">
             <div className="pane-header">
               <div>
-                <div className="pane-title">Jobs 列表</div>
-                <div className="pane-subtitle">切换任务并聚焦当前工作流</div>
+                <div className="pane-title">任务列表</div>
+                <div className="pane-subtitle">切换当前范围内的任务。</div>
               </div>
             </div>
             <JobsList jobs={jobs} selectedSessionChatId={selectedSession?.chat_id ?? null} />
@@ -43,8 +43,8 @@ export function JobWorkbenchDrawer({ isOpen, onClose, jobs, selectedSession, sco
           <section className="jobs-drawer-section jobs-detail-pane">
             <div className="pane-header">
               <div>
-                <div className="pane-title">Job 详情</div>
-                <div className="pane-subtitle">结果、Review、执行与事件细节</div>
+                <div className="pane-title">任务详情</div>
+                <div className="pane-subtitle">选中任务后在抽屉中查看详情与交互入口。</div>
               </div>
             </div>
             <JobDetail jobs={jobs} selectedSessionChatId={selectedSession?.chat_id ?? null} />

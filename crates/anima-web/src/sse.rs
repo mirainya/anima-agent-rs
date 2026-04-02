@@ -40,7 +40,7 @@ pub fn start_internal_bus_forwarder(bus: Arc<Bus>, web_channel: Arc<WebChannel>)
                                     task_type,
                                 });
                             }
-                            "message_received" | "session_ready" | "session_create_failed" | "plan_built" | "cache_hit" | "cache_miss" | "message_completed" | "message_failed" => {
+                            "message_received" | "session_ready" | "session_create_failed" | "plan_built" | "cache_hit" | "cache_miss" | "worker_task_assigned" | "api_call_started" | "message_completed" | "message_failed" | "question_asked" | "question_answer_submitted" | "question_resolved" | "question_escalated_to_user" | "upstream_response_observed" | "requirement_evaluation_started" | "requirement_satisfied" | "requirement_unsatisfied" | "requirement_followup_scheduled" | "requirement_followup_exhausted" | "user_input_required" => {
                                 web_channel.broadcast(SseEvent::RuntimeEvent {
                                     event: event_type.to_string(),
                                     message_id: msg

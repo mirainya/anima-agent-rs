@@ -6,16 +6,102 @@ export const jobStatusSchema = z.enum([
   'creating_session',
   'planning',
   'executing',
-  'waiting_upstream_input',
+  'waiting_user_input',
+  'stalled',
   'completed',
   'failed',
 ]);
 
-export const jobEventSchema = z.object({
-  event: z.string(),
-  recorded_at_ms: z.number(),
-  payload: z.unknown(),
-});
+const workerTaskAssignedPayloadSchema = z.object({
+  task_id: z.string().optional(),
+  task_type: z.string().optional(),
+  execution_kind: z.string().optional(),
+  task_summary: z.string().optional(),
+  task_preview: z.string().nullable().optional(),
+  opencode_session_id: z.string().nullable().optional(),
+  question_id: z.string().optional(),
+}).passthrough();
+
+const apiCallStartedPayloadSchema = z.object({
+  task_id: z.string().optional(),
+  task_type: z.string().optional(),
+  execution_kind: z.string().optional(),
+  request_preview: z.string().nullable().optional(),
+  opencode_session_id: z.string().nullable().optional(),
+  question_id: z.string().optional(),
+}).passthrough();
+
+const upstreamResponseObservedPayloadSchema = z.object({
+  worker_id: z.string().nullable().optional(),
+  task_type: z.string().optional(),
+  provider: z.string().nullable().optional(),
+  operation: z.string().nullable().optional(),
+  opencode_session_id: z.string().nullable().optional(),
+  response_preview: z.string().optional(),
+  raw_result: z.unknown().optional(),
+}).passthrough();
+
+const questionAskedPayloadSchema = z.object({
+  question_id: z.string(),
+  prompt: z.string().optional(),
+  options: z.array(z.string()).optional(),
+  raw_question: z.unknown().optional(),
+  opencode_session_id: z.string().nullable().optional(),
+  requires_user_confirmation: z.boolean().optional(),
+}).passthrough();
+
+const questionAnswerSubmittedPayloadSchema = z.object({
+  question_id: z.string(),
+  answer: z.string().optional(),
+  answer_summary: z.string().nullable().optional(),
+  resolution_source: z.string().nullable().optional(),
+  opencode_session_id: z.string().nullable().optional(),
+}).passthrough();
+
+const questionResolvedPayloadSchema = z.object({
+  question_id: z.string(),
+  answer_summary: z.string().nullable().optional(),
+  resolution_source: z.string().nullable().optional(),
+  opencode_session_id: z.string().nullable().optional(),
+}).passthrough();
+
+export const jobEventSchema = z.union([
+  z.object({
+    event: z.literal('worker_task_assigned'),
+    recorded_at_ms: z.number(),
+    payload: workerTaskAssignedPayloadSchema,
+  }),
+  z.object({
+    event: z.literal('api_call_started'),
+    recorded_at_ms: z.number(),
+    payload: apiCallStartedPayloadSchema,
+  }),
+  z.object({
+    event: z.literal('upstream_response_observed'),
+    recorded_at_ms: z.number(),
+    payload: upstreamResponseObservedPayloadSchema,
+  }),
+  z.object({
+    event: z.literal('question_asked'),
+    recorded_at_ms: z.number(),
+    payload: questionAskedPayloadSchema,
+  }),
+  z.object({
+    event: z.literal('question_answer_submitted'),
+    recorded_at_ms: z.number(),
+    payload: questionAnswerSubmittedPayloadSchema,
+  }),
+  z.object({
+    event: z.literal('question_resolved'),
+    recorded_at_ms: z.number(),
+    payload: questionResolvedPayloadSchema,
+  }),
+  z.object({
+    event: z.string(),
+    recorded_at_ms: z.number(),
+    payload: z.unknown(),
+  }),
+]);
 
 export const jobReviewSchema = z.object({
   verdict: z.enum(['accepted', 'rejected']),
@@ -34,10 +120,37 @@ export const workerTaskSchema = z.object({
   content_preview: z.string(),
 });
 
+export const pendingQuestionSchema = z.object({
+  question_id: z.string(),
+  question_kind: z.string(),
+  prompt: z.string(),
+  options: z.array(z.string()),
+  raw_question: z.unknown(),
+  decision_mode: z.string(),
+  risk_level: z.string(),
+  requires_user_confirmation: z.boolean(),
+  opencode_session_id: z.string().nullable().optional(),
+  answer_summary: z.string().nullable().optional(),
+  resolution_source: z.string().nullable().optional(),
+});
+
+const orchestrationSchema = z.object({
+  plan_id: z.string().nullable().optional(),
+  active_subtask_name: z.string().nullable().optional(),
+  active_subtask_id: z.string().nullable().optional(),
+  total_subtasks: z.number(),
+  active_subtasks: z.number(),
+  completed_subtasks: z.number(),
+  failed_subtasks: z.number(),
+  child_job_ids: z.array(z.string()),
+});
+
 export const jobViewSchema = z.object({
   job_id: z.string(),
   trace_id: z.string(),
   message_id: z.string(),
+  kind: z.enum(['main', 'subtask']),
+  parent_job_id: z.string().nullable().optional(),
   channel: z.string(),
   chat_id: z.string().nullable().optional(),
   sender_id: z.string(),
@@ -49,11 +162,13 @@ export const jobViewSchema = z.object({
   updated_at_ms: z.number(),
   elapsed_ms: z.number(),
   current_step: z.string(),
+  pending_question: pendingQuestionSchema.nullable().optional(),
   recent_events: z.array(jobEventSchema),
   worker: workerTaskSchema.nullable().optional(),
   execution_summary: z.unknown().nullable().optional(),
   failure: z.unknown().nullable().optional(),
   review: jobReviewSchema.nullable().optional(),
+  orchestration: orchestrationSchema.nullable().optional(),
 });
 
 export const jobsResponseSchema = z.object({

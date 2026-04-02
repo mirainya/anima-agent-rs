@@ -1,4 +1,5 @@
-use crate::jobs::{build_job_views, AcceptedJob, JobReviewInput};
+use crate::jobs::{build_job_views, AcceptedJob, JobKind, JobReviewInput};
+use anima_runtime::agent::QuestionAnswerInput;
 use crate::AppState;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue, StatusCode, Uri};
@@ -66,6 +67,14 @@ pub struct SendMessageRequest {
     pub session_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct QuestionAnswerRequest {
+    pub question_id: String,
+    pub source: String,
+    pub answer_type: String,
+    pub answer: String,
+}
+
 pub fn create_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(index_page))
@@ -75,6 +84,7 @@ pub fn create_routes() -> Router<Arc<AppState>> {
         .route("/api/status", get(system_status))
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{job_id}/review", post(review_job))
+        .route("/api/jobs/{job_id}/question-answer", post(answer_job_question))
         .fallback(spa_fallback)
 }
 
@@ -183,6 +193,8 @@ async fn send_message(
             job_id: job_id.clone(),
             trace_id: job_id.clone(),
             message_id: job_id.clone(),
+            kind: JobKind::Main,
+            parent_job_id: None,
             channel: "web".into(),
             chat_id: Some(session_id.clone()),
             sender_id: "web-user".into(),
@@ -240,6 +252,45 @@ async fn review_job(
         "review": review,
         "job": job,
     }))
+}
+
+async fn answer_job_question(
+    Path(job_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<QuestionAnswerRequest>,
+) -> Json<serde_json::Value> {
+    let result = {
+        let runtime = state.runtime.lock().unwrap();
+        runtime.agent.submit_question_answer(
+            &job_id,
+            QuestionAnswerInput {
+                question_id: input.question_id.clone(),
+                source: input.source.clone(),
+                answer_type: input.answer_type,
+                answer: input.answer.clone(),
+            },
+        )
+    };
+
+    match result {
+        Ok(question) => {
+            let snapshot = build_status_snapshot(state.as_ref());
+            let job = snapshot.jobs.into_iter().find(|job| job.job_id == job_id);
+            Json(serde_json::json!({
+                "ok": true,
+                "job_id": job_id,
+                "question_id": input.question_id,
+                "question": question,
+                "job": job,
+            }))
+        }
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "job_id": job_id,
+            "question_id": input.question_id,
+            "error": error,
+        })),
+    }
 }
 
 /// 系统状态

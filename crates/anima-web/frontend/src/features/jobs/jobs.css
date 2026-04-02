@@ -35,6 +35,14 @@
   gap: 8px;
 }
 
+.job-list-badges,
+.job-detail-header-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .job-list-id,
 .job-list-bottom,
 .job-detail-subtitle,
@@ -60,7 +68,8 @@
 }
 
 .job-list-reason,
-.job-status-explanation {
+.job-status-explanation,
+.job-hierarchy-note {
   margin-top: 8px;
   font-size: 12px;
   line-height: 1.6;
@@ -101,6 +110,25 @@
   color: var(--text2);
 }
 
+.job-kind-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.job-kind-pill.main {
+  background: rgba(108, 92, 231, 0.16);
+  color: #d9d3ff;
+}
+
+.job-kind-pill.subtask {
+  background: rgba(0, 184, 148, 0.14);
+  color: var(--green);
+}
+
 .job-detail {
   display: flex;
   flex-direction: column;
@@ -113,7 +141,37 @@
   font-weight: 600;
 }
 
-.job-detail-grid {
+.job-status-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(220px, 0.8fr);
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.job-status-panel-main,
+.job-status-panel-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.job-status-panel-side {
+  font-size: 12px;
+  color: var(--text2);
+}
+
+.job-status-panel-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text2);
+}
+
+.job-detail-grid,
+.job-trace-grid {
   display: grid;
   grid-template-columns: 90px minmax(0, 1fr);
   gap: 6px 10px;
@@ -209,6 +267,74 @@
   margin-top: 8px;
 }
 
+.job-process-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.job-decision-card {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(108, 92, 231, 0.08);
+}
+
+.job-decision-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.job-decision-card .summary-grid {
+  margin-top: 10px;
+}
+
+.job-process-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.job-process-summary {
+  list-style: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.job-process-summary::-webkit-details-marker {
+  display: none;
+}
+
+.job-process-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.job-process-preview {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.job-process-raw {
+  margin: 0;
+  padding: 0 14px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .jobs-conversation-scroller {
   height: 100%;
   overflow: auto;
@@ -222,6 +348,39 @@
   flex-direction: column;
   gap: 18px;
   padding: 8px 0 32px;
+}
+
+.jobs-conversation-section-header {
+  padding: 0 0 4px;
+}
+
+.jobs-conversation-section-body {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.6;
+}
+
+.jobs-runtime-panel {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.jobs-runtime-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.jobs-runtime-row,
+.trace-event-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .jobs-conversation-turn {
@@ -326,6 +485,23 @@
   line-height: 1.75;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.job-trace-block {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.job-trace-block-title,
+.jobs-runtime-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.job-trace-text,
+.jobs-runtime-preview {
+  font-size: 13px;
 }
 
 .job-message-footer {
@@ -437,12 +613,26 @@
   padding: 12px;
 }
 
+.jobs-drawer-list-only {
+  grid-template-columns: 1fr;
+}
+
 .jobs-drawer-section {
   min-height: 0;
 }
 
 @media (max-width: 1100px) {
   .jobs-drawer-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.job-events.compact {
+  gap: 10px;
+}
+
+@media (max-width: 960px) {
+  .job-status-panel {
     grid-template-columns: 1fr;
   }
 }

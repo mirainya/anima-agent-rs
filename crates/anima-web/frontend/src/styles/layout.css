@@ -148,6 +148,24 @@
   padding-top: 16px;
 }
 
+.jobs-main-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.jobs-main-panel {
+  background: #151521;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  padding: 16px;
+  min-height: 0;
+}
+
+.jobs-secondary-panel {
+  min-height: 280px;
+}
+
 .jobs-composer-bar {
   flex: 0 0 auto;
   padding-top: 12px;
@@ -163,6 +181,12 @@
   padding: 10px 12px;
   min-height: 0;
   overflow: auto;
+}
+
+@media (max-width: 720px) {
+  .jobs-main-panel {
+    padding: 12px;
+  }
 }
 
 .pane-header {

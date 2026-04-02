@@ -9,7 +9,7 @@ export function statusTone(status: JobStatus): 'success' | 'failed' | 'busy' | '
     status === 'creating_session' ||
     status === 'planning' ||
     status === 'executing' ||
-    status === 'waiting_upstream_input'
+    status === 'waiting_user_input'
   ) {
     return 'busy';
   }
@@ -28,8 +28,10 @@ export function statusLabel(status: JobStatus): string {
       return '规划中';
     case 'executing':
       return '执行中';
-    case 'waiting_upstream_input':
-      return '等待上游输入';
+    case 'waiting_user_input':
+      return '等待用户输入';
+    case 'stalled':
+      return '暂时停滞';
     case 'completed':
       return '已完成';
     case 'failed':
