@@ -16,3 +16,4 @@ parking_lot.workspace = true
 reqwest.workspace = true
 regex.workspace = true
 lazy_static.workspace = true
+glob.workspace = true

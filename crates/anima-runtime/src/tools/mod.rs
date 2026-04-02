@@ -7,6 +7,7 @@ pub mod definition;
 pub mod execution;
 pub mod registry;
 pub mod result;
+pub mod builtins;
 
 pub use definition::*;
 pub use execution::*;

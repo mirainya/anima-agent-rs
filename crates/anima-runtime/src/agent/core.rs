@@ -262,6 +262,15 @@ impl CoreAgent {
         self.hook_registry = Some(Arc::new(registry));
     }
 
+    /// 注册所有内建工具（启用 agentic loop 客户端工具执行）
+    ///
+    /// 调用方按需决定是否启用；不自动注册，保留 orchestrator 路径作为默认行为。
+    pub fn register_builtin_tools(&mut self) {
+        let registry = Arc::get_mut(&mut self.tool_registry)
+            .expect("cannot mutate shared tool_registry — ensure no other Arc references exist");
+        crate::tools::builtins::register_all(registry);
+    }
+
     /// 启动智能体：启动 WorkerPool，并创建两个后台线程：
     /// 1. 控制信号监听线程（处理 Shutdown / Pause / Resume）
     /// 2. 入站消息循环线程（从 Bus 接收并处理消息）
