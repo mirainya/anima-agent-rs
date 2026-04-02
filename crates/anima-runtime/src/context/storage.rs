@@ -552,7 +552,6 @@ impl TieredStorageTrait for TieredStorage {
         l2.set_entry(key, entry.value, EntryOpts {
             ttl_ms: entry.ttl_ms,
             tier: Some(StorageTier::L2),
-            ..Default::default()
         });
         self.l1.delete_entry(key);
         *self.demotions.lock() += 1;

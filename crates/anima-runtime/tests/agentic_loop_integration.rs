@@ -131,9 +131,7 @@ fn agentic_loop_echo_tool_integration() {
         max_iterations: 5,
         session_id: "integration-session".into(),
         trace_id: "integration-trace".into(),
-        compact: None,
-        system_prompt: None,
-        tool_definitions: None,
+        ..Default::default()
     };
 
     let result = run_agentic_loop(
@@ -186,9 +184,7 @@ fn agentic_loop_unknown_tool_returns_error_result() {
         max_iterations: 5,
         session_id: "test".into(),
         trace_id: "test".into(),
-        compact: None,
-        system_prompt: None,
-        tool_definitions: None,
+        ..Default::default()
     };
 
     let result = run_agentic_loop(
@@ -237,9 +233,7 @@ fn agentic_loop_multiple_tools_in_one_turn() {
         max_iterations: 5,
         session_id: "test".into(),
         trace_id: "test".into(),
-        compact: None,
-        system_prompt: None,
-        tool_definitions: None,
+        ..Default::default()
     };
 
     let result = run_agentic_loop(
@@ -316,9 +310,8 @@ fn test_system_prompt_passed_in_payload() {
         max_iterations: 5,
         session_id: "test".into(),
         trace_id: "test".into(),
-        compact: None,
         system_prompt: Some("You are a helpful assistant.".into()),
-        tool_definitions: None,
+        ..Default::default()
     };
 
     let result = run_agentic_loop(
@@ -357,9 +350,9 @@ fn test_tool_definitions_passed_in_payload() {
         max_iterations: 5,
         session_id: "test".into(),
         trace_id: "test".into(),
-        compact: None,
         system_prompt: Some("identity".into()),
         tool_definitions: Some(tool_defs),
+        ..Default::default()
     };
 
     let result = run_agentic_loop(

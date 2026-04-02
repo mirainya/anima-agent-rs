@@ -251,3 +251,156 @@ fn estimate_size(value: &Value) -> usize {
         Value::Object(map) => map.iter().map(|(k, v)| k.len() + estimate_size(v)).sum(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_get_miss_on_empty() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        assert!(cache.get("x").is_none());
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn test_set_and_get() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        cache.set("k", json!("v"), None);
+        assert_eq!(cache.get("k"), Some(json!("v")));
+        assert_eq!(cache.stats().hits, 1);
+        assert_eq!(cache.stats().writes, 1);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_ttl_expiration() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        cache.set("ephemeral", json!("gone"), Some(1)); // 1ms TTL
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(cache.get("ephemeral").is_none());
+        let stats = cache.stats();
+        assert_eq!(stats.expirations, 1);
+        assert_eq!(stats.misses, 1);
+    }
+
+    #[test]
+    fn test_has() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        assert!(!cache.has("k"));
+        cache.set("k", json!(1), None);
+        assert!(cache.has("k"));
+    }
+
+    #[test]
+    fn test_has_expired() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        cache.set("k", json!(1), Some(1));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(!cache.has("k"));
+    }
+
+    #[test]
+    fn test_delete() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        cache.set("k", json!(1), None);
+        assert!(cache.delete("k"));
+        assert!(cache.get("k").is_none());
+        assert!(!cache.delete("k"));
+    }
+
+    #[test]
+    fn test_eviction_on_capacity() {
+        let cache = TtlCache::new(Some(60_000), Some(3));
+        cache.set("a", json!(1), None);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        cache.set("b", json!(2), None);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        cache.set("c", json!(3), None);
+        // 容量满，插入 d 应淘汰最早创建的 a
+        cache.set("d", json!(4), None);
+        assert!(cache.get("a").is_none(), "a should have been evicted");
+        assert_eq!(cache.get("d"), Some(json!(4)));
+        assert!(cache.stats().evictions >= 1);
+    }
+
+    #[test]
+    fn test_eviction_prefers_expired() {
+        let cache = TtlCache::new(Some(60_000), Some(3));
+        cache.set("short", json!(1), Some(1)); // 将很快过期
+        cache.set("long1", json!(2), None);
+        cache.set("long2", json!(3), None);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        // 插入新条目，应该清理过期的 short 而非淘汰 long1
+        cache.set("new", json!(4), None);
+        assert!(cache.get("long1").is_some(), "long1 should still exist");
+        assert!(cache.get("long2").is_some(), "long2 should still exist");
+        assert_eq!(cache.stats().expirations, 1);
+    }
+
+    #[test]
+    fn test_get_or_compute() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        let v1 = cache.get_or_compute("k", || json!(42));
+        assert_eq!(v1, json!(42));
+        let v2 = cache.get_or_compute("k", || json!(999));
+        assert_eq!(v2, json!(42)); // 应命中缓存
+    }
+
+    #[test]
+    fn test_get_or_compute_with_ttl() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        let v = cache.get_or_compute_with_ttl("k", 1, || json!("fast"));
+        assert_eq!(v, json!("fast"));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        // 已过期，应重新计算
+        let v2 = cache.get_or_compute_with_ttl("k", 60_000, || json!("new"));
+        assert_eq!(v2, json!("new"));
+    }
+
+    #[test]
+    fn test_remaining_ttl() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        assert!(cache.remaining_ttl("missing").is_none());
+        cache.set("k", json!(1), Some(10_000));
+        let ttl = cache.remaining_ttl("k").unwrap();
+        assert!(ttl > 0 && ttl <= 10_000);
+    }
+
+    #[test]
+    fn test_cleanup_expired() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        cache.set("a", json!(1), Some(1));
+        cache.set("b", json!(2), Some(1));
+        cache.set("c", json!(3), Some(60_000));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let cleaned = cache.cleanup_expired();
+        assert_eq!(cleaned, 2);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.has("c"));
+    }
+
+    #[test]
+    fn test_clear() {
+        let cache = TtlCache::new(Some(60_000), Some(100));
+        cache.set("a", json!(1), None);
+        cache.set("b", json!(2), None);
+        cache.clear();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_hit_rate() {
+        let stats = TtlCacheStats {
+            hits: 3,
+            misses: 1,
+            ..Default::default()
+        };
+        assert!((stats.hit_rate() - 0.75).abs() < f64::EPSILON);
+
+        let empty = TtlCacheStats::default();
+        assert!((empty.hit_rate() - 0.0).abs() < f64::EPSILON);
+    }
+}

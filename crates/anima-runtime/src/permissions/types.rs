@@ -24,17 +24,14 @@ pub struct PermissionRule {
 
 /// 权限模式
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PermissionMode {
     /// 全部允许（无需确认）
     AllowAll,
     /// 全部拒绝
     DenyAll,
     /// 基于规则判定
+    #[default]
     RuleBased,
 }
 
-impl Default for PermissionMode {
-    fn default() -> Self {
-        Self::RuleBased
-    }
-}

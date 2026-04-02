@@ -108,8 +108,7 @@ fn test_loop_compact_enabled_no_trigger() {
         session_id: "test".into(),
         trace_id: "test".into(),
         compact: Some(CompactConfig::default()),
-        system_prompt: None,
-        tool_definitions: None,
+        ..Default::default()
     };
     let initial = vec![make_user_msg("hello")];
 
@@ -152,8 +151,7 @@ fn test_loop_compact_triggered() {
             buffer_tokens: 500,
             preserve_recent_turns: 1,
         }),
-        system_prompt: None,
-        tool_definitions: None,
+        ..Default::default()
     };
     let initial = vec![make_user_msg("run big echo 5 times")];
 
@@ -201,8 +199,7 @@ fn test_loop_compact_preserves_latest_turn() {
             buffer_tokens: 200,
             preserve_recent_turns: 1,
         }),
-        system_prompt: None,
-        tool_definitions: None,
+        ..Default::default()
     };
     let initial = vec![make_user_msg("test")];
 

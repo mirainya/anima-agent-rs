@@ -163,3 +163,27 @@ pub fn respond_to_permission(
         None,
     )?)
 }
+
+/// 发送流式 prompt 请求，返回原始 HTTP Response 用于 SSE 逐行读取
+///
+/// 复用 `normalize_message` 逻辑，自动注入 `"stream": true`。
+pub fn send_prompt_streaming(
+    client: &Client,
+    session_id: &str,
+    message: Value,
+    agent: Option<&str>,
+) -> Result<reqwest::blocking::Response> {
+    let mut normalized = match normalize_message(message)? {
+        Value::Object(map) => map,
+        _ => unreachable!(),
+    };
+    normalized.insert("stream".into(), Value::Bool(true));
+    if let Some(agent) = agent {
+        normalized.insert("agent".into(), Value::String(agent.to_string()));
+    }
+    http::post_request_streaming(
+        client,
+        &format!("/session/{session_id}/message"),
+        &Value::Object(normalized),
+    )
+}

@@ -127,6 +127,7 @@ impl LruCache {
             .unwrap_or(false);
         if expired {
             entries.shift_remove(key);
+            drop(entries);
             self.access_order.lock().retain(|existing| existing != key);
             self.stats.lock().misses += 1;
             return None;
@@ -161,7 +162,9 @@ impl LruCache {
                 break;
             }
             drop(entries);
-            if let Some(evict_key) = self.access_order.lock().first().cloned() {
+            // 注意：必须先 drop access_order 锁再调 delete，否则死锁
+            let evict_key = self.access_order.lock().first().cloned();
+            if let Some(evict_key) = evict_key {
                 self.delete(&evict_key);
                 self.stats.lock().evictions += 1;
             } else {
@@ -269,4 +272,151 @@ fn stable_hash(input: &str) -> u64 {
         hash = hash.wrapping_mul(1099511628211);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_get_miss_on_empty_cache() {
+        let cache = LruCache::new(Some(10), Some(60_000));
+        assert!(cache.get("nonexistent").is_none());
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn test_set_and_get() {
+        let cache = LruCache::new(Some(10), Some(60_000));
+        cache.set("key1", json!("value1"), None);
+        assert_eq!(cache.get("key1"), Some(json!("value1")));
+        let stats = cache.stats();
+        assert_eq!(stats.writes, 1);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.entry_count, 1);
+    }
+
+    #[test]
+    fn test_overwrite_same_key() {
+        let cache = LruCache::new(Some(10), Some(60_000));
+        cache.set("k", json!(1), None);
+        cache.set("k", json!(2), None);
+        assert_eq!(cache.get("k"), Some(json!(2)));
+        assert_eq!(cache.stats().entry_count, 1);
+        assert_eq!(cache.stats().writes, 2);
+    }
+
+    #[test]
+    fn test_delete() {
+        let cache = LruCache::new(Some(10), Some(60_000));
+        cache.set("k", json!("v"), None);
+        assert!(cache.delete("k"));
+        assert!(cache.get("k").is_none());
+        assert!(!cache.delete("k")); // already deleted
+    }
+
+    #[test]
+    fn test_eviction_on_capacity() {
+        let cache = LruCache::new(Some(3), Some(60_000));
+        cache.set("a", json!(1), None);
+        cache.set("b", json!(2), None);
+        cache.set("c", json!(3), None);
+        // 访问 a 使其变为最近使用
+        cache.get("a");
+        // 插入 d 应淘汰 b（最久未使用）
+        cache.set("d", json!(4), None);
+        assert!(cache.get("b").is_none(), "b should have been evicted");
+        assert_eq!(cache.get("a"), Some(json!(1)));
+        assert_eq!(cache.get("d"), Some(json!(4)));
+        assert!(cache.stats().evictions >= 1);
+    }
+
+    #[test]
+    fn test_ttl_expiration() {
+        let cache = LruCache::new(Some(10), Some(60_000));
+        // 设置一个极短的 TTL（1ms）
+        cache.set("ephemeral", json!("gone"), Some(1));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(cache.get("ephemeral").is_none(), "should have expired");
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn test_no_ttl_never_expires() {
+        let cache = LruCache::new(Some(10), None);
+        // 手动构造无 TTL 条目
+        {
+            let mut entries = cache.entries.lock();
+            entries.insert(
+                "forever".into(),
+                CacheEntry {
+                    key: "forever".into(),
+                    value: json!("alive"),
+                    created_at_ms: 0, // 很久以前
+                    accessed_at_ms: 0,
+                    access_count: 0,
+                    ttl_ms: None,
+                    size: 5,
+                    metadata: json!({}),
+                },
+            );
+            cache.access_order.lock().push("forever".into());
+        }
+        assert_eq!(cache.get("forever"), Some(json!("alive")));
+    }
+
+    #[test]
+    fn test_get_or_compute() {
+        let cache = LruCache::new(Some(10), Some(60_000));
+        let v = cache.get_or_compute("computed", || json!(42));
+        assert_eq!(v, json!(42));
+        // 第二次应命中缓存，不调用 compute
+        let v2 = cache.get_or_compute("computed", || json!(999));
+        assert_eq!(v2, json!(42));
+        assert_eq!(cache.stats().hits, 1);
+    }
+
+    #[test]
+    fn test_stats_hit_rate() {
+        let cache = LruCache::new(Some(10), Some(60_000));
+        cache.set("k", json!(1), None);
+        cache.get("k"); // hit
+        cache.get("missing"); // miss
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+        assert!((stats.hit_rate - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cache_key_generators() {
+        let k1 = make_api_cache_key("session1", "content");
+        let k2 = make_api_cache_key("session1", "content");
+        assert_eq!(k1, k2); // 相同输入产生相同 key
+        let k3 = make_api_cache_key("session1", "different");
+        assert_ne!(k1, k3); // 不同输入产生不同 key
+
+        let tk = make_task_cache_key("classify", "payload");
+        assert!(tk.starts_with("task:classify:"));
+
+        let sk = make_session_cache_key("s1", "history");
+        assert!(sk.starts_with("session:s1:"));
+    }
+
+    #[test]
+    fn test_lru_eviction_policy() {
+        let mut policy = LruEvictionPolicy::new();
+        policy.on_set("a");
+        policy.on_set("b");
+        policy.on_set("c");
+        // a 是最旧的
+        assert_eq!(policy.select_for_eviction(), Some("a".into()));
+        // 访问 a 后，b 变为最旧
+        policy.on_access("a");
+        assert_eq!(policy.select_for_eviction(), Some("b".into()));
+        // 删除 b
+        policy.on_delete("b");
+        assert_eq!(policy.select_for_eviction(), Some("c".into()));
+    }
 }

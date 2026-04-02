@@ -29,8 +29,10 @@ pub enum SpecialistStatus {
 
 /// 负载均衡策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum LoadBalanceStrategy {
     /// 选择当前负载最低的专家
+    #[default]
     LeastLoaded,
     /// 按顺序轮流分配
     RoundRobin,
@@ -38,11 +40,6 @@ pub enum LoadBalanceStrategy {
     Random,
 }
 
-impl Default for LoadBalanceStrategy {
-    fn default() -> Self {
-        Self::LeastLoaded
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Metrics structs
@@ -284,7 +281,7 @@ impl SpecialistPool {
         let mut caps = self.capabilities.lock().unwrap();
         for cap in &opts.capabilities {
             caps.entry(cap.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(opts.id.clone());
         }
     }
@@ -382,7 +379,7 @@ impl SpecialistPool {
         let mut caps = self.capabilities.lock().unwrap();
         let ids = caps
             .entry(capability.to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
         if !ids.contains(&specialist_id.to_string()) {
             ids.push(specialist_id.to_string());
         }

@@ -69,11 +69,11 @@ fn plan_turn_outcome_routes_all_three_main_paths() {
     assert_eq!(complete, TurnOutcomePlan::Complete { should_resolve_question: true });
 
     let ask = plan_turn_outcome(
-        RequirementJudgement::NeedsUserInput(UserInputRequirement {
+        RequirementJudgement::NeedsUserInput(Box::new(UserInputRequirement {
             reason: "缺少用户输入".into(),
             missing_requirements: vec!["部署环境".into()],
             pending_question: make_pending_question(),
-        }),
+        })),
         false,
     );
     match ask {
@@ -85,12 +85,12 @@ fn plan_turn_outcome_routes_all_three_main_paths() {
     }
 
     let followup = plan_turn_outcome(
-        RequirementJudgement::NeedsAgentFollowup(AgentFollowupPlan {
+        RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
             reason: "继续推进".into(),
             missing_requirements: vec!["补全最终结果".into()],
             followup_prompt: "继续执行".into(),
             result_fingerprint: "fp-1".into(),
-        }),
+        })),
         false,
     );
     match followup {

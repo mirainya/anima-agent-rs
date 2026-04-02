@@ -215,7 +215,7 @@ pub fn filter_oldest_messages(
 
 /// 检查是否需要压缩，如需要则执行两阶段压缩
 pub fn compact_if_needed(
-    messages: &mut Vec<InternalMsg>,
+    messages: &mut [InternalMsg],
     config: &CompactConfig,
 ) -> CompactResult {
     let total = estimate_total_tokens(messages);
@@ -230,11 +230,7 @@ pub fn compact_if_needed(
         };
     }
 
-    let safe_target = if threshold > config.buffer_tokens {
-        threshold - config.buffer_tokens
-    } else {
-        0
-    };
+    let safe_target = threshold.saturating_sub(config.buffer_tokens);
     let need_to_free = total.saturating_sub(safe_target);
 
     let boundary = find_recent_turn_boundary(messages, config.preserve_recent_turns);

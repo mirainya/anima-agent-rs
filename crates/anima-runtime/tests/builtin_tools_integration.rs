@@ -135,9 +135,8 @@ fn test_agentic_loop_with_bash_tool() {
         max_iterations: 5,
         session_id: "test-session".into(),
         trace_id: "test-trace".into(),
-        compact: None,
         system_prompt: Some("You are a test agent.".into()),
-        tool_definitions: None,
+        ..Default::default()
     };
 
     let initial = vec![InternalMsg {

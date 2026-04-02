@@ -192,3 +192,32 @@ pub fn delete_request(
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
     send(http.delete(url).header("accept", "application/json"))
 }
+
+/// 发送 POST 请求并返回原始 Response（不读取 body），用于 SSE 流式读取
+pub fn post_request_streaming(
+    client: &Client,
+    endpoint: &str,
+    body: &Value,
+) -> Result<reqwest::blocking::Response> {
+    let http = http_client_with_timeouts()?;
+    let url = build_url(&client.base_url, endpoint);
+    let response = http
+        .post(url)
+        .header("accept", "text/event-stream")
+        .header("content-type", "application/json")
+        .body(serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?)
+        .send()
+        .map_err(|err| AnimaError::Transport(err.to_string()))?;
+
+    let status = response.status().as_u16();
+    if status != 200 {
+        let body_text = response
+            .text()
+            .map_err(|err| AnimaError::Transport(err.to_string()))?;
+        return Err(AnimaError::Transport(format!(
+            "streaming request failed with status {status}: {body_text}"
+        )));
+    }
+
+    Ok(response)
+}

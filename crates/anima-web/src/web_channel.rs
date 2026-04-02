@@ -51,6 +51,12 @@ impl std::fmt::Debug for WebChannel {
     }
 }
 
+impl Default for WebChannel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebChannel {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(256);

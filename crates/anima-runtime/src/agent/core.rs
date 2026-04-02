@@ -956,9 +956,9 @@ impl CoreAgent {
             max_iterations: 10,
             session_id: opencode_session_id.to_string(),
             trace_id: inbound_msg.id.clone(),
-            compact: None,
             system_prompt,
             tool_definitions: Some(self.tool_registry.tool_definitions()),
+            ..Default::default()
         };
 
         let perm_ref = self.permission_checker.as_deref();
@@ -1549,7 +1549,7 @@ impl CoreAgent {
                 let branch = prepare_waiting_user_input_branch_data(
                     resolved_question,
                     should_resolve_question,
-                    requirement,
+                    *requirement,
                     inbound_msg,
                     result.worker_id.clone(),
                     result.duration_ms,
@@ -1623,7 +1623,7 @@ impl CoreAgent {
                     exec_ctx,
                     result.worker_id,
                     result.duration_ms,
-                    plan,
+                    *plan,
                 )?;
                 Ok(resolved_question.cloned())
             }

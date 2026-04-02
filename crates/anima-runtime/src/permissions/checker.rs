@@ -69,8 +69,7 @@ fn tool_matches(pattern: &str, tool_name: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-    if pattern.ends_with('*') {
-        let prefix = &pattern[..pattern.len() - 1];
+    if let Some(prefix) = pattern.strip_suffix('*') {
         return tool_name.starts_with(prefix);
     }
     pattern == tool_name

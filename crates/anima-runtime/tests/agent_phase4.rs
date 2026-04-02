@@ -20,9 +20,6 @@ struct MockExecutor;
 struct QuestionFlowExecutor;
 
 #[derive(Debug, Default)]
-struct TextQuestionExecutor;
-
-#[derive(Debug, Default)]
 struct FollowupExecutor;
 
 #[derive(Debug, Default)]
@@ -116,32 +113,6 @@ impl TaskExecutor for QuestionFlowExecutor {
 
     fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
         Ok(json!({"id": "mock-session-question"}))
-    }
-}
-
-impl TaskExecutor for TextQuestionExecutor {
-    fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
-        _content: Value,
-    ) -> Result<Value, String> {
-        Ok(json!({
-            "parts": [
-                {
-                    "type": "reasoning",
-                    "text": "I need confirmation before destructive git reset."
-                },
-                {
-                    "type": "text",
-                    "text": "哇！！主人这个操作是危险且不可逆的呐~\n\n请主人明确确认一下是否继续：\n- `确认继续`\n- `只丢弃已跟踪文件修改，不删除未跟踪文件`\n- `先查看当前改动再决定`\n"
-                }
-            ]
-        }))
-    }
-
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
-        Ok(json!({"id": "mock-session-text-question"}))
     }
 }
 

@@ -29,10 +29,10 @@ pub enum TurnOutcomePlan {
     },
     AskUserInput {
         should_resolve_question: bool,
-        requirement: UserInputRequirement,
+        requirement: Box<UserInputRequirement>,
     },
     ScheduleFollowup {
-        plan: AgentFollowupPlan,
+        plan: Box<AgentFollowupPlan>,
     },
 }
 
@@ -238,10 +238,10 @@ pub fn plan_turn_outcome(
     }
 }
 
-pub fn resolved_question_to_publish<'a>(
+pub fn resolved_question_to_publish(
     should_resolve_question: bool,
-    resolved_question: Option<&'a PendingQuestion>,
-) -> Option<&'a PendingQuestion> {
+    resolved_question: Option<&PendingQuestion>,
+) -> Option<&PendingQuestion> {
     if should_resolve_question {
         resolved_question
     } else {

@@ -11,8 +11,8 @@ const DEFAULT_MAX_FOLLOWUP_ROUNDS: usize = 3;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RequirementJudgement {
     Satisfied,
-    NeedsAgentFollowup(AgentFollowupPlan),
-    NeedsUserInput(UserInputRequirement),
+    NeedsAgentFollowup(Box<AgentFollowupPlan>),
+    NeedsUserInput(Box<UserInputRequirement>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,26 +71,26 @@ pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement 
             || matches!(question.question_kind, QuestionKind::Input)
             || classify_question_requires_user_confirmation(&question.prompt, &question.options)
         {
-            return RequirementJudgement::NeedsUserInput(UserInputRequirement {
+            return RequirementJudgement::NeedsUserInput(Box::new(UserInputRequirement {
                 reason: "上游返回了需要外部用户信息的结构化问题".into(),
                 missing_requirements: vec![question.prompt.clone()],
                 pending_question: question,
-            });
+            }));
         }
 
         let fingerprint = fingerprint_result(ctx.raw_result.as_ref());
-        return RequirementJudgement::NeedsAgentFollowup(AgentFollowupPlan {
+        return RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
             reason: "上游返回了可由主 agent 继续处理的结构化问题".into(),
             missing_requirements: vec![question.prompt.clone()],
             followup_prompt: build_question_followup_prompt(&ctx.original_user_request, &question),
             result_fingerprint: fingerprint,
-        });
+        }));
     }
 
     let response_text = extract_response_text(ctx.raw_result.as_ref());
     let normalized = normalize_text(&response_text);
     if response_text.trim().is_empty() {
-        return RequirementJudgement::NeedsAgentFollowup(AgentFollowupPlan {
+        return RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
             reason: "上游成功返回，但缺少可交付结果".into(),
             missing_requirements: vec!["给出可验证的最终结果或明确的下一步结论".into()],
             followup_prompt: build_result_followup_prompt(
@@ -99,7 +99,7 @@ pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement 
                 "请继续推进，直到明确说明需求是否已经完成；若仍缺信息，只在确实必须依赖用户时提出结构化 question。",
             ),
             result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
-        });
+        }));
     }
 
     let repeated = ctx
@@ -108,7 +108,7 @@ pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement 
         .map(|previous| previous == &fingerprint_result(ctx.raw_result.as_ref()))
         .unwrap_or(false);
     if repeated {
-        return RequirementJudgement::NeedsAgentFollowup(AgentFollowupPlan {
+        return RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
             reason: "自动 follow-up 得到了重复结果，尚未收敛".into(),
             missing_requirements: vec!["避免重复前一轮输出，继续给出真正推进结果".into()],
             followup_prompt: build_result_followup_prompt(
@@ -117,11 +117,11 @@ pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement 
                 "你刚刚重复了前一轮结果。请基于原始需求继续推进，输出新增结论；如果必须依赖用户，请返回结构化 question。",
             ),
             result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
-        });
+        }));
     }
 
     if looks_unsatisfied(&normalized) {
-        return RequirementJudgement::NeedsAgentFollowup(AgentFollowupPlan {
+        return RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
             reason: "上游回复表明需求尚未真正满足".into(),
             missing_requirements: infer_missing_requirements(&response_text),
             followup_prompt: build_result_followup_prompt(
@@ -130,7 +130,7 @@ pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement 
                 "请不要只描述限制或保守结论。若能继续分析/执行，请继续推进；只有确实缺少用户外部信息时才返回结构化 question。",
             ),
             result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
-        });
+        }));
     }
 
     RequirementJudgement::Satisfied

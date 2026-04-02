@@ -420,7 +420,7 @@ fn derive_orchestration_view(
         &["orchestration_plan_created"],
         "subtask_count",
     )
-    .unwrap_or_else(|| child_job_ids.len());
+    .unwrap_or(child_job_ids.len());
     let completed_subtasks = count_events(&job.recent_events, "orchestration_subtask_completed");
     let failed_subtasks = count_events(&job.recent_events, "orchestration_subtask_failed");
     let active_subtasks = usize::from(active_subtask_name.is_some() && failed_subtasks == 0);

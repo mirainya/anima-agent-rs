@@ -4,6 +4,7 @@
 //! 模型自主调用工具、观察结果、继续推理，直到给出最终回答或达到迭代上限。
 
 use serde_json::{json, Value};
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::agent::executor::TaskExecutor;
@@ -13,6 +14,8 @@ use crate::messages::normalize::normalize_messages_for_api;
 use crate::messages::pairing::ensure_tool_result_pairing;
 use crate::messages::types::{ApiMsg, InternalMsg, MessageRole};
 use crate::permissions::PermissionChecker;
+use crate::streaming::executor::consume_sse_stream;
+use crate::streaming::types::StreamEvent;
 use crate::tools::definition::ToolContext;
 use crate::tools::execution::{run_tool_use, RunToolOptions};
 use crate::tools::registry::ToolRegistry;
@@ -25,7 +28,7 @@ use anima_sdk::facade::Client as SdkClient;
 // ---------------------------------------------------------------------------
 
 /// Agentic loop 配置
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgenticLoopConfig {
     /// 最大迭代次数（默认 10）
     pub max_iterations: usize,
@@ -39,6 +42,25 @@ pub struct AgenticLoopConfig {
     pub system_prompt: Option<String>,
     /// 工具定义列表，None = 不发送
     pub tool_definitions: Option<Vec<Value>>,
+    /// 是否启用流式响应（默认 false）
+    pub streaming: bool,
+    /// 流式事件回调（可选），CLI/Web 可用于实时 UI 更新
+    pub on_stream_event: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for AgenticLoopConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgenticLoopConfig")
+            .field("max_iterations", &self.max_iterations)
+            .field("session_id", &self.session_id)
+            .field("trace_id", &self.trace_id)
+            .field("compact", &self.compact)
+            .field("system_prompt", &self.system_prompt)
+            .field("tool_definitions", &self.tool_definitions)
+            .field("streaming", &self.streaming)
+            .field("on_stream_event", &self.on_stream_event.is_some())
+            .finish()
+    }
 }
 
 impl Default for AgenticLoopConfig {
@@ -50,6 +72,8 @@ impl Default for AgenticLoopConfig {
             compact: None,
             system_prompt: None,
             tool_definitions: None,
+            streaming: false,
+            on_stream_event: None,
         }
     }
 }
@@ -250,10 +274,12 @@ pub fn build_api_content(api_msgs: &[ApiMsg]) -> Value {
 ///
 /// 当 `system_prompt` 或 `tool_definitions` 为 Some 时，返回的 Value
 /// 包含 `"system"` / `"tools"` 顶层字段；否则仅含 `"messages"`。
+/// 当 `streaming` 为 true 时，注入 `"stream": true`。
 pub fn build_api_payload(
     api_msgs: &[ApiMsg],
     system_prompt: Option<&str>,
     tool_definitions: Option<&[Value]>,
+    streaming: bool,
 ) -> Value {
     let messages: Vec<Value> = api_msgs
         .iter()
@@ -271,6 +297,9 @@ pub fn build_api_payload(
     }
     if let Some(tools) = tool_definitions {
         payload["tools"] = json!(tools);
+    }
+    if streaming {
+        payload["stream"] = json!(true);
     }
     payload
 }
@@ -358,23 +387,34 @@ pub fn run_agentic_loop(
         // 3. 标准化消息
         let api_msgs = normalize_messages_for_api(&messages);
 
-        // 4. 构建 API 请求内容（含 system prompt 和 tool definitions）
+        // 4. 构建 API 请求内容（含 system prompt、tool definitions、stream 标志）
         let content = build_api_payload(
             &api_msgs,
             config.system_prompt.as_deref(),
             config.tool_definitions.as_deref(),
+            config.streaming,
         );
 
-        // 5. 调用 API
-        let response = executor
-            .send_prompt(client, &config.session_id, content)
-            .map_err(AgenticLoopError::ApiCallFailed)?;
-
-        // 6. 解析响应
-        let parsed = parse_response(&response)?;
-
-        // 7. 追加 assistant 消息
-        messages.push(build_assistant_msg(&response));
+        // 5-7. 调用 API → 解析响应 → 追加 assistant 消息（流式/非流式分支）
+        let parsed = if config.streaming {
+            // 流式路径：SSE 逐行读取 → consume_sse_stream → (ParsedResponse, Value)
+            let lines = executor
+                .send_prompt_streaming(client, &config.session_id, content)
+                .map_err(AgenticLoopError::ApiCallFailed)?;
+            let (parsed, response_value) =
+                consume_sse_stream(lines, config.on_stream_event.as_deref())
+                    .map_err(AgenticLoopError::ResponseParseError)?;
+            messages.push(build_assistant_msg(&response_value));
+            parsed
+        } else {
+            // 非流式路径：同步获取完整响应 → parse_response → (ParsedResponse, Value)
+            let response = executor
+                .send_prompt(client, &config.session_id, content)
+                .map_err(AgenticLoopError::ApiCallFailed)?;
+            let parsed = parse_response(&response)?;
+            messages.push(build_assistant_msg(&response));
+            parsed
+        };
 
         // 8. 无 tool_use → 最终回复
         if parsed.tool_uses.is_empty() {
@@ -509,9 +549,7 @@ mod tests {
             max_iterations: 10,
             session_id: "test-session".into(),
             trace_id: "test-trace".into(),
-            compact: None,
-            system_prompt: None,
-            tool_definitions: None,
+            ..Default::default()
         }
     }
 
@@ -687,9 +725,7 @@ mod tests {
             max_iterations: 3,
             session_id: "test".into(),
             trace_id: "test".into(),
-            compact: None,
-            system_prompt: None,
-            tool_definitions: None,
+            ..Default::default()
         };
         let initial = vec![make_user_msg("Keep looping")];
 
@@ -699,5 +735,196 @@ mod tests {
 
         assert!(result.hit_limit);
         assert_eq!(result.iterations, 3);
+    }
+
+    // ---- StreamingMockExecutor ----
+
+    /// 流式 Mock：每次 send_prompt_streaming 返回预制 SSE 行序列
+    struct StreamingMockExecutor {
+        /// 每次调用 send_prompt_streaming 返回的 SSE 行列表
+        sse_sequences: Vec<Vec<String>>,
+        /// 每次调用 send_prompt 返回的 Value（用于非流式回退和后续轮次）
+        responses: Vec<Value>,
+        streaming_call_count: AtomicUsize,
+        sync_call_count: AtomicUsize,
+    }
+
+    impl StreamingMockExecutor {
+        fn new(sse_sequences: Vec<Vec<String>>, responses: Vec<Value>) -> Self {
+            Self {
+                sse_sequences,
+                responses,
+                streaming_call_count: AtomicUsize::new(0),
+                sync_call_count: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl TaskExecutor for StreamingMockExecutor {
+        fn send_prompt(
+            &self,
+            _client: &SdkClient,
+            _session_id: &str,
+            _content: Value,
+        ) -> Result<Value, String> {
+            let idx = self.sync_call_count.fetch_add(1, Ordering::SeqCst);
+            self.responses
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| "no more sync mock responses".to_string())
+        }
+
+        fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+            Ok(json!({"id": "streaming-mock-session"}))
+        }
+
+        fn send_prompt_streaming(
+            &self,
+            _client: &SdkClient,
+            _session_id: &str,
+            _content: Value,
+        ) -> Result<Box<dyn Iterator<Item = Result<String, String>>>, String> {
+            let idx = self.streaming_call_count.fetch_add(1, Ordering::SeqCst);
+            let lines = self
+                .sse_sequences
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| "no more streaming mock sequences".to_string())?;
+            Ok(Box::new(lines.into_iter().map(Ok)))
+        }
+    }
+
+    fn sse(data: &str) -> String {
+        format!("data: {data}")
+    }
+
+    // ---- 流式循环测试 ----
+
+    #[test]
+    fn test_streaming_loop_no_tools() {
+        let sse_lines = vec![
+            sse(r#"{"type":"message_start","message":{"id":"msg_s1"}}"#),
+            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
+            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Streaming "}}"#),
+            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer!"}}"#),
+            sse(r#"{"type":"content_block_stop","index":0}"#),
+            sse(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#),
+            sse(r#"{"type":"message_stop"}"#),
+        ];
+
+        let executor = StreamingMockExecutor::new(vec![sse_lines], vec![]);
+        let registry = ToolRegistry::new();
+        let client = make_client();
+        let config = AgenticLoopConfig {
+            max_iterations: 10,
+            session_id: "test-stream".into(),
+            trace_id: "test-stream".into(),
+            streaming: true,
+            ..Default::default()
+        };
+        let initial = vec![make_user_msg("Hello streaming")];
+
+        let result =
+            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
+                .unwrap();
+
+        assert_eq!(result.final_text, "Streaming answer!");
+        assert_eq!(result.iterations, 1);
+        assert!(!result.hit_limit);
+    }
+
+    #[test]
+    fn test_streaming_loop_one_tool() {
+        // 第一次：流式返回 text + tool_use
+        let sse_round1 = vec![
+            sse(r#"{"type":"message_start","message":{"id":"msg_s2"}}"#),
+            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
+            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me echo"}}"#),
+            sse(r#"{"type":"content_block_stop","index":0}"#),
+            sse(r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_s1","name":"echo","input":{}}}"#),
+            sse(r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"text\""}}"#),
+            sse(r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":":\"stream\"}"}}"#),
+            sse(r#"{"type":"content_block_stop","index":1}"#),
+            sse(r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#),
+            sse(r#"{"type":"message_stop"}"#),
+        ];
+
+        // 第二次：流式返回最终文本
+        let sse_round2 = vec![
+            sse(r#"{"type":"message_start","message":{"id":"msg_s3"}}"#),
+            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
+            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Done streaming!"}}"#),
+            sse(r#"{"type":"content_block_stop","index":0}"#),
+            sse(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#),
+            sse(r#"{"type":"message_stop"}"#),
+        ];
+
+        let executor = StreamingMockExecutor::new(vec![sse_round1, sse_round2], vec![]);
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(EchoTool));
+
+        let client = make_client();
+        let config = AgenticLoopConfig {
+            max_iterations: 10,
+            session_id: "test-stream".into(),
+            trace_id: "test-stream".into(),
+            streaming: true,
+            ..Default::default()
+        };
+        let initial = vec![make_user_msg("Echo stream for me")];
+
+        let result =
+            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
+                .unwrap();
+
+        assert_eq!(result.final_text, "Done streaming!");
+        assert_eq!(result.iterations, 2);
+        assert!(!result.hit_limit);
+
+        // 验证消息历史：user → assistant(tool_use) → user(tool_result) → assistant(final)
+        assert_eq!(result.messages.len(), 4);
+        assert_eq!(result.messages[0].role, MessageRole::User);
+        assert_eq!(result.messages[1].role, MessageRole::Assistant);
+        assert_eq!(result.messages[2].role, MessageRole::User); // tool_result
+        assert_eq!(result.messages[3].role, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn test_streaming_loop_with_callback() {
+        let event_count = Arc::new(AtomicUsize::new(0));
+        let count_clone = event_count.clone();
+        let callback = move |_event: StreamEvent| {
+            count_clone.fetch_add(1, Ordering::SeqCst);
+        };
+
+        let sse_lines = vec![
+            sse(r#"{"type":"message_start","message":{"id":"msg_cb"}}"#),
+            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
+            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#),
+            sse(r#"{"type":"content_block_stop","index":0}"#),
+            sse(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#),
+            sse(r#"{"type":"message_stop"}"#),
+        ];
+
+        let executor = StreamingMockExecutor::new(vec![sse_lines], vec![]);
+        let registry = ToolRegistry::new();
+        let client = make_client();
+        let config = AgenticLoopConfig {
+            max_iterations: 10,
+            session_id: "test-cb".into(),
+            trace_id: "test-cb".into(),
+            streaming: true,
+            on_stream_event: Some(Arc::new(callback)),
+            ..Default::default()
+        };
+        let initial = vec![make_user_msg("test callback")];
+
+        let result =
+            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
+                .unwrap();
+
+        assert_eq!(result.final_text, "hi");
+        assert!(event_count.load(Ordering::SeqCst) > 0, "callback should have fired");
     }
 }

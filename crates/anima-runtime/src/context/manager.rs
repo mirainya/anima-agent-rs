@@ -238,3 +238,135 @@ impl ContextManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_get_set_context() {
+        let mgr = ContextManager::new(Some(false));
+        assert!(mgr.get_context("k").is_none());
+        mgr.set_context("k", json!("v"));
+        assert_eq!(mgr.get_context("k"), Some(json!("v")));
+        let stats = mgr.status().stats;
+        assert_eq!(stats.reads, 1);
+        assert_eq!(stats.writes, 1);
+        assert_eq!(stats.entries, 1);
+    }
+
+    #[test]
+    fn test_delete_context() {
+        let mgr = ContextManager::new(Some(false));
+        mgr.set_context("k", json!(1));
+        assert!(mgr.delete_context("k"));
+        assert!(mgr.get_context("k").is_none());
+        assert!(!mgr.delete_context("k")); // 已删除
+        assert_eq!(mgr.status().stats.deletes, 1);
+    }
+
+    #[test]
+    fn test_get_or_create() {
+        let mgr = ContextManager::new(Some(false));
+        let v1 = mgr.get_or_create("k", || json!(42));
+        assert_eq!(v1, json!(42));
+        let v2 = mgr.get_or_create("k", || json!(999));
+        assert_eq!(v2, json!(42)); // 命中
+    }
+
+    #[test]
+    fn test_list_keys() {
+        let mgr = ContextManager::new(Some(false));
+        mgr.set_context("session:a:history", json!([]));
+        mgr.set_context("session:a:state", json!({}));
+        mgr.set_context("session:b:history", json!([]));
+        mgr.set_context("other", json!(1));
+
+        let keys = mgr.list_keys("session:a*");
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&"session:a:history".into()));
+        assert!(keys.contains(&"session:a:state".into()));
+    }
+
+    #[test]
+    fn test_session_history() {
+        let mgr = ContextManager::new(Some(false));
+        assert!(mgr.get_session_history("s1").is_empty());
+        mgr.add_to_session_history("s1", json!({"msg": "hello"}));
+        mgr.add_to_session_history("s1", json!({"msg": "world"}));
+        let history = mgr.get_session_history("s1");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0]["msg"], "hello");
+    }
+
+    #[test]
+    fn test_session_history_non_array_recovery() {
+        let mgr = ContextManager::new(Some(false));
+        // 故意设置非数组值
+        mgr.set_context("session:s1:history", json!("not_an_array"));
+        mgr.add_to_session_history("s1", json!("entry1"));
+        let history = mgr.get_session_history("s1");
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test]
+    fn test_clear_session_context() {
+        let mgr = ContextManager::new(Some(false));
+        mgr.set_context("session:s1:history", json!([]));
+        mgr.set_context("session:s1:state", json!({}));
+        mgr.set_context("session:s2:history", json!([]));
+        mgr.clear_session_context("s1");
+        assert!(mgr.get_context("session:s1:history").is_none());
+        assert!(mgr.get_context("session:s1:state").is_none());
+        assert!(mgr.get_context("session:s2:history").is_some()); // 不应受影响
+    }
+
+    #[test]
+    fn test_snapshot_and_restore() {
+        let mgr = ContextManager::new(Some(false));
+        mgr.set_context("k", json!("original"));
+        let snap = mgr.snapshot("k").unwrap();
+        assert_eq!(snap.value, json!("original"));
+
+        // 修改值
+        mgr.set_context("k", json!("modified"));
+        assert_eq!(mgr.get_context("k"), Some(json!("modified")));
+
+        // 恢复快照
+        let restored = mgr.restore(&snap.id).unwrap();
+        assert_eq!(restored.value, json!("original"));
+        assert_eq!(mgr.get_context("k"), Some(json!("original")));
+    }
+
+    #[test]
+    fn test_snapshot_nonexistent_key() {
+        let mgr = ContextManager::new(Some(false));
+        assert!(mgr.snapshot("missing").is_none());
+    }
+
+    #[test]
+    fn test_restore_nonexistent_snapshot() {
+        let mgr = ContextManager::new(Some(false));
+        assert!(mgr.restore("fake-id").is_none());
+    }
+
+    #[test]
+    fn test_close() {
+        let mgr = ContextManager::new(Some(true));
+        mgr.set_context("k", json!(1));
+        mgr.snapshot("k");
+        mgr.close();
+        assert!(mgr.get_context("k").is_none());
+        assert_eq!(mgr.status().status, "stopped");
+        assert_eq!(mgr.status().stats.entries, 0);
+    }
+
+    #[test]
+    fn test_status() {
+        let mgr = ContextManager::new(Some(true));
+        let status = mgr.status();
+        assert_eq!(status.status, "running");
+        assert_eq!(status.stats.entries, 0);
+    }
+}
