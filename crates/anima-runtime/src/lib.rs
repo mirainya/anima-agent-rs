@@ -41,6 +41,8 @@ pub mod permissions;
 pub mod messages;
 /// Pre/Post 钩子机制
 pub mod hooks;
+/// System Prompt 段落化组装
+pub mod prompt;
 
 /// 启动引导，初始化运行时各组件
 pub mod bootstrap;

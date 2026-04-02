@@ -12,6 +12,7 @@ use anima_runtime::tools::registry::ToolRegistry;
 use anima_runtime::tools::result::{ToolError, ToolResult};
 
 use anima_sdk::facade::Client as SdkClient;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -130,6 +131,9 @@ fn agentic_loop_echo_tool_integration() {
         max_iterations: 5,
         session_id: "integration-session".into(),
         trace_id: "integration-trace".into(),
+        compact: None,
+        system_prompt: None,
+        tool_definitions: None,
     };
 
     let result = run_agentic_loop(
@@ -182,6 +186,9 @@ fn agentic_loop_unknown_tool_returns_error_result() {
         max_iterations: 5,
         session_id: "test".into(),
         trace_id: "test".into(),
+        compact: None,
+        system_prompt: None,
+        tool_definitions: None,
     };
 
     let result = run_agentic_loop(
@@ -230,6 +237,9 @@ fn agentic_loop_multiple_tools_in_one_turn() {
         max_iterations: 5,
         session_id: "test".into(),
         trace_id: "test".into(),
+        compact: None,
+        system_prompt: None,
+        tool_definitions: None,
     };
 
     let result = run_agentic_loop(
@@ -247,4 +257,135 @@ fn agentic_loop_multiple_tools_in_one_turn() {
     assert_eq!(result.iterations, 2);
     // user → assistant → tool_result_1 → tool_result_2 → assistant
     assert_eq!(result.messages.len(), 5);
+}
+
+// ---------------------------------------------------------------------------
+// 捕获 payload 的 Executor（供 system_prompt / tool_definitions 测试使用）
+// ---------------------------------------------------------------------------
+
+struct CapturingExecutor {
+    responses: Vec<Value>,
+    call_count: AtomicUsize,
+    captured_payloads: Mutex<Vec<Value>>,
+}
+
+impl CapturingExecutor {
+    fn new(responses: Vec<Value>) -> Self {
+        Self {
+            responses,
+            call_count: AtomicUsize::new(0),
+            captured_payloads: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn payloads(&self) -> Vec<Value> {
+        self.captured_payloads.lock().clone()
+    }
+}
+
+impl TaskExecutor for CapturingExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        _session_id: &str,
+        content: Value,
+    ) -> Result<Value, String> {
+        self.captured_payloads.lock().push(content);
+        let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+        self.responses
+            .get(idx)
+            .cloned()
+            .ok_or_else(|| "no more mock responses".into())
+    }
+
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        Ok(json!({"id": "capture-session"}))
+    }
+}
+
+/// 验证 payload 中包含 system prompt
+#[test]
+fn test_system_prompt_passed_in_payload() {
+    let executor = CapturingExecutor::new(vec![json!({
+        "content": [{"type": "text", "text": "ok"}]
+    })]);
+
+    let registry = ToolRegistry::new();
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "test".into(),
+        trace_id: "test".into(),
+        compact: None,
+        system_prompt: Some("You are a helpful assistant.".into()),
+        tool_definitions: None,
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        None,
+        vec![make_user_msg("hello")],
+        &config,
+    )
+    .expect("should succeed");
+
+    assert_eq!(result.final_text, "ok");
+
+    let payloads = executor.payloads();
+    assert_eq!(payloads.len(), 1);
+    let payload = &payloads[0];
+    assert_eq!(payload["system"], "You are a helpful assistant.");
+    assert!(payload.get("tools").is_none());
+}
+
+/// 验证 payload 中包含 tool definitions
+#[test]
+fn test_tool_definitions_passed_in_payload() {
+    let executor = CapturingExecutor::new(vec![json!({
+        "content": [{"type": "text", "text": "done"}]
+    })]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+    let tool_defs = registry.tool_definitions();
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "test".into(),
+        trace_id: "test".into(),
+        compact: None,
+        system_prompt: Some("identity".into()),
+        tool_definitions: Some(tool_defs),
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &ToolRegistry::new(),
+        None,
+        None,
+        vec![make_user_msg("hi")],
+        &config,
+    )
+    .expect("should succeed");
+
+    assert_eq!(result.final_text, "done");
+
+    let payloads = executor.payloads();
+    assert_eq!(payloads.len(), 1);
+    let payload = &payloads[0];
+
+    // system 字段存在
+    assert_eq!(payload["system"], "identity");
+
+    // tools 字段存在且包含 echo 工具
+    let tools = payload["tools"].as_array().expect("tools should be array");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "echo");
+    assert!(tools[0].get("description").is_some());
+    assert!(tools[0].get("input_schema").is_some());
 }

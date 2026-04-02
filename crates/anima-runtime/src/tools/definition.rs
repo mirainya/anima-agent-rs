@@ -36,6 +36,11 @@ pub trait Tool: Send + Sync + Debug {
     /// 执行工具
     fn call(&self, input: Value, context: &ToolContext) -> std::result::Result<ToolResult, ToolError>;
 
+    /// 工具描述（给模型看），默认返回 name
+    fn description(&self) -> &str {
+        self.name()
+    }
+
     /// 可选：渲染工具结果为人类可读文本
     fn render(&self, result: &ToolResult) -> Option<String> {
         let _ = result;

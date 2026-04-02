@@ -33,6 +33,7 @@ use crate::hooks::HookRegistry;
 use crate::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
 use crate::orchestrator::specialist_pool::SpecialistPool;
 use crate::permissions::PermissionChecker;
+use crate::prompt::PromptAssembler;
 use crate::tools::registry::ToolRegistry;
 use crate::bus::{make_outbound, make_internal, Bus, InboundMessage, MakeInternal, MakeOutbound, OutboundMessage};
 use crate::bus::{ControlSignal};
@@ -936,10 +937,19 @@ impl CoreAgent {
             metadata: json!({}),
         }];
 
+        let system_prompt = {
+            let mut asm = PromptAssembler::new();
+            asm.add_text("identity", "你是 Anima 智能助手。", 0);
+            Some(asm.build().text)
+        };
+
         let config = AgenticLoopConfig {
             max_iterations: 10,
             session_id: opencode_session_id.to_string(),
             trace_id: inbound_msg.id.clone(),
+            compact: None,
+            system_prompt,
+            tool_definitions: Some(self.tool_registry.tool_definitions()),
         };
 
         let perm_ref = self.permission_checker.as_deref();

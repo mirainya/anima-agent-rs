@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::agent::executor::TaskExecutor;
 use crate::hooks::HookRegistry;
+use crate::messages::compact::{compact_if_needed, CompactConfig};
 use crate::messages::normalize::normalize_messages_for_api;
 use crate::messages::pairing::ensure_tool_result_pairing;
 use crate::messages::types::{ApiMsg, InternalMsg, MessageRole};
@@ -32,6 +33,12 @@ pub struct AgenticLoopConfig {
     pub session_id: String,
     /// 追踪 ID
     pub trace_id: String,
+    /// 上下文压缩配置，None = 不压缩
+    pub compact: Option<CompactConfig>,
+    /// 系统提示词，None = 不发送
+    pub system_prompt: Option<String>,
+    /// 工具定义列表，None = 不发送
+    pub tool_definitions: Option<Vec<Value>>,
 }
 
 impl Default for AgenticLoopConfig {
@@ -40,6 +47,9 @@ impl Default for AgenticLoopConfig {
             max_iterations: 10,
             session_id: String::new(),
             trace_id: String::new(),
+            compact: None,
+            system_prompt: None,
+            tool_definitions: None,
         }
     }
 }
@@ -55,6 +65,8 @@ pub struct AgenticLoopResult {
     pub iterations: usize,
     /// 是否因达到迭代上限而停止
     pub hit_limit: bool,
+    /// 压缩执行次数
+    pub compact_count: usize,
 }
 
 /// Agentic loop 错误类型
@@ -234,6 +246,35 @@ pub fn build_api_content(api_msgs: &[ApiMsg]) -> Value {
     json!(messages)
 }
 
+/// 构建包含 system prompt 和 tool definitions 的完整 API payload
+///
+/// 当 `system_prompt` 或 `tool_definitions` 为 Some 时，返回的 Value
+/// 包含 `"system"` / `"tools"` 顶层字段；否则仅含 `"messages"`。
+pub fn build_api_payload(
+    api_msgs: &[ApiMsg],
+    system_prompt: Option<&str>,
+    tool_definitions: Option<&[Value]>,
+) -> Value {
+    let messages: Vec<Value> = api_msgs
+        .iter()
+        .map(|msg| {
+            json!({
+                "role": msg.role,
+                "content": msg.content,
+            })
+        })
+        .collect();
+
+    let mut payload = json!({ "messages": messages });
+    if let Some(sp) = system_prompt {
+        payload["system"] = json!(sp);
+    }
+    if let Some(tools) = tool_definitions {
+        payload["tools"] = json!(tools);
+    }
+    payload
+}
+
 // ---------------------------------------------------------------------------
 // 单工具执行
 // ---------------------------------------------------------------------------
@@ -288,6 +329,7 @@ pub fn run_agentic_loop(
 ) -> Result<AgenticLoopResult, AgenticLoopError> {
     let mut messages = initial_messages;
     let mut iterations = 0;
+    let mut compact_count = 0;
 
     loop {
         // 1. 守卫：达到最大迭代次数
@@ -298,17 +340,30 @@ pub fn run_agentic_loop(
                 messages,
                 iterations,
                 hit_limit: true,
+                compact_count,
             });
         }
 
         // 2. 确保 tool_use / tool_result 配对
         ensure_tool_result_pairing(&mut messages);
 
+        // 2.5 上下文自动压缩
+        if let Some(ref compact_config) = config.compact {
+            let result = compact_if_needed(&mut messages, compact_config);
+            if result.did_compact {
+                compact_count += 1;
+            }
+        }
+
         // 3. 标准化消息
         let api_msgs = normalize_messages_for_api(&messages);
 
-        // 4. 构建 API 请求内容
-        let content = build_api_content(&api_msgs);
+        // 4. 构建 API 请求内容（含 system prompt 和 tool definitions）
+        let content = build_api_payload(
+            &api_msgs,
+            config.system_prompt.as_deref(),
+            config.tool_definitions.as_deref(),
+        );
 
         // 5. 调用 API
         let response = executor
@@ -328,6 +383,7 @@ pub fn run_agentic_loop(
                 messages,
                 iterations: iterations + 1,
                 hit_limit: false,
+                compact_count,
             });
         }
 
@@ -453,6 +509,9 @@ mod tests {
             max_iterations: 10,
             session_id: "test-session".into(),
             trace_id: "test-trace".into(),
+            compact: None,
+            system_prompt: None,
+            tool_definitions: None,
         }
     }
 
@@ -628,6 +687,9 @@ mod tests {
             max_iterations: 3,
             session_id: "test".into(),
             trace_id: "test".into(),
+            compact: None,
+            system_prompt: None,
+            tool_definitions: None,
         };
         let initial = vec![make_user_msg("Keep looping")];
 
