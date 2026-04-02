@@ -28,8 +28,12 @@ use super::types::{
 };
 use super::worker::{WorkerPool, WorkerPoolStatus};
 use crate::classifier::rule::AgentClassifier;
+use crate::execution::agentic_loop::{run_agentic_loop, AgenticLoopConfig};
+use crate::hooks::HookRegistry;
 use crate::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
 use crate::orchestrator::specialist_pool::SpecialistPool;
+use crate::permissions::PermissionChecker;
+use crate::tools::registry::ToolRegistry;
 use crate::bus::{make_outbound, make_internal, Bus, InboundMessage, MakeInternal, MakeOutbound, OutboundMessage};
 use crate::bus::{ControlSignal};
 use crate::channel::SessionStore;
@@ -164,6 +168,14 @@ pub struct CoreAgent {
     context_manager: Arc<ContextManager>,
     result_cache: Arc<LruCache>,
     metrics: Arc<MetricsCollector>,
+    /// Agentic loop 用：工具注册中心
+    tool_registry: Arc<ToolRegistry>,
+    /// Agentic loop 用：权限检查器
+    permission_checker: Option<Arc<PermissionChecker>>,
+    /// Agentic loop 用：钩子注册中心
+    hook_registry: Option<Arc<HookRegistry>>,
+    /// Agentic loop 用：保存 executor 引用以便在循环中直接使用
+    executor: Arc<dyn TaskExecutor>,
     memory: Mutex<indexmap::IndexMap<String, SessionContext>>,
     failures: Mutex<RuntimeFailureStatus>,
     timeline: Mutex<Vec<RuntimeTimelineEvent>>,
@@ -202,7 +214,7 @@ impl CoreAgent {
         let metrics = Arc::new(MetricsCollector::new(Some("anima")));
         metrics.register_agent_metrics();
         let session_store = session_store.unwrap_or_else(|| Arc::new(SessionStore::new()));
-        let worker_pool = Arc::new(WorkerPool::new(client.clone(), executor, pool_size, None, None));
+        let worker_pool = Arc::new(WorkerPool::new(client.clone(), executor.clone(), pool_size, None, None));
         let specialist_pool = Arc::new(SpecialistPool::new(worker_pool.clone()));
         let orchestrator = Arc::new(AgentOrchestrator::new(
             worker_pool.clone(),
@@ -218,6 +230,10 @@ impl CoreAgent {
             context_manager: Arc::new(ContextManager::new(Some(true))),
             result_cache: Arc::new(LruCache::new(Some(1000), Some(5 * 60 * 1000))),
             metrics,
+            tool_registry: Arc::new(ToolRegistry::new()),
+            permission_checker: None,
+            hook_registry: None,
+            executor,
             memory: Mutex::new(indexmap::IndexMap::new()),
             failures: Mutex::new(RuntimeFailureStatus::default()),
             timeline: Mutex::new(Vec::new()),
@@ -228,6 +244,21 @@ impl CoreAgent {
             loop_handle: Mutex::new(None),
             control_handle: Mutex::new(None),
         }
+    }
+
+    /// 设置工具注册中心（启用 agentic loop）
+    pub fn set_tool_registry(&mut self, registry: ToolRegistry) {
+        self.tool_registry = Arc::new(registry);
+    }
+
+    /// 设置权限检查器
+    pub fn set_permission_checker(&mut self, checker: PermissionChecker) {
+        self.permission_checker = Some(Arc::new(checker));
+    }
+
+    /// 设置钩子注册中心
+    pub fn set_hook_registry(&mut self, registry: HookRegistry) {
+        self.hook_registry = Some(Arc::new(registry));
     }
 
     /// 启动智能体：启动 WorkerPool，并创建两个后台线程：
@@ -870,9 +901,15 @@ impl CoreAgent {
         }
         self.metrics.counter_inc("tasks_submitted");
         self.publish_worker_event("task_start", inbound_msg, &plan_type);
-        let result = self
-            .orchestrator
-            .execute_plan_instance(plan, opencode_session_id);
+
+        // Agentic loop 分支：工具注册中心非空时，走 agentic loop
+        let result = if !self.tool_registry.is_empty() {
+            self.run_agentic_loop_for_plan(inbound_msg, opencode_session_id)
+        } else {
+            self.orchestrator
+                .execute_plan_instance(plan, opencode_session_id)
+        };
+
         self.publish_worker_event("task_end", inbound_msg, &plan_type);
         if result.status == "success" {
             self.metrics.counter_inc("tasks_completed");
@@ -880,6 +917,72 @@ impl CoreAgent {
             self.metrics.counter_inc("tasks_failed");
         }
         result
+    }
+
+    /// 使用 agentic loop 执行当前消息
+    fn run_agentic_loop_for_plan(
+        &self,
+        inbound_msg: &InboundMessage,
+        opencode_session_id: &str,
+    ) -> TaskResult {
+        use crate::messages::types::{InternalMsg, MessageRole};
+        let started = now_ms();
+        let initial_messages = vec![InternalMsg {
+            role: MessageRole::User,
+            content: json!(inbound_msg.content.clone()),
+            message_id: inbound_msg.id.clone(),
+            tool_use_id: None,
+            filtered: false,
+            metadata: json!({}),
+        }];
+
+        let config = AgenticLoopConfig {
+            max_iterations: 10,
+            session_id: opencode_session_id.to_string(),
+            trace_id: inbound_msg.id.clone(),
+        };
+
+        let perm_ref = self.permission_checker.as_deref();
+        let hook_ref = self.hook_registry.as_deref();
+
+        match run_agentic_loop(
+            &self._client,
+            self.executor.as_ref(),
+            &self.tool_registry,
+            perm_ref,
+            hook_ref,
+            initial_messages,
+            &config,
+        ) {
+            Ok(loop_result) => {
+                let duration_ms = now_ms().saturating_sub(started);
+                make_task_result(MakeTaskResult {
+                    task_id: Uuid::new_v4().to_string(),
+                    trace_id: inbound_msg.id.clone(),
+                    status: "success".into(),
+                    result: Some(json!({
+                        "text": loop_result.final_text,
+                        "iterations": loop_result.iterations,
+                        "hit_limit": loop_result.hit_limit,
+                    })),
+                    error: None,
+                    duration_ms,
+                    worker_id: None,
+                })
+            }
+            Err(err) => {
+                let duration_ms = now_ms().saturating_sub(started);
+                make_task_result(MakeTaskResult {
+                    task_id: Uuid::new_v4().to_string(),
+                    trace_id: inbound_msg.id.clone(),
+                    status: "error".into(),
+                    result: None,
+                    error: Some(err.to_string()),
+                    duration_ms,
+                    worker_id: None,
+                })
+            }
+        }
     }
 
     fn assemble_turn_context(
