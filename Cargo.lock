@@ -64,9 +64,11 @@ dependencies = [
 name = "anima-types"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "uuid",
 ]
 
 [[package]]

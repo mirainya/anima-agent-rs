@@ -5,8 +5,8 @@
 //! - 支持 fail-fast（任一失败立即中止）和最低成功率阈值两种提前终止策略
 //! - 同时保留了向后兼容的简单 `execute` 接口
 
-use crate::agent_types::{make_task_result, MakeTaskResult, Task, TaskResult};
-use crate::agent_worker::WorkerPool;
+use crate::agent::types::{make_task_result, MakeTaskResult, Task, TaskResult};
+use crate::agent::worker::WorkerPool;
 use crate::support::now_ms;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -100,12 +100,19 @@ impl ParallelPool {
 
     // ── Existing API (backward compatible) ─────────────────────────
 
-    /// 向后兼容接口：顺序提交所有任务，任一失败则直接返回失败结果
+    /// 向后兼容接口：批量提交所有任务，按输入顺序收集结果，任一失败则直接返回失败结果
     pub fn execute(&self, tasks: Vec<Task>) -> TaskResult {
-        let results = tasks
+        let receivers = tasks
             .into_iter()
             .map(|task| {
                 let rx = self.worker_pool.submit_task(task.clone());
+                (task, rx)
+            })
+            .collect::<Vec<_>>();
+
+        let results = receivers
+            .into_iter()
+            .map(|(task, rx)| {
                 rx.recv().unwrap_or_else(|_| {
                     make_task_result(MakeTaskResult {
                         task_id: task.id,

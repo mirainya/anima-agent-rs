@@ -18,8 +18,8 @@ use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
 
-use crate::agent_executor::TaskExecutor;
-use crate::agent_types::{make_task_result, MakeTaskResult, Task, TaskResult};
+use super::executor::TaskExecutor;
+use super::types::{make_task_result, MakeTaskResult, Task, TaskResult};
 use crate::support::now_ms;
 
 /// Worker 当前正在执行的任务信息

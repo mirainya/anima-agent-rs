@@ -1,4 +1,4 @@
-use crate::agent_classifier::{ClassificationDecision, ClassificationKind};
+use crate::classifier::rule::{ClassificationDecision, ClassificationKind};
 use crate::bus::InboundMessage;
 use crate::cache::LruCache;
 use regex::Regex;

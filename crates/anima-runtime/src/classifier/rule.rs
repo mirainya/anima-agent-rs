@@ -1,7 +1,18 @@
-use crate::agent_types::{make_task, ExecutionPlan, ExecutionPlanKind, MakeTask};
+use crate::agent::types::{make_task, ExecutionPlan, ExecutionPlanKind, MakeTask};
 use crate::bus::InboundMessage;
+use lazy_static::lazy_static;
+use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
+
+lazy_static! {
+    static ref ORCHESTRATION_V1_COMPLEX_REQUEST_RULES: Vec<Regex> = vec![
+        Regex::new(r"(?i)web.?app|website|frontend").unwrap(),
+        Regex::new(r"(?i)api|endpoint|rest").unwrap(),
+        Regex::new(r"(?i)data.?analy|report|dashboard").unwrap(),
+        Regex::new(r"(?i)refactor|restructure|clean.?up").unwrap(),
+    ];
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassificationKind {
@@ -62,6 +73,39 @@ impl AgentClassifier {
                 kind: ClassificationKind::Single,
             }
         }
+    }
+
+    pub fn should_upgrade_to_orchestration_v1(inbound_msg: &InboundMessage) -> bool {
+        let force = inbound_msg
+            .metadata
+            .get("orchestration")
+            .and_then(Value::as_str)
+            == Some("v1")
+            || inbound_msg
+                .metadata
+                .get("orchestration-v1")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        if force {
+            return true;
+        }
+
+        if inbound_msg.channel != "web" {
+            return false;
+        }
+
+        let disabled = inbound_msg
+            .metadata
+            .get("disable-orchestration")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if disabled {
+            return false;
+        }
+
+        ORCHESTRATION_V1_COMPLEX_REQUEST_RULES
+            .iter()
+            .any(|rule| rule.is_match(&inbound_msg.content))
     }
 
     pub fn build_plan(inbound_msg: &InboundMessage) -> ExecutionPlan {

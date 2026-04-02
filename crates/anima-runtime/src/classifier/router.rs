@@ -1,9 +1,9 @@
-use crate::agent_classifier::{AgentClassifier, ClassificationDecision, ClassificationKind};
-use crate::agent_specialist_pool::SpecialistPool;
-use crate::agent_types::{make_task, MakeTask, TaskResult};
+use crate::classifier::rule::{AgentClassifier, ClassificationDecision, ClassificationKind};
+use crate::orchestrator::specialist_pool::SpecialistPool;
+use crate::agent::types::{make_task, MakeTask, TaskResult};
 use crate::bus::InboundMessage;
 use crate::support::now_ms;
-use crate::task_classifier::{classify_task, ClassificationResult};
+use crate::classifier::task::{classify_task, ClassificationResult};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::{json, Value};

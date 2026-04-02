@@ -1,7 +1,6 @@
-//! Agent 核心类型定义
+//! 任务核心类型定义
 //!
 //! 定义任务（Task）、任务结果（TaskResult）和执行计划（ExecutionPlan）等核心数据结构。
-//! 这些类型是 Agent 运行时调度和执行的基础。
 
 use serde_json::{json, Value};
 use std::collections::VecDeque;
