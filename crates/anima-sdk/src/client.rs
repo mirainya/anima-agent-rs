@@ -1,28 +1,8 @@
 use anima_types::{AnimaError, ApiErrorKind, ApiResponse, Result};
-use reqwest::blocking::{Client as HttpClient, RequestBuilder};
+use reqwest::blocking::RequestBuilder;
 use serde_json::{Map, Value};
-use std::time::Duration;
 
 use crate::facade::Client;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RequestOptions {
-    pub throw_exceptions: bool,
-    pub accept_json: bool,
-    pub content_type_json: bool,
-    pub socket_timeout_ms: u64,
-    pub connection_timeout_ms: u64,
-}
-
-pub fn default_opts() -> RequestOptions {
-    RequestOptions {
-        throw_exceptions: false,
-        accept_json: true,
-        content_type_json: true,
-        socket_timeout_ms: 600_000,
-        connection_timeout_ms: 60_000,
-    }
-}
 
 pub fn build_url(base_url: &str, endpoint: &str) -> String {
     let base = base_url.trim_end_matches('/');
@@ -54,13 +34,30 @@ pub fn add_query_params(mut url: String, params: Option<&Map<String, Value>>) ->
 }
 
 pub(crate) fn query_value(value: &Value) -> String {
-    match value {
+    let raw = match value {
         Value::Null => "null".to_string(),
         Value::Bool(v) => v.to_string(),
         Value::Number(v) => v.to_string(),
         Value::String(v) => v.clone(),
         _ => value.to_string(),
+    };
+    percent_encode(&raw)
+}
+
+/// Percent-encode a query parameter value (RFC 3986 unreserved characters pass through)
+fn percent_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
     }
+    out
 }
 
 pub fn parse_response(status: u16, body: &str) -> ApiResponse {
@@ -106,14 +103,6 @@ pub fn parse_response(status: u16, body: &str) -> ApiResponse {
     }
 }
 
-fn http_client_with_timeouts() -> Result<HttpClient> {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(600_000))
-        .connect_timeout(Duration::from_millis(60_000))
-        .build()
-        .map_err(|err| AnimaError::Transport(err.to_string()))
-}
-
 fn send(builder: RequestBuilder) -> Result<ApiResponse> {
     let response = builder
         .send()
@@ -130,9 +119,8 @@ pub fn get_request(
     endpoint: &str,
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
-    let http = http_client_with_timeouts()?;
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    send(http.get(url).header("accept", "application/json"))
+    send(client.http_client.get(url).header("accept", "application/json"))
 }
 
 pub fn post_request(
@@ -141,10 +129,11 @@ pub fn post_request(
     body: &Value,
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
-    let http = http_client_with_timeouts()?;
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
     send(
-        http.post(url)
+        client
+            .http_client
+            .post(url)
             .header("accept", "application/json")
             .header("content-type", "application/json")
             .body(serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?),
@@ -157,10 +146,11 @@ pub fn patch_request(
     body: &Value,
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
-    let http = http_client_with_timeouts()?;
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
     send(
-        http.patch(url)
+        client
+            .http_client
+            .patch(url)
             .header("accept", "application/json")
             .header("content-type", "application/json")
             .body(serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?),
@@ -173,10 +163,11 @@ pub fn put_request(
     body: &Value,
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
-    let http = http_client_with_timeouts()?;
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
     send(
-        http.put(url)
+        client
+            .http_client
+            .put(url)
             .header("accept", "application/json")
             .header("content-type", "application/json")
             .body(serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?),
@@ -188,9 +179,13 @@ pub fn delete_request(
     endpoint: &str,
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
-    let http = http_client_with_timeouts()?;
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    send(http.delete(url).header("accept", "application/json"))
+    send(
+        client
+            .http_client
+            .delete(url)
+            .header("accept", "application/json"),
+    )
 }
 
 /// 发送 POST 请求并返回原始 Response（不读取 body），用于 SSE 流式读取
@@ -199,9 +194,9 @@ pub fn post_request_streaming(
     endpoint: &str,
     body: &Value,
 ) -> Result<reqwest::blocking::Response> {
-    let http = http_client_with_timeouts()?;
     let url = build_url(&client.base_url, endpoint);
-    let response = http
+    let response = client
+        .http_client
         .post(url)
         .header("accept", "text/event-stream")
         .header("content-type", "application/json")

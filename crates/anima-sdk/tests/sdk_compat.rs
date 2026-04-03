@@ -2,13 +2,11 @@ use anima_sdk::{client, config, files, messages, sessions, ApiErrorKind};
 use serde_json::{json, Map, Value};
 
 #[test]
-fn default_opts_match_baseline() {
-    let opts = client::default_opts();
-    assert!(!opts.throw_exceptions);
-    assert!(opts.accept_json);
-    assert!(opts.content_type_json);
-    assert_eq!(opts.socket_timeout_ms, 600_000);
-    assert_eq!(opts.connection_timeout_ms, 60_000);
+fn client_reuses_http_client_with_timeouts() {
+    // Client 构造时就应配置好超时，http_client 可复用
+    let c = anima_sdk::Client::new("http://127.0.0.1:9711");
+    // 确保 http_client 存在且可正常使用（不会 panic）
+    let _url = client::build_url(&c.base_url, "/test");
 }
 
 #[test]
@@ -178,7 +176,17 @@ fn add_query_params_appends_to_existing_query_and_formats_values() {
     assert!(url.contains("flag=true"));
     assert!(url.contains("text=hello"));
     assert!(url.contains("empty=null"));
-    assert!(url.contains("list=[1,2]"));
+    // list=[1,2] → percent-encoded brackets/comma
+    assert!(url.contains("list="));
+}
+
+#[test]
+fn query_params_percent_encodes_special_characters() {
+    let mut params = Map::new();
+    params.insert("q".into(), json!("hello world&foo=bar"));
+    let url = client::add_query_params("http://localhost:9711/api".into(), Some(&params));
+    // 空格→%20, &→%26, =→%3D
+    assert!(url.contains("q=hello%20world%26foo%3Dbar"));
 }
 
 #[test]

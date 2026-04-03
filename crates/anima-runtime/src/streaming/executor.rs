@@ -57,6 +57,8 @@ impl StreamingToolExecutor {
     }
 
     /// 标记 tool_use 输入完成，解析完整 JSON
+    ///
+    /// JSON 解析失败时返回 None 并记录错误信息到 state
     pub fn on_tool_use_stop(&mut self, index: usize) -> Option<&TrackedToolState> {
         let state = self.tracked.get(&index)?;
         if let TrackedToolState::ReceivingInput {
@@ -65,11 +67,20 @@ impl StreamingToolExecutor {
             accumulated_json,
         } = state
         {
-            let input: Value = serde_json::from_str(accumulated_json).unwrap_or(Value::Null);
-            let new_state = TrackedToolState::ReadyToExecute {
-                id: id.clone(),
-                name: name.clone(),
-                input,
+            let new_state = match serde_json::from_str::<Value>(accumulated_json) {
+                Ok(input) => TrackedToolState::ReadyToExecute {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input,
+                },
+                Err(e) => TrackedToolState::ReadyToExecute {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: json!({
+                        "__parse_error": format!("malformed tool JSON: {e}"),
+                        "__raw": accumulated_json.clone(),
+                    }),
+                },
             };
             self.tracked.insert(index, new_state);
         }
@@ -147,20 +158,26 @@ impl StreamAccumulator {
     }
 
     /// 排空所有已完成的工具，返回 `(id, name, parsed_input)` 列表（按 index 排序）
-    pub fn drain_ready(&mut self) -> Vec<(String, String, Value)> {
+    ///
+    /// JSON 解析失败时返回错误，而非静默使用 Null
+    pub fn drain_ready(&mut self) -> Result<Vec<(String, String, Value)>, String> {
         let mut indexed: Vec<(usize, (String, String, Value))> = Vec::new();
         let indices: Vec<usize> = self.tools.keys().copied().collect();
         for idx in indices {
             if self.tools.get(&idx).is_some_and(|s| s.complete) {
                 if let Some(state) = self.tools.remove(&idx) {
-                    let input: Value =
-                        serde_json::from_str(&state.json_buf).unwrap_or(Value::Null);
+                    let input: Value = serde_json::from_str(&state.json_buf).map_err(|e| {
+                        format!(
+                            "malformed tool JSON for '{}' (id={}): {e} — raw: {:?}",
+                            state.name, state.id, state.json_buf
+                        )
+                    })?;
                     indexed.push((idx, (state.id, state.name, input)));
                 }
             }
         }
         indexed.sort_by_key(|(idx, _)| *idx);
-        indexed.into_iter().map(|(_, v)| v).collect()
+        Ok(indexed.into_iter().map(|(_, v)| v).collect())
     }
 }
 
@@ -257,7 +274,7 @@ pub fn consume_sse_stream(
     }
 
     // 排空累积的工具调用
-    let tools = acc.drain_ready();
+    let tools = acc.drain_ready()?;
 
     // 组装 ParsedResponse
     let tool_uses: Vec<ParsedToolUse> = tools
@@ -316,7 +333,7 @@ mod tests {
         acc.on_input_delta(1, r#"mand":"ls"}"#);
         acc.on_tool_stop(1);
 
-        let tools = acc.drain_ready();
+        let tools = acc.drain_ready().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].0, "tu_1");
         assert_eq!(tools[0].1, "bash");
@@ -333,7 +350,7 @@ mod tests {
         acc.on_tool_stop(1);
         acc.on_tool_stop(2);
 
-        let tools = acc.drain_ready();
+        let tools = acc.drain_ready().unwrap();
         assert_eq!(tools.len(), 2);
         // 按 index 排序: 1 < 2
         assert_eq!(tools[0].0, "tu_1");
@@ -347,8 +364,22 @@ mod tests {
         acc.on_input_delta(0, r#"{"partial"#);
         // 没有 on_tool_stop
 
-        let tools = acc.drain_ready();
+        let tools = acc.drain_ready().unwrap();
         assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_stream_accumulator_malformed_json_returns_error() {
+        let mut acc = StreamAccumulator::new();
+        acc.on_tool_start(0, "tu_bad".into(), "bash".into());
+        acc.on_input_delta(0, r#"{"broken"#);
+        acc.on_tool_stop(0);
+
+        let result = acc.drain_ready();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("malformed tool JSON"));
+        assert!(err.contains("bash"));
     }
 
     // ---- consume_sse_stream 测试 ----

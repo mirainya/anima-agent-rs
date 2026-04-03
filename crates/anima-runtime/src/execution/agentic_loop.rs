@@ -256,20 +256,6 @@ pub fn build_tool_result_msg(tool_use_id: &str, result: &ToolResult) -> Internal
     }
 }
 
-/// 将 ApiMsg 列表序列化为 API 期望的 messages Value
-pub fn build_api_content(api_msgs: &[ApiMsg]) -> Value {
-    let messages: Vec<Value> = api_msgs
-        .iter()
-        .map(|msg| {
-            json!({
-                "role": msg.role,
-                "content": msg.content,
-            })
-        })
-        .collect();
-    json!(messages)
-}
-
 /// 构建包含 system prompt 和 tool definitions 的完整 API payload
 ///
 /// 当 `system_prompt` 或 `tool_definitions` 为 Some 时，返回的 Value
