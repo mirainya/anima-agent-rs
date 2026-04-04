@@ -136,11 +136,7 @@ mod tests {
     #[test]
     fn test_echo_command() {
         let tool = BashExecTool;
-        let input = if cfg!(target_os = "windows") {
-            json!({"command": "echo hello"})
-        } else {
-            json!({"command": "echo hello"})
-        };
+        let input = json!({"command": "echo hello"});
         let result = tool.call(input, &ctx()).unwrap();
         assert!(!result.is_error);
         let text = match &result.blocks[0] {

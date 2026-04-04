@@ -120,12 +120,21 @@ export const workerTaskSchema = z.object({
   content_preview: z.string(),
 });
 
+const toolPermissionRawQuestionSchema = z.object({
+  type: z.literal('tool_permission'),
+  tool_name: z.string().optional(),
+  tool_use_id: z.string().optional(),
+  tool_input: z.unknown().optional(),
+  prompt: z.string().optional(),
+  input_preview: z.string().optional(),
+}).passthrough();
+
 export const pendingQuestionSchema = z.object({
   question_id: z.string(),
   question_kind: z.string(),
   prompt: z.string(),
   options: z.array(z.string()),
-  raw_question: z.unknown(),
+  raw_question: z.union([toolPermissionRawQuestionSchema, z.unknown()]),
   decision_mode: z.string(),
   risk_level: z.string(),
   requires_user_confirmation: z.boolean(),

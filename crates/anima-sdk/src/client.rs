@@ -1,6 +1,7 @@
 use anima_types::{AnimaError, ApiErrorKind, ApiResponse, Result};
 use reqwest::blocking::RequestBuilder;
 use serde_json::{Map, Value};
+use std::time::Instant;
 
 use crate::facade::Client;
 
@@ -103,6 +104,27 @@ pub fn parse_response(status: u16, body: &str) -> ApiResponse {
     }
 }
 
+fn debug_http_enabled() -> bool {
+    std::env::var("ANIMA_SDK_DEBUG_HTTP")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+fn preview_text(text: &str, max_chars: usize) -> String {
+    let preview = text.chars().take(max_chars).collect::<String>();
+    if text.chars().count() > max_chars {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
+fn debug_http_event(label: &str, detail: &str) {
+    if debug_http_enabled() {
+        eprintln!("[anima-sdk/http] {label}: {detail}");
+    }
+}
+
 fn send(builder: RequestBuilder) -> Result<ApiResponse> {
     let response = builder
         .send()
@@ -188,29 +210,47 @@ pub fn delete_request(
     )
 }
 
-/// 发送 POST 请求并返回原始 Response（不读取 body），用于 SSE 流式读取
-pub fn post_request_streaming(
+/// 发送 GET 请求并返回原始 Response（不读取 body），用于 SSE 流式读取
+pub fn get_request_streaming(
     client: &Client,
     endpoint: &str,
-    body: &Value,
+    params: Option<&Map<String, Value>>,
 ) -> Result<reqwest::blocking::Response> {
-    let url = build_url(&client.base_url, endpoint);
+    let url = add_query_params(build_url(&client.base_url, endpoint), params);
+    let started = Instant::now();
+
+    debug_http_event(
+        "streaming_send_start",
+        &format!("url={url} method=GET accept=text/event-stream"),
+    );
+
     let response = client
         .http_client
-        .post(url)
+        .get(url.clone())
         .header("accept", "text/event-stream")
-        .header("content-type", "application/json")
-        .body(serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?)
         .send()
-        .map_err(|err| AnimaError::Transport(err.to_string()))?;
+        .map_err(|err| {
+            let elapsed_ms = started.elapsed().as_millis();
+            let detail = format!(
+                "streaming request transport error after {elapsed_ms}ms: url={url} method=GET accept=text/event-stream error={err}"
+            );
+            debug_http_event("streaming_send_error", &detail);
+            AnimaError::Transport(detail)
+        })?;
 
+    let elapsed_ms = started.elapsed().as_millis();
     let status = response.status().as_u16();
+    debug_http_event(
+        "streaming_send_response",
+        &format!("url={url} status={status} elapsed_ms={elapsed_ms}"),
+    );
     if status != 200 {
         let body_text = response
             .text()
             .map_err(|err| AnimaError::Transport(err.to_string()))?;
+        let body_text_preview = preview_text(&body_text, 240);
         return Err(AnimaError::Transport(format!(
-            "streaming request failed with status {status}: {body_text}"
+            "streaming request failed with status {status} after {elapsed_ms}ms: url={url} method=GET accept=text/event-stream response_body_preview={body_text_preview}"
         )));
     }
 

@@ -369,13 +369,19 @@ fn orchestration_main_chain_lowering_uses_finer_primitives_with_api_call_fallbac
         .lowered_tasks
         .iter()
         .any(|task| task.lowered_task_type == "api-call"));
-    assert!(execution.lowered_tasks.iter().find(|task| task.lowered_task_type == "api-call").is_some());
+    assert!(execution.lowered_tasks.iter().any(|task| task.lowered_task_type == "api-call"));
     assert!(execution.lowered_tasks.iter().filter(|task| task.lowered_task_type == "api-call").all(|task| {
         task.task
             .payload
             .get("opencode-session-id")
             .and_then(Value::as_str)
             == Some("sess-main-1")
+    }));
+    assert!(execution.lowered_tasks.iter().filter(|task| task.lowered_task_type == "api-call").all(|task| {
+        task.task.metadata.get("orchestration_subtask").and_then(Value::as_bool) == Some(true)
+            && task.task.metadata.get("streaming_observable").and_then(Value::as_bool) == Some(true)
+            && task.task.payload.get("orchestration_subtask").and_then(Value::as_bool) == Some(true)
+            && task.task.payload.get("streaming_observable").and_then(Value::as_bool) == Some(true)
     }));
     assert!(events.iter().any(|(event, _)| event == "orchestration_plan_created"));
     assert!(events.iter().any(|(event, _)| event == "orchestration_subtask_started"));
@@ -464,8 +470,10 @@ fn orchestration_main_chain_respects_parallel_disable_switch() {
     let executor = RecordingExecutorState::new();
     let wp = make_pool_with_executor(Arc::new(executor), 3);
     let sp = Arc::new(SpecialistPool::new(wp.clone()));
-    let mut config = OrchestratorConfig::default();
-    config.enable_parallel = false;
+    let config = OrchestratorConfig {
+        enable_parallel: false,
+        ..OrchestratorConfig::default()
+    };
     let orch = AgentOrchestrator::new(wp, sp, config);
     let mut events = Vec::new();
 

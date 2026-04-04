@@ -28,9 +28,13 @@ use super::types::{
 };
 use super::worker::{WorkerPool, WorkerPoolStatus};
 use crate::classifier::rule::AgentClassifier;
-use crate::execution::agentic_loop::{run_agentic_loop, AgenticLoopConfig};
+use crate::execution::agentic_loop::{
+    continue_agentic_loop, resume_suspended_tool_invocation, run_agentic_loop, AgenticLoopConfig,
+    AgenticLoopOutcome, AgenticLoopSuspension,
+};
 use crate::hooks::HookRegistry;
 use crate::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
+use crate::streaming::types::{ContentBlock, ContentDelta, StreamEvent};
 use crate::orchestrator::specialist_pool::SpecialistPool;
 use crate::permissions::PermissionChecker;
 use crate::prompt::PromptAssembler;
@@ -86,6 +90,13 @@ pub enum QuestionRiskLevel {
     High,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingQuestionSourceKind {
+    UpstreamQuestion,
+    ToolPermission,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingQuestion {
     pub question_id: String,
@@ -98,6 +109,8 @@ pub struct PendingQuestion {
     pub decision_mode: QuestionDecisionMode,
     pub risk_level: QuestionRiskLevel,
     pub requires_user_confirmation: bool,
+    pub source_kind: PendingQuestionSourceKind,
+    pub continuation_token: Option<String>,
     pub asked_at_ms: u64,
     pub answer_submitted: bool,
     pub answer_summary: Option<String>,
@@ -143,6 +156,13 @@ struct ExecutionContext {
     cache_hit: bool,
 }
 
+#[derive(Debug, Clone)]
+struct SuspendedToolInvocationState {
+    suspension: AgenticLoopSuspension,
+    inbound: InboundMessage,
+    opencode_session_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SuccessSource {
     Initial,
@@ -179,9 +199,10 @@ pub struct CoreAgent {
     executor: Arc<dyn TaskExecutor>,
     memory: Mutex<indexmap::IndexMap<String, SessionContext>>,
     failures: Mutex<RuntimeFailureStatus>,
-    timeline: Mutex<Vec<RuntimeTimelineEvent>>,
+    timeline: Arc<Mutex<Vec<RuntimeTimelineEvent>>>,
     execution_summaries: Mutex<Vec<ExecutionSummary>>,
     pending_questions: Mutex<HashMap<String, PendingQuestion>>,
+    suspended_tool_invocations: Mutex<HashMap<String, SuspendedToolInvocationState>>,
     requirement_progress: Mutex<HashMap<String, RequirementProgressState>>,
     running: AtomicBool,
     loop_handle: Mutex<Option<thread::JoinHandle<()>>>,
@@ -215,7 +236,64 @@ impl CoreAgent {
         let metrics = Arc::new(MetricsCollector::new(Some("anima")));
         metrics.register_agent_metrics();
         let session_store = session_store.unwrap_or_else(|| Arc::new(SessionStore::new()));
-        let worker_pool = Arc::new(WorkerPool::new(client.clone(), executor.clone(), pool_size, None, None));
+        let worker_timeline = Arc::new(Mutex::new(Vec::<RuntimeTimelineEvent>::new()));
+        let bus_for_worker_events = Arc::clone(&bus);
+        let worker_timeline_for_events = Arc::clone(&worker_timeline);
+        let worker_runtime_event_publisher = Arc::new(move |trace_id: &str, event: &str, payload: Value| {
+            let message_id = payload
+                .get("message_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(trace_id)
+                .to_string();
+            let channel = payload
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let chat_id = payload
+                .get("chat_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let sender_id = payload
+                .get("sender_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            {
+                let mut timeline = worker_timeline_for_events.lock();
+                timeline.push(RuntimeTimelineEvent {
+                    event: event.to_string(),
+                    trace_id: trace_id.to_string(),
+                    message_id,
+                    channel: channel.clone(),
+                    chat_id: chat_id.clone(),
+                    sender_id: sender_id.clone(),
+                    recorded_at_ms: now_ms(),
+                    payload: payload.clone(),
+                });
+                if timeline.len() > 50 {
+                    let excess = timeline.len() - 50;
+                    timeline.drain(..excess);
+                }
+            }
+            let _ = bus_for_worker_events.publish_internal(make_internal(MakeInternal {
+                source: "worker-agent".into(),
+                trace_id: Some(trace_id.to_string()),
+                payload: json!({
+                    "event": event,
+                    "message_id": trace_id,
+                    "channel": channel,
+                    "chat_id": chat_id,
+                    "sender_id": sender_id,
+                    "payload": payload,
+                }),
+                ..Default::default()
+            }));
+        });
+        let worker_pool = Arc::new(
+            WorkerPool::new(client.clone(), executor.clone(), pool_size, None, None)
+                .with_runtime_event_publisher(worker_runtime_event_publisher),
+        );
         let specialist_pool = Arc::new(SpecialistPool::new(worker_pool.clone()));
         let orchestrator = Arc::new(AgentOrchestrator::new(
             worker_pool.clone(),
@@ -237,9 +315,10 @@ impl CoreAgent {
             executor,
             memory: Mutex::new(indexmap::IndexMap::new()),
             failures: Mutex::new(RuntimeFailureStatus::default()),
-            timeline: Mutex::new(Vec::new()),
+            timeline: worker_timeline,
             execution_summaries: Mutex::new(Vec::new()),
             pending_questions: Mutex::new(HashMap::new()),
+            suspended_tool_invocations: Mutex::new(HashMap::new()),
             requirement_progress: Mutex::new(HashMap::new()),
             running: AtomicBool::new(false),
             loop_handle: Mutex::new(None),
@@ -952,12 +1031,56 @@ impl CoreAgent {
             Some(asm.build().text)
         };
 
+        let bus = self.bus.clone();
+        let out_channel = inbound_msg.channel.clone();
+        let out_chat_id = inbound_msg.chat_id.clone();
+        let out_sender = inbound_msg.sender_id.clone();
+        let out_trace_id = inbound_msg.id.clone();
+        let on_stream_event: Arc<dyn Fn(StreamEvent) + Send + Sync> = Arc::new(move |event| {
+            match &event {
+                StreamEvent::ContentBlockDelta {
+                    delta: ContentDelta::TextDelta { text },
+                    ..
+                } => {
+                    let _ = bus.publish_outbound(make_outbound(MakeOutbound {
+                        channel: out_channel.clone(),
+                        chat_id: out_chat_id.clone(),
+                        content: text.clone(),
+                        reply_target: Some(out_sender.clone()),
+                        stage: Some("streaming".into()),
+                        ..Default::default()
+                    }));
+                }
+                StreamEvent::ContentBlockStart {
+                    content_block: ContentBlock::ToolUse { name, .. },
+                    ..
+                } => {
+                    let _ = bus.publish_internal(make_internal(MakeInternal {
+                        source: "agentic-loop".into(),
+                        trace_id: Some(out_trace_id.clone()),
+                        payload: json!({
+                            "event": "tool_call_detected",
+                            "tool_name": name,
+                            "message_id": out_trace_id.clone(),
+                            "channel": out_channel.clone(),
+                            "chat_id": out_chat_id.clone(),
+                            "sender_id": out_sender.clone(),
+                        }),
+                        ..Default::default()
+                    }));
+                }
+                _ => {}
+            }
+        });
+
         let config = AgenticLoopConfig {
             max_iterations: 10,
             session_id: opencode_session_id.to_string(),
             trace_id: inbound_msg.id.clone(),
             system_prompt,
             tool_definitions: Some(self.tool_registry.tool_definitions()),
+            streaming: true,
+            on_stream_event: Some(on_stream_event),
             ..Default::default()
         };
 
@@ -973,7 +1096,7 @@ impl CoreAgent {
             initial_messages,
             &config,
         ) {
-            Ok(loop_result) => {
+            Ok(AgenticLoopOutcome::Completed(loop_result)) => {
                 let duration_ms = now_ms().saturating_sub(started);
                 make_task_result(MakeTaskResult {
                     task_id: Uuid::new_v4().to_string(),
@@ -989,6 +1112,85 @@ impl CoreAgent {
                     worker_id: None,
                 })
             }
+            Ok(AgenticLoopOutcome::Suspended(suspension)) => {
+                let question_id = Uuid::new_v4().to_string();
+                let raw_question = json!({
+                    "type": "tool_permission",
+                    "tool_name": suspension.suspended_tool.tool_name,
+                    "tool_use_id": suspension.suspended_tool.tool_use_id,
+                    "tool_input": suspension.suspended_tool.tool_input,
+                    "prompt": suspension.suspended_tool.permission_request.prompt,
+                    "input_preview": suspension.suspended_tool.permission_request.input_preview,
+                });
+                let pending_question = PendingQuestion {
+                    question_id: question_id.clone(),
+                    job_id: inbound_msg.id.clone(),
+                    opencode_session_id: opencode_session_id.to_string(),
+                    question_kind: QuestionKind::Confirm,
+                    prompt: suspension.suspended_tool.permission_request.prompt.clone(),
+                    options: vec!["allow".into(), "deny".into()],
+                    raw_question,
+                    decision_mode: QuestionDecisionMode::UserRequired,
+                    risk_level: permission_risk_to_question_risk(
+                        &suspension.suspended_tool.permission_request.risk_level,
+                    ),
+                    requires_user_confirmation: true,
+                    source_kind: PendingQuestionSourceKind::ToolPermission,
+                    continuation_token: Some(question_id.clone()),
+                    asked_at_ms: now_ms(),
+                    answer_submitted: false,
+                    answer_summary: None,
+                    resolution_source: None,
+                    inbound: Some(inbound_msg.clone()),
+                };
+                self.store_pending_question(inbound_msg.id.clone(), pending_question.clone());
+                self.store_suspended_tool_invocation(
+                    question_id.clone(),
+                    SuspendedToolInvocationState {
+                        suspension: suspension.clone(),
+                        inbound: inbound_msg.clone(),
+                        opencode_session_id: opencode_session_id.to_string(),
+                    },
+                );
+                self.publish_runtime_event("tool_permission_requested", inbound_msg, json!({
+                    "question_id": question_id,
+                    "tool_use_id": suspension.suspended_tool.tool_use_id,
+                    "tool_name": suspension.suspended_tool.tool_name,
+                    "tool_input": suspension.suspended_tool.tool_input,
+                    "prompt": suspension.suspended_tool.permission_request.prompt,
+                    "risk_level": question_risk_level_str(&permission_risk_to_question_risk(
+                        &suspension.suspended_tool.permission_request.risk_level,
+                    )),
+                    "source": "agentic_loop",
+                }));
+                self.publish_question_asked(
+                    inbound_msg,
+                    &memory_key(inbound_msg),
+                    &pending_question,
+                    None,
+                    now_ms().saturating_sub(started),
+                    now_ms().saturating_sub(started),
+                    false,
+                    "single",
+                );
+                make_task_result(MakeTaskResult {
+                    task_id: Uuid::new_v4().to_string(),
+                    trace_id: inbound_msg.id.clone(),
+                    status: "success".into(),
+                    result: Some(json!({
+                        "status": "waiting_user_input",
+                        "question_id": pending_question.question_id,
+                        "tool_name": pending_question
+                            .raw_question
+                            .get("tool_name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    })),
+                    error: None,
+                    duration_ms: now_ms().saturating_sub(started),
+                    worker_id: None,
+                })
+            }
             Err(err) => {
                 let duration_ms = now_ms().saturating_sub(started);
                 make_task_result(MakeTaskResult {
@@ -1000,6 +1202,137 @@ impl CoreAgent {
                     duration_ms,
                     worker_id: None,
                 })
+            }
+        }
+    }
+
+    fn resume_suspended_tool_permission(
+        &self,
+        job_id: &str,
+        pending: PendingQuestion,
+        answer: &str,
+    ) -> Result<(), String> {
+        let suspended = self
+            .suspended_tool_invocation(&pending.question_id)
+            .ok_or_else(|| format!("Missing suspended tool invocation for question: {}", pending.question_id))?;
+        let allow = matches!(answer, "allow" | "ALLOW" | "Allow");
+
+        let config = AgenticLoopConfig {
+            max_iterations: 10,
+            session_id: suspended.opencode_session_id.clone(),
+            trace_id: suspended.inbound.id.clone(),
+            system_prompt: Some({
+                let mut asm = PromptAssembler::new();
+                asm.add_text("identity", "你是 Anima 智能助手。", 0);
+                asm.build().text
+            }),
+            tool_definitions: Some(self.tool_registry.tool_definitions()),
+            streaming: true,
+            on_stream_event: None,
+            ..Default::default()
+        };
+
+        let resumed_messages = resume_suspended_tool_invocation(
+            &suspended.suspension,
+            allow,
+            &self.tool_registry,
+            self.hook_registry.as_deref(),
+            &config,
+        )
+        .map_err(|err| err.to_string())?;
+
+        self.publish_runtime_event("tool_permission_resolved", &suspended.inbound, json!({
+            "question_id": pending.question_id,
+            "tool_use_id": suspended.suspension.suspended_tool.tool_use_id,
+            "tool_name": suspended.suspension.suspended_tool.tool_name,
+            "decision": if allow { "allow" } else { "deny" },
+            "source": pending.resolution_source,
+        }));
+
+        match continue_agentic_loop(
+            &self._client,
+            self.executor.as_ref(),
+            &self.tool_registry,
+            self.permission_checker.as_deref(),
+            self.hook_registry.as_deref(),
+            resumed_messages,
+            suspended.suspension.iterations,
+            suspended.suspension.compact_count,
+            &config,
+        )
+        .map_err(|err| err.to_string())? {
+            AgenticLoopOutcome::Completed(loop_result) => {
+                self.publish_runtime_event("question_resolved", &suspended.inbound, json!({
+                    "memory_key": memory_key(&suspended.inbound),
+                    "question_id": pending.question_id,
+                    "question_kind": question_kind_str(&pending.question_kind),
+                    "answer_summary": pending.answer_summary,
+                    "resolution_source": pending.resolution_source,
+                    "opencode_session_id": pending.opencode_session_id,
+                }));
+                self.clear_pending_question(job_id);
+                self.clear_suspended_tool_invocation(&pending.question_id);
+                let _ = self.send_response(&suspended.inbound, &loop_result.final_text);
+                self.publish_runtime_event("message_completed", &suspended.inbound, json!({
+                    "memory_key": memory_key(&suspended.inbound),
+                    "plan_type": "single",
+                    "status": "success",
+                    "response_preview": truncate_preview(&loop_result.final_text, 160),
+                }));
+                Ok(())
+            }
+            AgenticLoopOutcome::Suspended(next_suspension) => {
+                let next_question_id = Uuid::new_v4().to_string();
+                let raw_question = json!({
+                    "type": "tool_permission",
+                    "tool_name": next_suspension.suspended_tool.tool_name,
+                    "tool_use_id": next_suspension.suspended_tool.tool_use_id,
+                    "tool_input": next_suspension.suspended_tool.tool_input,
+                    "prompt": next_suspension.suspended_tool.permission_request.prompt,
+                    "input_preview": next_suspension.suspended_tool.permission_request.input_preview,
+                });
+                let next_pending = PendingQuestion {
+                    question_id: next_question_id.clone(),
+                    job_id: job_id.to_string(),
+                    opencode_session_id: suspended.opencode_session_id.clone(),
+                    question_kind: QuestionKind::Confirm,
+                    prompt: next_suspension.suspended_tool.permission_request.prompt.clone(),
+                    options: vec!["allow".into(), "deny".into()],
+                    raw_question,
+                    decision_mode: QuestionDecisionMode::UserRequired,
+                    risk_level: permission_risk_to_question_risk(
+                        &next_suspension.suspended_tool.permission_request.risk_level,
+                    ),
+                    requires_user_confirmation: true,
+                    source_kind: PendingQuestionSourceKind::ToolPermission,
+                    continuation_token: Some(next_question_id.clone()),
+                    asked_at_ms: now_ms(),
+                    answer_submitted: false,
+                    answer_summary: None,
+                    resolution_source: None,
+                    inbound: Some(suspended.inbound.clone()),
+                };
+                self.store_pending_question(job_id.to_string(), next_pending.clone());
+                self.store_suspended_tool_invocation(
+                    next_question_id,
+                    SuspendedToolInvocationState {
+                        suspension: next_suspension,
+                        inbound: suspended.inbound.clone(),
+                        opencode_session_id: suspended.opencode_session_id,
+                    },
+                );
+                self.clear_suspended_tool_invocation(&pending.question_id);
+                self.publish_question_asked(
+                    &suspended.inbound,
+                    &memory_key(&suspended.inbound),
+                    &next_pending,
+                    None,
+                    0,
+                    0,
+                    false,
+                    "single",
+                );
+                Ok(())
             }
         }
     }
@@ -1102,10 +1435,23 @@ impl CoreAgent {
         self.pending_questions.lock().insert(job_id, question);
     }
 
+    fn store_suspended_tool_invocation(&self, question_id: String, state: SuspendedToolInvocationState) {
+        self.suspended_tool_invocations.lock().insert(question_id, state);
+    }
+
+    fn suspended_tool_invocation(&self, question_id: &str) -> Option<SuspendedToolInvocationState> {
+        self.suspended_tool_invocations.lock().get(question_id).cloned()
+    }
+
     fn clear_pending_question(&self, job_id: &str) {
         self.pending_questions.lock().remove(job_id);
     }
 
+    fn clear_suspended_tool_invocation(&self, question_id: &str) {
+        self.suspended_tool_invocations.lock().remove(question_id);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn publish_question_asked(
         &self,
         inbound_msg: &InboundMessage,
@@ -1675,60 +2021,67 @@ impl CoreAgent {
             "opencode_session_id": pending.opencode_session_id,
         }));
 
-        let continuation_ctx = self.assemble_turn_context(
-            &inbound,
-            ContextAssemblyMode::QuestionContinuation,
-            pending.opencode_session_id.clone(),
-            Some(pending.clone()),
-            None,
-        );
-        let continuation_request = ApiCallExecutionRequest {
-            trace_id: inbound.id.clone(),
-            session_id: continuation_ctx.metadata.opencode_session_id.clone(),
-            content: continuation_ctx.prompt_text.clone(),
-            kind: ExecutionKind::QuestionContinuation,
-            metadata: Some(json!({})),
-        };
-        let continuation_result = self.execute_api_call_request(
-            &inbound,
-            &key,
-            "single",
-            &continuation_request,
-            "主 agent 已收到问题答案，派发给 worker 继续执行",
-            json!({
-                "question_id": pending.question_id,
-            }),
-        )?;
+        match pending.source_kind {
+            PendingQuestionSourceKind::UpstreamQuestion => {
+                let continuation_ctx = self.assemble_turn_context(
+                    &inbound,
+                    ContextAssemblyMode::QuestionContinuation,
+                    pending.opencode_session_id.clone(),
+                    Some(pending.clone()),
+                    None,
+                );
+                let continuation_request = ApiCallExecutionRequest {
+                    trace_id: inbound.id.clone(),
+                    session_id: continuation_ctx.metadata.opencode_session_id.clone(),
+                    content: continuation_ctx.prompt_text.clone(),
+                    kind: ExecutionKind::QuestionContinuation,
+                    metadata: Some(json!({})),
+                };
+                let continuation_result = self.execute_api_call_request(
+                    &inbound,
+                    &key,
+                    "single",
+                    &continuation_request,
+                    "主 agent 已收到问题答案，派发给 worker 继续执行",
+                    json!({
+                        "question_id": pending.question_id,
+                    }),
+                )?;
 
-        if continuation_result.status != "success" {
-            return Err(
-                continuation_result
-                    .error
-                    .unwrap_or_else(|| "Continuation execution failed".to_string()),
-            );
+                if continuation_result.status != "success" {
+                    return Err(
+                        continuation_result
+                            .error
+                            .unwrap_or_else(|| "Continuation execution failed".to_string()),
+                    );
+                }
+
+                let exec_ctx = ExecutionContext {
+                    memory_key: continuation_ctx.metadata.memory_key,
+                    history_session_id: continuation_ctx.metadata.history_session_id,
+                    opencode_session_id: continuation_ctx.metadata.opencode_session_id,
+                    plan_type: "single".into(),
+                    context_ms: 0,
+                    session_ms: 0,
+                    classify_ms: 0,
+                    execute_ms: continuation_result.duration_ms,
+                    total_ms: continuation_result.duration_ms,
+                    cache_hit: false,
+                };
+                let _ = self.handle_upstream_result(
+                    &inbound,
+                    &exec_ctx,
+                    continuation_result,
+                    SuccessSource::QuestionContinuation,
+                    Some(&pending),
+                )?;
+                Ok(pending)
+            }
+            PendingQuestionSourceKind::ToolPermission => {
+                self.resume_suspended_tool_permission(job_id, pending.clone(), answer.answer.trim())?;
+                Ok(pending)
+            }
         }
-
-        let exec_ctx = ExecutionContext {
-            memory_key: continuation_ctx.metadata.memory_key,
-            history_session_id: continuation_ctx.metadata.history_session_id,
-            opencode_session_id: continuation_ctx.metadata.opencode_session_id,
-            plan_type: "single".into(),
-            context_ms: 0,
-            session_ms: 0,
-            classify_ms: 0,
-            execute_ms: continuation_result.duration_ms,
-            total_ms: continuation_result.duration_ms,
-            cache_hit: false,
-        };
-        let _ = self.handle_upstream_result(
-            &inbound,
-            &exec_ctx,
-            continuation_result,
-            SuccessSource::QuestionContinuation,
-            Some(&pending),
-        )?;
-
-        Ok(pending)
     }
 }
 
@@ -1751,6 +2104,13 @@ fn question_risk_level_str(level: &QuestionRiskLevel) -> &'static str {
     match level {
         QuestionRiskLevel::Low => "low",
         QuestionRiskLevel::High => "high",
+    }
+}
+
+fn permission_risk_to_question_risk(level: &crate::permissions::PermissionRiskLevel) -> QuestionRiskLevel {
+    match level {
+        crate::permissions::PermissionRiskLevel::Low => QuestionRiskLevel::Low,
+        crate::permissions::PermissionRiskLevel::High => QuestionRiskLevel::High,
     }
 }
 
@@ -1815,6 +2175,8 @@ fn build_pending_question(question: &Value, opencode_session_id: &str) -> Option
         decision_mode,
         risk_level,
         requires_user_confirmation,
+        source_kind: PendingQuestionSourceKind::UpstreamQuestion,
+        continuation_token: None,
         asked_at_ms: now_ms(),
         answer_submitted: false,
         answer_summary: None,

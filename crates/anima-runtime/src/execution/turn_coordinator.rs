@@ -276,6 +276,7 @@ pub fn prepare_waiting_user_input_data(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_summary_input(
     status: String,
     worker_id: Option<String>,
@@ -419,6 +420,7 @@ pub fn prepare_followup_exhausted_payload(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_completed_branch_data(
     resolved_question: Option<&PendingQuestion>,
     should_resolve_question: bool,
@@ -451,6 +453,7 @@ pub fn prepare_completed_branch_data(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_waiting_user_input_branch_data(
     resolved_question: Option<&PendingQuestion>,
     should_resolve_question: bool,
@@ -492,6 +495,7 @@ pub fn prepare_waiting_user_input_branch_data(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_followup_branch_data(
     reason: String,
     missing_requirements: Vec<String>,

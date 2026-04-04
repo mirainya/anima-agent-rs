@@ -26,6 +26,7 @@ pub struct CliChannel {
     bus: Option<Arc<Bus>>,
     prompt: String,
     output: Mutex<Vec<String>>,
+    was_streaming: AtomicBool,
 }
 
 impl CliChannel {
@@ -41,6 +42,7 @@ impl CliChannel {
             bus,
             prompt: prompt.unwrap_or(DEFAULT_PROMPT).to_string(),
             output: Mutex::new(Vec::new()),
+            was_streaming: AtomicBool::new(false),
         }
     }
 
@@ -52,6 +54,7 @@ impl CliChannel {
             bus,
             prompt: prompt.unwrap_or(DEFAULT_PROMPT).to_string(),
             output: Mutex::new(Vec::new()),
+            was_streaming: AtomicBool::new(false),
         }
     }
 
@@ -222,16 +225,30 @@ impl Channel for CliChannel {
     }
 
     fn send_message(&self, _target: &str, message: &str, opts: SendOptions) -> SendResult {
-        self.output.lock().unwrap().push(message.to_string());
-
-        // 直接写 stdout，让用户能实时看到回复
         let mut stdout = io::stdout();
-        let _ = writeln!(stdout, "\n{}", message);
-        if opts.stage.as_deref() == Some("final") || opts.stage.is_none() {
-            self.output.lock().unwrap().push(self.prompt.clone());
-            let _ = write!(stdout, "{}", self.prompt);
+
+        match opts.stage.as_deref() {
+            Some("streaming") => {
+                if !self.was_streaming.swap(true, Ordering::SeqCst) {
+                    let _ = writeln!(stdout);
+                }
+                let _ = write!(stdout, "{}", message);
+                let _ = stdout.flush();
+            }
+            _ => {
+                if self.was_streaming.swap(false, Ordering::SeqCst) {
+                    let _ = writeln!(stdout);
+                } else {
+                    self.output.lock().unwrap().push(message.to_string());
+                    let _ = writeln!(stdout, "\n{}", message);
+                }
+                if opts.stage.as_deref() == Some("final") || opts.stage.is_none() {
+                    self.output.lock().unwrap().push(self.prompt.clone());
+                    let _ = write!(stdout, "{}", self.prompt);
+                }
+                let _ = stdout.flush();
+            }
         }
-        let _ = stdout.flush();
 
         ok(None)
     }
@@ -242,5 +259,104 @@ impl Channel for CliChannel {
 
     fn health_check(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channel::{Channel, SendOptions};
+
+    #[test]
+    fn test_cli_streaming_then_final() {
+        let cli = CliChannel::new(None, None, Some("anima> "));
+
+        let _ = cli.send_message(
+            "user",
+            "Hello",
+            SendOptions {
+                stage: Some("streaming".into()),
+                ..Default::default()
+            },
+        );
+        let _ = cli.send_message(
+            "user",
+            " world",
+            SendOptions {
+                stage: Some("streaming".into()),
+                ..Default::default()
+            },
+        );
+        let _ = cli.send_message(
+            "user",
+            "Hello world",
+            SendOptions {
+                stage: Some("final".into()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(cli.outputs(), vec!["anima> ".to_string()]);
+        assert!(!cli.was_streaming.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_cli_non_streaming_unchanged() {
+        let cli = CliChannel::new(None, None, Some("anima> "));
+
+        let _ = cli.send_message(
+            "user",
+            "Final reply",
+            SendOptions {
+                stage: Some("final".into()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            cli.outputs(),
+            vec!["Final reply".to_string(), "anima> ".to_string()]
+        );
+        assert!(!cli.was_streaming.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_cli_streaming_flag_reset() {
+        let cli = CliChannel::new(None, None, Some("anima> "));
+
+        let _ = cli.send_message(
+            "user",
+            "partial",
+            SendOptions {
+                stage: Some("streaming".into()),
+                ..Default::default()
+            },
+        );
+        let _ = cli.send_message(
+            "user",
+            "partial done",
+            SendOptions {
+                stage: Some("final".into()),
+                ..Default::default()
+            },
+        );
+        let _ = cli.send_message(
+            "user",
+            "next reply",
+            SendOptions {
+                stage: Some("final".into()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            cli.outputs(),
+            vec![
+                "anima> ".to_string(),
+                "next reply".to_string(),
+                "anima> ".to_string()
+            ]
+        );
+        assert!(!cli.was_streaming.load(Ordering::SeqCst));
     }
 }

@@ -58,6 +58,9 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
   const failure = (job.failure ?? null) as FailureView | null;
   const executionSummary = (job.execution_summary ?? null) as ExecutionSummaryView | null;
   const pendingQuestion = job.pending_question ?? null;
+  const toolPermissionQuestion = pendingQuestion?.raw_question && typeof pendingQuestion.raw_question === 'object' && pendingQuestion.raw_question !== null && 'type' in pendingQuestion.raw_question && pendingQuestion.raw_question.type === 'tool_permission'
+    ? pendingQuestion.raw_question as { type: 'tool_permission'; tool_name?: string; tool_use_id?: string; tool_input?: unknown; prompt?: string; input_preview?: string }
+    : null;
   const summary = deriveJobSummary(job);
   const processEntries = deriveProcessEntriesFromEvents(job.recent_events);
   const decisionSummary = deriveAgentDecisionSummary(processEntries);
@@ -126,36 +129,51 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
         {job.status === 'waiting_user_input' && pendingQuestion && (
           <div className="job-detail-section question-card">
             <div className="section-title">待处理问题</div>
-            <div className="job-status-explanation">这里只展示上游返回的真实结构化 question；下方 JSON 为 question 原文。</div>
+            <div className="job-status-explanation">这里只展示运行时记录的结构化 question；下方 JSON 为 question 原文。</div>
             <div className="job-detail-grid summary-grid">
               <span className="detail-label">kind</span><span>{pendingQuestion.question_kind}</span>
               <span className="detail-label">mode</span><span>{pendingQuestion.decision_mode}</span>
               <span className="detail-label">risk</span><span>{pendingQuestion.risk_level}</span>
               <span className="detail-label">prompt</span><span className="job-prewrap">{pendingQuestion.prompt}</span>
+              {toolPermissionQuestion && (
+                <>
+                  <span className="detail-label">工具</span><span>{toolPermissionQuestion.tool_name ?? '-'}</span>
+                  <span className="detail-label">tool_use_id</span><span>{toolPermissionQuestion.tool_use_id ?? '-'}</span>
+                  <span className="detail-label">参数摘要</span><span className="job-prewrap">{toolPermissionQuestion.input_preview ?? JSON.stringify(toolPermissionQuestion.tool_input ?? null, null, 2)}</span>
+                </>
+              )}
               <span className="detail-label">question 原文</span>
               <span className="job-prewrap">{JSON.stringify(pendingQuestion.raw_question, null, 2)}</span>
             </div>
             {pendingQuestion.requires_user_confirmation && (
-              <div className="job-status-explanation">该问题不能由主 agent 自动决定，需要用户显式确认。</div>
+              <div className="job-status-explanation">
+                {toolPermissionQuestion ? '该工具调用涉及权限确认，主 agent 不会自动代替用户决定。' : '该问题不能由主 agent 自动决定，需要用户显式确认。'}
+              </div>
             )}
             {pendingQuestion.options.length > 0 && (
               <div className="job-review-actions">
-                {pendingQuestion.options.map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    disabled={isAnswering}
-                    className="job-review-btn accept"
-                    onClick={() => answerQuestion({
-                      question_id: pendingQuestion.question_id,
-                      source: 'user',
-                      answer_type: pendingQuestion.question_kind === 'confirm' ? 'confirm' : 'choice',
-                      answer: option,
-                    })}
-                  >
-                    {option}
-                  </button>
-                ))}
+                {pendingQuestion.options.map((option) => {
+                  const buttonLabel = toolPermissionQuestion
+                    ? (option === 'allow' ? '允许执行' : option === 'deny' ? '拒绝执行' : option)
+                    : option;
+                  const buttonClassName = option === 'deny' ? 'job-review-btn reject' : 'job-review-btn accept';
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      disabled={isAnswering}
+                      className={buttonClassName}
+                      onClick={() => answerQuestion({
+                        question_id: pendingQuestion.question_id,
+                        source: 'user',
+                        answer_type: pendingQuestion.question_kind === 'confirm' ? 'confirm' : 'choice',
+                        answer: option,
+                      })}
+                    >
+                      {buttonLabel}
+                    </button>
+                  );
+                })}
               </div>
             )}
             {pendingQuestion.question_kind === 'input' && (

@@ -77,6 +77,14 @@ function createEntry(
   const parallelSafe = typeof view.parallel_safe === 'boolean' ? view.parallel_safe : undefined;
   const parallelGroupIndex = typeof view.parallel_group_index === 'number' ? view.parallel_group_index : undefined;
   const parallelGroupSize = typeof view.parallel_group_size === 'number' ? view.parallel_group_size : undefined;
+  const phase = getString(view.phase);
+  const deltaKind = getString(view.delta_kind);
+  const textDelta = getString(view.text_delta);
+  const accumulatedTextPreview = getString(view.accumulated_text_preview);
+  const contentBlockKind = getString(view.content_block_kind);
+  const toolName = getString(view.tool_name);
+  const partialJson = getString(view.partial_json);
+  const stopReason = getString(view.stop_reason);
 
   switch (event) {
     case 'worker_task_assigned':
@@ -216,6 +224,114 @@ function createEntry(
           resultKind,
         ].filter(Boolean).join(' · ') || '编排子任务执行失败',
         preview: error ?? getString(view.result_preview),
+        raw: view,
+        source,
+      };
+    case 'worker_api_call_streaming_started':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'api_start',
+        event,
+        timestamp,
+        title: 'worker 已切换到流式上游调用',
+        detail: [subtaskName, taskType, phase].filter(Boolean).join(' · ') || '已进入流式调用阶段',
+        preview: opencodeSessionId,
+        raw: view,
+        source,
+      };
+    case 'sdk_stream_message_started':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'upstream_response',
+        event,
+        timestamp,
+        title: '上游开始返回消息',
+        detail: [subtaskName, taskType, phase].filter(Boolean).join(' · ') || '已收到流式消息开头',
+        preview: opencodeSessionId,
+        raw: view,
+        source,
+      };
+    case 'sdk_stream_content_block_started':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'upstream_response',
+        event,
+        timestamp,
+        title: contentBlockKind === 'tool_use' ? '上游开始返回工具调用块' : '上游开始返回内容块',
+        detail: [subtaskName, contentBlockKind, toolName, phase].filter(Boolean).join(' · ') || '流式内容块开始',
+        preview: accumulatedTextPreview ?? partialJson ?? opencodeSessionId,
+        raw: view,
+        source,
+      };
+    case 'sdk_stream_content_block_delta':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'upstream_response',
+        event,
+        timestamp,
+        title: deltaKind === 'input_json_delta' ? '正在接收流式工具输入' : '正在接收流式文本',
+        detail: [subtaskName, deltaKind, toolName, phase].filter(Boolean).join(' · ') || '流式内容持续更新中',
+        preview: textDelta ?? partialJson ?? accumulatedTextPreview,
+        raw: view,
+        source,
+      };
+    case 'sdk_stream_message_delta':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'upstream_response',
+        event,
+        timestamp,
+        title: '流式消息状态更新',
+        detail: [subtaskName, stopReason, phase].filter(Boolean).join(' · ') || '消息增量状态已刷新',
+        preview: accumulatedTextPreview ?? opencodeSessionId,
+        raw: view,
+        source,
+      };
+    case 'sdk_stream_content_block_stopped':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'upstream_response',
+        event,
+        timestamp,
+        title: '流式内容块接收完成',
+        detail: [subtaskName, contentBlockKind, toolName, phase].filter(Boolean).join(' · ') || '当前流式块已结束',
+        preview: accumulatedTextPreview ?? partialJson,
+        raw: view,
+        source,
+      };
+    case 'sdk_stream_message_stopped':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'upstream_response',
+        event,
+        timestamp,
+        title: '上游流式消息结束',
+        detail: [subtaskName, stopReason, phase].filter(Boolean).join(' · ') || '流式消息已结束',
+        preview: accumulatedTextPreview ?? responsePreview,
+        raw: view,
+        source,
+      };
+    case 'worker_api_call_streaming_finished':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'upstream_response',
+        event,
+        timestamp,
+        title: '流式响应接收完成',
+        detail: [subtaskName, taskType, phase].filter(Boolean).join(' · ') || 'worker 已完成流式响应接收',
+        preview: opencodeSessionId,
+        raw: view,
+        source,
+      };
+    case 'worker_api_call_streaming_failed':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'failed',
+        event,
+        timestamp,
+        title: '流式响应接收失败',
+        detail: [subtaskName, taskType, phase].filter(Boolean).join(' · ') || 'worker 在流式接收阶段失败',
+        preview: error ?? reason,
         raw: view,
         source,
       };

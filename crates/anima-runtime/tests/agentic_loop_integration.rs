@@ -3,10 +3,12 @@
 //! 验证 agentic loop 与 ToolRegistry、MockExecutor、EchoTool 的端到端集成。
 
 use anima_runtime::execution::agentic_loop::{
-    run_agentic_loop, AgenticLoopConfig,
+    continue_agentic_loop, resume_suspended_tool_invocation, run_agentic_loop, AgenticLoopConfig,
+    AgenticLoopOutcome,
 };
 use anima_runtime::agent::TaskExecutor;
 use anima_runtime::messages::types::{InternalMsg, MessageRole};
+use anima_runtime::permissions::{PermissionChecker, PermissionMode};
 use anima_runtime::tools::definition::{Tool, ToolContext};
 use anima_runtime::tools::registry::ToolRegistry;
 use anima_runtime::tools::result::{ToolError, ToolResult};
@@ -145,6 +147,9 @@ fn agentic_loop_echo_tool_integration() {
     )
     .expect("agentic loop should succeed");
 
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
     assert_eq!(
         result.final_text,
         "Done! The echo returned: integration test"
@@ -198,6 +203,9 @@ fn agentic_loop_unknown_tool_returns_error_result() {
     )
     .expect("loop should not fail for unknown tools");
 
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
     assert_eq!(result.final_text, "That tool was not available.");
     assert_eq!(result.iterations, 2);
 
@@ -247,6 +255,9 @@ fn agentic_loop_multiple_tools_in_one_turn() {
     )
     .expect("should succeed");
 
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
     assert_eq!(result.final_text, "Both echoes completed.");
     assert_eq!(result.iterations, 2);
     // user → assistant → tool_result_1 → tool_result_2 → assistant
@@ -325,6 +336,9 @@ fn test_system_prompt_passed_in_payload() {
     )
     .expect("should succeed");
 
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
     assert_eq!(result.final_text, "ok");
 
     let payloads = executor.payloads();
@@ -332,6 +346,174 @@ fn test_system_prompt_passed_in_payload() {
     let payload = &payloads[0];
     assert_eq!(payload["system"], "You are a helpful assistant.");
     assert!(payload.get("tools").is_none());
+}
+
+#[test]
+fn agentic_loop_suspends_when_permission_requires_confirmation() {
+    let executor = SequenceExecutor::new(vec![json!({
+        "content": [
+            {"type": "text", "text": "Need confirmation"},
+            {"type": "tool_use", "id": "tu_perm_1", "name": "echo", "input": {"text": "suspend me"}},
+            {"type": "tool_use", "id": "tu_perm_2", "name": "echo", "input": {"text": "should not run this turn"}}
+        ]
+    })]);
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+    let checker = PermissionChecker::new(PermissionMode::RuleBased);
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "perm-session".into(),
+        trace_id: "perm-trace".into(),
+        ..Default::default()
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        Some(&checker),
+        None,
+        vec![make_user_msg("please use echo")],
+        &config,
+    )
+    .expect("loop should suspend instead of failing");
+
+    let AgenticLoopOutcome::Suspended(suspension) = result else {
+        panic!("loop should suspend on interactive permission");
+    };
+    assert_eq!(suspension.suspended_tool.tool_use_id, "tu_perm_1");
+    assert_eq!(suspension.suspended_tool.tool_name, "echo");
+    assert_eq!(suspension.suspended_tool.permission_request.options, vec!["allow", "deny"]);
+    assert_eq!(suspension.messages.len(), 2, "only user + assistant(tool_use) should exist before approval");
+}
+
+#[test]
+fn agentic_loop_allow_resumes_original_tool_invocation() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Need confirmation"},
+                {"type": "tool_use", "id": "tu_perm_allow", "name": "echo", "input": {"text": "approved"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Approval finished."}]
+        }),
+    ]);
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+    let checker = PermissionChecker::new(PermissionMode::RuleBased);
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "perm-allow-session".into(),
+        trace_id: "perm-allow-trace".into(),
+        ..Default::default()
+    };
+
+    let initial = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        Some(&checker),
+        None,
+        vec![make_user_msg("please use echo")],
+        &config,
+    )
+    .expect("initial loop should suspend");
+    let AgenticLoopOutcome::Suspended(suspension) = initial else {
+        panic!("loop should suspend first");
+    };
+
+    let resumed_messages = resume_suspended_tool_invocation(&suspension, true, &registry, None, &config)
+        .expect("approval should resume tool invocation");
+    let resumed = continue_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        None,
+        resumed_messages,
+        suspension.iterations,
+        suspension.compact_count,
+        &config,
+    )
+    .expect("continued loop should complete");
+
+    let AgenticLoopOutcome::Completed(result) = resumed else {
+        panic!("loop should complete after allow");
+    };
+    assert_eq!(result.final_text, "Approval finished.");
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("tool_result should be array");
+    assert_eq!(blocks[0]["tool_use_id"], "tu_perm_allow");
+    assert_eq!(blocks[0]["is_error"], false);
+    assert!(blocks[0]["content"].as_str().unwrap_or_default().contains("echoed: approved"));
+}
+
+#[test]
+fn agentic_loop_deny_injects_error_tool_result_and_continues() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Need confirmation"},
+                {"type": "tool_use", "id": "tu_perm_deny", "name": "echo", "input": {"text": "denied"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Denied path finished."}]
+        }),
+    ]);
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+    let checker = PermissionChecker::new(PermissionMode::RuleBased);
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "perm-deny-session".into(),
+        trace_id: "perm-deny-trace".into(),
+        ..Default::default()
+    };
+
+    let initial = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        Some(&checker),
+        None,
+        vec![make_user_msg("please use echo")],
+        &config,
+    )
+    .expect("initial loop should suspend");
+    let AgenticLoopOutcome::Suspended(suspension) = initial else {
+        panic!("loop should suspend first");
+    };
+
+    let resumed_messages = resume_suspended_tool_invocation(&suspension, false, &registry, None, &config)
+        .expect("denial should still produce a tool_result");
+    let resumed = continue_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        None,
+        resumed_messages,
+        suspension.iterations,
+        suspension.compact_count,
+        &config,
+    )
+    .expect("continued loop should complete");
+
+    let AgenticLoopOutcome::Completed(result) = resumed else {
+        panic!("loop should complete after deny");
+    };
+    assert_eq!(result.final_text, "Denied path finished.");
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("tool_result should be array");
+    assert_eq!(blocks[0]["tool_use_id"], "tu_perm_deny");
+    assert_eq!(blocks[0]["is_error"], true);
+    assert!(blocks[0]["content"].as_str().unwrap_or_default().contains("denied by user"));
 }
 
 /// 验证 payload 中包含 tool definitions
@@ -366,6 +548,9 @@ fn test_tool_definitions_passed_in_payload() {
     )
     .expect("should succeed");
 
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
     assert_eq!(result.final_text, "done");
 
     let payloads = executor.payloads();

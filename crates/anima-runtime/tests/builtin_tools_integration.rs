@@ -2,7 +2,7 @@
 //!
 //! 验证 register_all 注册、以及内置工具与 agentic loop 的端到端集成。
 
-use anima_runtime::execution::agentic_loop::{run_agentic_loop, AgenticLoopConfig};
+use anima_runtime::execution::agentic_loop::{run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome};
 use anima_runtime::agent::TaskExecutor;
 use anima_runtime::messages::types::{InternalMsg, MessageRole};
 use anima_runtime::tools::builtins::register_all;
@@ -160,6 +160,9 @@ fn test_agentic_loop_with_bash_tool() {
 
     assert!(result.is_ok(), "agentic loop failed: {:?}", result.err());
     let loop_result = result.unwrap();
+    let AgenticLoopOutcome::Completed(loop_result) = loop_result else {
+        panic!("agentic loop should complete");
+    };
     // 应该有 2 轮（工具调用 + 最终回复）
     assert_eq!(loop_result.iterations, 2);
     // 消息历史中应包含工具结果

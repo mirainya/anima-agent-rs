@@ -1,7 +1,7 @@
 //! 集成测试：Agentic Loop 上下文压缩
 
 use anima_runtime::execution::agentic_loop::{
-    run_agentic_loop, AgenticLoopConfig,
+    run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome,
 };
 use anima_runtime::agent::executor::TaskExecutor;
 use anima_runtime::messages::compact::CompactConfig;
@@ -115,6 +115,9 @@ fn test_loop_compact_enabled_no_trigger() {
     let result = run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
         .unwrap();
 
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("loop should complete");
+    };
     assert_eq!(result.final_text, "done");
     assert_eq!(result.compact_count, 0);
 }
@@ -158,6 +161,9 @@ fn test_loop_compact_triggered() {
     let result = run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
         .unwrap();
 
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("loop should complete");
+    };
     assert_eq!(result.final_text, "all done");
     assert!(result.compact_count > 0, "compaction should have triggered");
 }
@@ -206,6 +212,9 @@ fn test_loop_compact_preserves_latest_turn() {
     let result = run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
         .unwrap();
 
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("loop should complete");
+    };
     assert_eq!(result.final_text, "final");
 
     // 最后一个 tool_result 不应被 filtered

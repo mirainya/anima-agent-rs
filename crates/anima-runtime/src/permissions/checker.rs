@@ -6,7 +6,9 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use super::policy::PermissionPolicy;
-use super::types::{PermissionDecision, PermissionMode, PermissionRule};
+use super::types::{
+    PermissionDecision, PermissionMode, PermissionRequest, PermissionRiskLevel, PermissionRule,
+};
 
 /// 权限检查器
 #[derive(Debug)]
@@ -60,8 +62,36 @@ impl PermissionChecker {
         }
 
         // 4. 默认：需要确认
-        PermissionDecision::Ask(format!("allow tool '{tool_name}'?"))
+        PermissionDecision::Ask(default_permission_request(tool_name, input))
     }
+}
+
+fn default_permission_request(tool_name: &str, input: &Value) -> PermissionRequest {
+    PermissionRequest {
+        tool_name: tool_name.to_string(),
+        prompt: format!("允许工具 '{tool_name}' 使用当前参数执行吗？"),
+        options: vec!["allow".into(), "deny".into()],
+        risk_level: classify_risk_level(tool_name),
+        requires_user_confirmation: true,
+        raw_input: input.clone(),
+        input_preview: build_input_preview(input),
+    }
+}
+
+fn classify_risk_level(tool_name: &str) -> PermissionRiskLevel {
+    match tool_name {
+        "bash_exec" | "file_write" | "file_edit" => PermissionRiskLevel::High,
+        _ => PermissionRiskLevel::Low,
+    }
+}
+
+fn build_input_preview(input: &Value) -> String {
+    let serialized = serde_json::to_string(input).unwrap_or_else(|_| "<invalid-json>".into());
+    let mut preview = serialized.chars().take(200).collect::<String>();
+    if serialized.chars().count() > 200 {
+        preview.push('…');
+    }
+    preview
 }
 
 /// 简单的工具名称匹配（支持 `*` 通配符）

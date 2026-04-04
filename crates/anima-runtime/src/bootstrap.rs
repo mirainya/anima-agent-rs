@@ -65,9 +65,13 @@ impl RuntimeBootstrapBuilder {
             None
         };
         let dispatcher = Arc::new(Dispatcher::new(registry.clone(), None));
+        let client = match std::env::current_dir() {
+            Ok(dir) => SdkClient::new(self.url).with_directory(dir.to_string_lossy().to_string()),
+            Err(_) => SdkClient::new(self.url),
+        };
         let agent = Agent::create(
             bus.clone(),
-            Some(SdkClient::new(self.url)),
+            Some(client),
             Some(session_store),
             self.executor,
         );

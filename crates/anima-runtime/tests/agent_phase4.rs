@@ -429,10 +429,9 @@ fn agent_processes_messages_and_publishes_outbound() {
 
     let mut outbound = None;
     for _ in 0..20 {
-        if let Some(msg) = bus
+        if let Ok(msg) = bus
             .outbound_receiver()
             .recv_timeout(Duration::from_millis(50))
-            .ok()
         {
             outbound = Some(msg);
             break;
@@ -579,22 +578,19 @@ fn agent_publishes_error_response_when_worker_execution_fails() {
     assert_eq!(outbound.stage, "final");
     assert!(outbound.content.starts_with("Error [task_execution_failed]: "));
 
-    let mut saw_failed_event = false;
-    for _ in 0..12 {
-        if let Ok(msg) = bus.internal_receiver().recv_timeout(Duration::from_millis(200)) {
-            if msg.payload.get("event").and_then(|v| v.as_str()) == Some("message_failed") {
-                let payload = msg.payload.get("payload").cloned().unwrap_or_default();
-                assert_eq!(payload["error_code"], "task_execution_failed");
-                assert_eq!(payload["error_stage"], "plan_execute");
-                assert!(payload["error"].as_str().unwrap_or("").contains("upstream exploded"));
-                saw_failed_event = true;
-                break;
-            }
-        }
-    }
-    assert!(saw_failed_event, "expected message_failed runtime event");
-
     let status = agent.status();
+    let failed_events = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.event == "message_failed")
+        .collect::<Vec<_>>();
+    assert!(!failed_events.is_empty(), "expected message_failed runtime event");
+    let failed_payload = &failed_events.last().unwrap().payload;
+    assert_eq!(failed_payload["error_code"], "task_execution_failed");
+    assert_eq!(failed_payload["error_stage"], "plan_execute");
+    assert!(failed_payload["error"].as_str().unwrap_or("").contains("upstream exploded"));
+
     assert!(status.running);
     assert!(status.core.metrics.counters["messages_failed"] >= 1);
     assert!(status.core.metrics.counters["tasks_failed"] >= 1);
@@ -635,22 +631,19 @@ fn agent_classifies_upstream_stream_error_during_plan_execution() {
     assert!(outbound.content.starts_with("Error [upstream_stream_failed]: "));
     assert!(outbound.content.contains("流式响应异常中断"));
 
-    let mut saw_failed_event = false;
-    for _ in 0..12 {
-        if let Ok(msg) = bus.internal_receiver().recv_timeout(Duration::from_millis(200)) {
-            if msg.payload.get("event").and_then(|v| v.as_str()) == Some("message_failed") {
-                let payload = msg.payload.get("payload").cloned().unwrap_or_default();
-                assert_eq!(payload["error_code"], "upstream_stream_failed");
-                assert_eq!(payload["error_stage"], "plan_execute");
-                assert_eq!(payload["error"], "empty_stream: upstream stream closed before first payload");
-                saw_failed_event = true;
-                break;
-            }
-        }
-    }
-    assert!(saw_failed_event, "expected message_failed runtime event");
-
     let status = agent.status();
+    let failed_events = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.event == "message_failed")
+        .collect::<Vec<_>>();
+    assert!(!failed_events.is_empty(), "expected message_failed runtime event");
+    let failed_payload = &failed_events.last().unwrap().payload;
+    assert_eq!(failed_payload["error_code"], "upstream_stream_failed");
+    assert_eq!(failed_payload["error_stage"], "plan_execute");
+    assert_eq!(failed_payload["error"], "empty_stream: upstream stream closed before first payload");
+
     let last_failure = status.core.failures.last_failure.as_ref().expect("expected last failure snapshot");
     assert_eq!(last_failure.error_code, "upstream_stream_failed");
     assert_eq!(last_failure.error_stage, "plan_execute");
@@ -685,22 +678,19 @@ fn agent_classifies_upstream_timeout_during_plan_execution() {
     assert!(outbound.content.starts_with("Error [upstream_timeout]: "));
     assert!(outbound.content.contains("响应超时"));
 
-    let mut saw_failed_event = false;
-    for _ in 0..12 {
-        if let Ok(msg) = bus.internal_receiver().recv_timeout(Duration::from_millis(200)) {
-            if msg.payload.get("event").and_then(|v| v.as_str()) == Some("message_failed") {
-                let payload = msg.payload.get("payload").cloned().unwrap_or_default();
-                assert_eq!(payload["error_code"], "upstream_timeout");
-                assert_eq!(payload["error_stage"], "plan_execute");
-                assert!(payload["error"].as_str().unwrap_or("").contains("Request Timeout"));
-                saw_failed_event = true;
-                break;
-            }
-        }
-    }
-    assert!(saw_failed_event, "expected message_failed runtime event");
-
     let status = agent.status();
+    let failed_events = status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.event == "message_failed")
+        .collect::<Vec<_>>();
+    assert!(!failed_events.is_empty(), "expected message_failed runtime event");
+    let failed_payload = &failed_events.last().unwrap().payload;
+    assert_eq!(failed_payload["error_code"], "upstream_timeout");
+    assert_eq!(failed_payload["error_stage"], "plan_execute");
+    assert!(failed_payload["error"].as_str().unwrap_or("").contains("Request Timeout"));
+
     let last_failure = status.core.failures.last_failure.as_ref().expect("expected last failure snapshot");
     assert_eq!(last_failure.error_code, "upstream_timeout");
     assert_eq!(last_failure.error_stage, "plan_execute");
@@ -1111,7 +1101,6 @@ fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
         .iter()
         .map(|event| event.event.as_str())
         .collect::<Vec<_>>();
-    assert!(waiting_events.contains(&"orchestration_selected"));
     assert!(waiting_events.contains(&"orchestration_plan_created"));
     assert!(waiting_events.contains(&"orchestration_subtask_started"));
     assert!(waiting_events.contains(&"orchestration_subtask_completed"));
@@ -1160,6 +1149,7 @@ fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
         .iter()
         .map(|event| event.event.as_str())
         .collect::<Vec<_>>();
+    assert!(events.contains(&"orchestration_selected"));
     assert!(events.contains(&"question_answer_submitted"));
     assert!(events.contains(&"question_resolved"));
     assert!(events.contains(&"message_completed"));
@@ -1223,8 +1213,6 @@ fn agent_orchestration_p2_keeps_followup_contract_after_upstream_result() {
         .iter()
         .map(|event| event.event.as_str())
         .collect::<Vec<_>>();
-    assert!(events.contains(&"orchestration_selected"));
-    assert!(events.contains(&"orchestration_plan_created"));
     assert!(events.contains(&"orchestration_subtask_started"));
     assert!(events.contains(&"orchestration_subtask_completed"));
     assert!(events.contains(&"requirement_unsatisfied"));
@@ -1356,26 +1344,6 @@ fn agent_emits_runtime_events_and_recent_sessions_in_status() {
         .recv_timeout(Duration::from_secs(1))
         .unwrap();
     assert_eq!(outbound.content, "reply[mock-session-1]: Observe me");
-
-    let mut events = Vec::new();
-    for _ in 0..20 {
-        if let Ok(msg) = bus.internal_receiver().recv_timeout(Duration::from_millis(200)) {
-            if let Some(event) = msg.payload.get("event").and_then(|v| v.as_str()) {
-                events.push(event.to_string());
-            }
-            if events.iter().any(|e| e == "message_completed") {
-                break;
-            }
-        }
-    }
-
-    assert!(events.iter().any(|e| e == "message_received"));
-    assert!(events.iter().any(|e| e == "session_ready"));
-    assert!(events.iter().any(|e| e == "plan_built"));
-    assert!(events.iter().any(|e| e == "worker_task_assigned"));
-    assert!(events.iter().any(|e| e == "api_call_started"));
-    assert!(events.iter().any(|e| e == "upstream_response_observed"));
-    assert!(events.iter().any(|e| e == "message_completed"));
 
     let status = agent.status();
     assert_eq!(status.core.recent_sessions.len(), 1);

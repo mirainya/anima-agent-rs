@@ -39,26 +39,6 @@ pub fn normalize_message(message: Value) -> Result<Value> {
     }
 }
 
-pub fn send_prompt(
-    client: &Client,
-    session_id: &str,
-    message: Value,
-    agent: Option<&str>,
-) -> Result<Value> {
-    let mut normalized = match normalize_message(message)? {
-        Value::Object(map) => map,
-        _ => unreachable!(),
-    };
-    if let Some(agent) = agent {
-        normalized.insert("agent".into(), Value::String(agent.to_string()));
-    }
-    utils::handle_response(http::post_request(
-        client,
-        &format!("/session/{session_id}/message"),
-        &Value::Object(normalized),
-        None,
-    )?)
-}
 
 pub fn execute_command(
     client: &Client,
@@ -164,26 +144,57 @@ pub fn respond_to_permission(
     )?)
 }
 
-/// 发送流式 prompt 请求，返回原始 HTTP Response 用于 SSE 逐行读取
-///
-/// 复用 `normalize_message` 逻辑，自动注入 `"stream": true`。
-pub fn send_prompt_streaming(
+pub fn send_prompt_with_agent(
     client: &Client,
     session_id: &str,
     message: Value,
     agent: Option<&str>,
-) -> Result<reqwest::blocking::Response> {
+) -> Result<Value> {
     let mut normalized = match normalize_message(message)? {
         Value::Object(map) => map,
         _ => unreachable!(),
     };
-    normalized.insert("stream".into(), Value::Bool(true));
     if let Some(agent) = agent {
         normalized.insert("agent".into(), Value::String(agent.to_string()));
     }
-    http::post_request_streaming(
+
+    let mut params = Map::new();
+    if let Some(directory) = client.directory.as_deref() {
+        params.insert("directory".into(), Value::String(directory.to_string()));
+    }
+    params.insert("workspace".into(), Value::String("global".to_string()));
+    let params_ref = if params.is_empty() { None } else { Some(&params) };
+
+    utils::handle_response(http::post_request(
         client,
         &format!("/session/{session_id}/message"),
         &Value::Object(normalized),
-    )
+        params_ref,
+    )?)
+}
+
+pub fn send_prompt(
+    client: &Client,
+    session_id: &str,
+    message: Value,
+    agent: Option<&str>,
+) -> Result<Value> {
+    send_prompt_with_agent(client, session_id, message, agent)
+}
+
+pub fn subscribe_event_stream(
+    client: &Client,
+    directory: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<reqwest::blocking::Response> {
+    let mut params = Map::new();
+    if let Some(directory) = directory.or(client.directory.as_deref()) {
+        params.insert("directory".into(), Value::String(directory.to_string()));
+    }
+    if let Some(workspace) = workspace {
+        params.insert("workspace".into(), Value::String(workspace.to_string()));
+    }
+
+    let params_ref = if params.is_empty() { None } else { Some(&params) };
+    http::get_request_streaming(client, "/event", params_ref)
 }

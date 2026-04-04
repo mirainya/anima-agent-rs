@@ -101,6 +101,37 @@ describe('JobDetail status interactions', () => {
     expect(screen.getAllByText(/最近已提交回答：production-us-east-1/).length).toBeGreaterThan(0);
   });
 
+  it('renders tool permission question with tool details and action labels', () => {
+    renderJob(makeJob({
+      status: 'waiting_user_input',
+      pending_question: {
+        question_id: 'q-tool-1',
+        question_kind: 'confirm',
+        prompt: '允许工具 bash_exec 使用当前参数执行吗？',
+        options: ['allow', 'deny'],
+        raw_question: {
+          type: 'tool_permission',
+          tool_name: 'bash_exec',
+          tool_use_id: 'toolu_123',
+          tool_input: { command: 'rm test.txt' },
+          input_preview: '{"command":"rm test.txt"}',
+        },
+        decision_mode: 'user_required',
+        risk_level: 'high',
+        requires_user_confirmation: true,
+        opencode_session_id: 'sess-1',
+        answer_summary: null,
+        resolution_source: null,
+      },
+    }));
+
+    expect(screen.getByText('bash_exec')).toBeTruthy();
+    expect(screen.getByText('toolu_123')).toBeTruthy();
+    expect(screen.getByText('允许执行')).toBeTruthy();
+    expect(screen.getByText('拒绝执行')).toBeTruthy();
+    expect(screen.getAllByText(/权限确认/).length).toBeGreaterThan(0);
+  });
+
   it('shows auto follow-up hint without answer UI while executing', () => {
     renderJob(makeJob({
       status: 'executing',

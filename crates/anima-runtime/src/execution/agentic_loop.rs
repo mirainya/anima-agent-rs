@@ -13,11 +13,14 @@ use crate::messages::compact::{compact_if_needed, CompactConfig};
 use crate::messages::normalize::normalize_messages_for_api;
 use crate::messages::pairing::ensure_tool_result_pairing;
 use crate::messages::types::{ApiMsg, InternalMsg, MessageRole};
-use crate::permissions::PermissionChecker;
+use crate::permissions::{PermissionChecker, PermissionRequest};
 use crate::streaming::executor::consume_sse_stream;
 use crate::streaming::types::StreamEvent;
 use crate::tools::definition::ToolContext;
-use crate::tools::execution::{run_tool_use, RunToolOptions};
+use crate::tools::execution::{
+    execute_tool_after_permission, run_tool_use, AwaitingToolPermission, RunToolOptions,
+    RunToolUseOutcome,
+};
 use crate::tools::registry::ToolRegistry;
 use crate::tools::result::ToolResult;
 
@@ -91,6 +94,28 @@ pub struct AgenticLoopResult {
     pub hit_limit: bool,
     /// 压缩执行次数
     pub compact_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SuspendedToolInvocation {
+    pub tool_use_id: String,
+    pub tool_name: String,
+    pub tool_input: Value,
+    pub permission_request: PermissionRequest,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgenticLoopSuspension {
+    pub suspended_tool: SuspendedToolInvocation,
+    pub messages: Vec<InternalMsg>,
+    pub iterations: usize,
+    pub compact_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum AgenticLoopOutcome {
+    Completed(AgenticLoopResult),
+    Suspended(AgenticLoopSuspension),
 }
 
 /// Agentic loop 错误类型
@@ -294,18 +319,27 @@ pub fn build_api_payload(
 // 单工具执行
 // ---------------------------------------------------------------------------
 
-/// 执行单个 tool_use，所有错误转为 ToolResult::error（不会 panic）
+#[derive(Debug, Clone)]
+enum SingleToolExecutionOutcome {
+    Completed(ToolResult),
+    AwaitingPermission(Box<AwaitingToolPermission>),
+}
+
+/// 执行单个 tool_use；真实错误转为 ToolResult::error，但保留 AwaitingPermission 语义
 fn execute_single_tool(
     tool_use: &ParsedToolUse,
     tool_registry: &ToolRegistry,
     permission_checker: Option<&PermissionChecker>,
     hook_registry: Option<&HookRegistry>,
     config: &AgenticLoopConfig,
-) -> ToolResult {
+) -> SingleToolExecutionOutcome {
     let tool = match tool_registry.get(&tool_use.name) {
         Some(t) => t,
         None => {
-            return ToolResult::error(format!("tool '{}' not found in registry", tool_use.name));
+            return SingleToolExecutionOutcome::Completed(ToolResult::error(format!(
+                "tool '{}' not found in registry",
+                tool_use.name
+            )));
         }
     };
 
@@ -320,9 +354,54 @@ fn execute_single_tool(
     };
 
     match run_tool_use(tool, options, permission_checker, hook_registry) {
-        Ok(result) => result,
-        Err(err) => ToolResult::error(format!("tool execution error: {err}")),
+        Ok(RunToolUseOutcome::Completed(result)) => SingleToolExecutionOutcome::Completed(result),
+        Ok(RunToolUseOutcome::AwaitingPermission(awaiting)) => {
+            SingleToolExecutionOutcome::AwaitingPermission(awaiting)
+        }
+        Err(err) => SingleToolExecutionOutcome::Completed(ToolResult::error(format!(
+            "tool execution error: {err}"
+        ))),
     }
+}
+
+pub fn resume_suspended_tool_invocation(
+    suspension: &AgenticLoopSuspension,
+    allowed: bool,
+    tool_registry: &ToolRegistry,
+    hook_registry: Option<&HookRegistry>,
+    config: &AgenticLoopConfig,
+) -> Result<Vec<InternalMsg>, AgenticLoopError> {
+    let mut messages = suspension.messages.clone();
+    let tool_result = if allowed {
+        let tool = tool_registry
+            .get(&suspension.suspended_tool.tool_name)
+            .ok_or_else(|| AgenticLoopError::AllToolsFailed(format!(
+                "tool '{}' not found in registry during resume",
+                suspension.suspended_tool.tool_name
+            )))?;
+        let options = RunToolOptions {
+            tool_name: suspension.suspended_tool.tool_name.clone(),
+            input: suspension.suspended_tool.tool_input.clone(),
+            context: ToolContext {
+                session_id: config.session_id.clone(),
+                trace_id: config.trace_id.clone(),
+                metadata: json!({}),
+            },
+        };
+        execute_tool_after_permission(tool, options, hook_registry)
+            .map_err(|err| AgenticLoopError::AllToolsFailed(err.to_string()))?
+    } else {
+        ToolResult::error(format!(
+            "tool execution denied by user: {}",
+            suspension.suspended_tool.permission_request.prompt
+        ))
+    };
+
+    messages.push(build_tool_result_msg(
+        &suspension.suspended_tool.tool_use_id,
+        &tool_result,
+    ));
+    Ok(messages)
 }
 
 // ---------------------------------------------------------------------------
@@ -341,28 +420,46 @@ pub fn run_agentic_loop(
     hook_registry: Option<&HookRegistry>,
     initial_messages: Vec<InternalMsg>,
     config: &AgenticLoopConfig,
-) -> Result<AgenticLoopResult, AgenticLoopError> {
-    let mut messages = initial_messages;
-    let mut iterations = 0;
-    let mut compact_count = 0;
+) -> Result<AgenticLoopOutcome, AgenticLoopError> {
+    continue_agentic_loop(
+        client,
+        executor,
+        tool_registry,
+        permission_checker,
+        hook_registry,
+        initial_messages,
+        0,
+        0,
+        config,
+    )
+}
 
+#[allow(clippy::too_many_arguments)]
+pub fn continue_agentic_loop(
+    client: &SdkClient,
+    executor: &dyn TaskExecutor,
+    tool_registry: &ToolRegistry,
+    permission_checker: Option<&PermissionChecker>,
+    hook_registry: Option<&HookRegistry>,
+    mut messages: Vec<InternalMsg>,
+    mut iterations: usize,
+    mut compact_count: usize,
+    config: &AgenticLoopConfig,
+) -> Result<AgenticLoopOutcome, AgenticLoopError> {
     loop {
-        // 1. 守卫：达到最大迭代次数
         if iterations >= config.max_iterations {
             let final_text = extract_last_assistant_text(&messages);
-            return Ok(AgenticLoopResult {
+            return Ok(AgenticLoopOutcome::Completed(AgenticLoopResult {
                 final_text,
                 messages,
                 iterations,
                 hit_limit: true,
                 compact_count,
-            });
+            }));
         }
 
-        // 2. 确保 tool_use / tool_result 配对
         ensure_tool_result_pairing(&mut messages);
 
-        // 2.5 上下文自动压缩
         if let Some(ref compact_config) = config.compact {
             let result = compact_if_needed(&mut messages, compact_config);
             if result.did_compact {
@@ -370,10 +467,7 @@ pub fn run_agentic_loop(
             }
         }
 
-        // 3. 标准化消息
         let api_msgs = normalize_messages_for_api(&messages);
-
-        // 4. 构建 API 请求内容（含 system prompt、tool definitions、stream 标志）
         let content = build_api_payload(
             &api_msgs,
             config.system_prompt.as_deref(),
@@ -381,9 +475,7 @@ pub fn run_agentic_loop(
             config.streaming,
         );
 
-        // 5-7. 调用 API → 解析响应 → 追加 assistant 消息（流式/非流式分支）
         let parsed = if config.streaming {
-            // 流式路径：SSE 逐行读取 → consume_sse_stream → (ParsedResponse, Value)
             let lines = executor
                 .send_prompt_streaming(client, &config.session_id, content)
                 .map_err(AgenticLoopError::ApiCallFailed)?;
@@ -393,7 +485,6 @@ pub fn run_agentic_loop(
             messages.push(build_assistant_msg(&response_value));
             parsed
         } else {
-            // 非流式路径：同步获取完整响应 → parse_response → (ParsedResponse, Value)
             let response = executor
                 .send_prompt(client, &config.session_id, content)
                 .map_err(AgenticLoopError::ApiCallFailed)?;
@@ -402,31 +493,44 @@ pub fn run_agentic_loop(
             parsed
         };
 
-        // 8. 无 tool_use → 最终回复
         if parsed.tool_uses.is_empty() {
-            return Ok(AgenticLoopResult {
+            return Ok(AgenticLoopOutcome::Completed(AgenticLoopResult {
                 final_text: parsed.text,
                 messages,
                 iterations: iterations + 1,
                 hit_limit: false,
                 compact_count,
-            });
+            }));
         }
 
-        // 9. 执行每个 tool_use
         for tool_use in &parsed.tool_uses {
-            let result = execute_single_tool(
+            match execute_single_tool(
                 tool_use,
                 tool_registry,
                 permission_checker,
                 hook_registry,
                 config,
-            );
-            let tool_result_msg = build_tool_result_msg(&tool_use.id, &result);
-            messages.push(tool_result_msg);
+            ) {
+                SingleToolExecutionOutcome::Completed(result) => {
+                    let tool_result_msg = build_tool_result_msg(&tool_use.id, &result);
+                    messages.push(tool_result_msg);
+                }
+                SingleToolExecutionOutcome::AwaitingPermission(awaiting) => {
+                    return Ok(AgenticLoopOutcome::Suspended(AgenticLoopSuspension {
+                        suspended_tool: SuspendedToolInvocation {
+                            tool_use_id: tool_use.id.clone(),
+                            tool_name: awaiting.tool_name,
+                            tool_input: awaiting.input,
+                            permission_request: awaiting.permission_request,
+                        },
+                        messages,
+                        iterations,
+                        compact_count,
+                    }));
+                }
+            }
         }
 
-        // 10. 递增迭代计数，继续循环
         iterations += 1;
     }
 }
@@ -652,6 +756,9 @@ mod tests {
             run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
                 .unwrap();
 
+        let AgenticLoopOutcome::Completed(result) = result else {
+            panic!("loop should complete");
+        };
         assert_eq!(result.final_text, "The answer is 42.");
         assert_eq!(result.iterations, 1);
         assert!(!result.hit_limit);
@@ -684,6 +791,9 @@ mod tests {
             run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
                 .unwrap();
 
+        let AgenticLoopOutcome::Completed(result) = result else {
+            panic!("loop should complete");
+        };
         assert_eq!(result.final_text, "Echo returned: hello");
         assert_eq!(result.iterations, 2);
         assert!(!result.hit_limit);
@@ -719,6 +829,9 @@ mod tests {
             run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
                 .unwrap();
 
+        let AgenticLoopOutcome::Completed(result) = result else {
+            panic!("loop should complete");
+        };
         assert!(result.hit_limit);
         assert_eq!(result.iterations, 3);
     }
@@ -814,6 +927,9 @@ mod tests {
             run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
                 .unwrap();
 
+        let AgenticLoopOutcome::Completed(result) = result else {
+            panic!("loop should complete");
+        };
         assert_eq!(result.final_text, "Streaming answer!");
         assert_eq!(result.iterations, 1);
         assert!(!result.hit_limit);
@@ -864,6 +980,9 @@ mod tests {
             run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
                 .unwrap();
 
+        let AgenticLoopOutcome::Completed(result) = result else {
+            panic!("loop should complete");
+        };
         assert_eq!(result.final_text, "Done streaming!");
         assert_eq!(result.iterations, 2);
         assert!(!result.hit_limit);
@@ -910,6 +1029,9 @@ mod tests {
             run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
                 .unwrap();
 
+        let AgenticLoopOutcome::Completed(result) = result else {
+            panic!("loop should complete");
+        };
         assert_eq!(result.final_text, "hi");
         assert!(event_count.load(Ordering::SeqCst) > 0, "callback should have fired");
     }

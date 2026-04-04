@@ -1,4 +1,4 @@
-use anima_runtime::agent::{ExecutionStageDurations, ExecutionSummary, PendingQuestion, QuestionDecisionMode, QuestionKind, QuestionRiskLevel};
+use anima_runtime::agent::{ExecutionStageDurations, ExecutionSummary, PendingQuestion, PendingQuestionSourceKind, QuestionDecisionMode, QuestionKind, QuestionRiskLevel};
 use anima_runtime::context_assembly::{
     assemble_context, ContextAssemblyMode, ContextAssemblyRequest,
 };
@@ -19,6 +19,8 @@ fn make_pending_question() -> PendingQuestion {
         decision_mode: QuestionDecisionMode::UserRequired,
         risk_level: QuestionRiskLevel::High,
         requires_user_confirmation: true,
+        source_kind: PendingQuestionSourceKind::UpstreamQuestion,
+        continuation_token: None,
         asked_at_ms: 1,
         answer_submitted: true,
         answer_summary: Some("继续执行".into()),

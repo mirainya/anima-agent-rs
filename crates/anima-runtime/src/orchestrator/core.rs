@@ -24,6 +24,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+struct WaitDiagnosticContext {
+    plan_id: String,
+    parent_job_id: String,
+    subtask_id: String,
+    subtask_name: String,
+    task_id: String,
+    task_type: String,
+    execution_mode: String,
+    parallel_group_index: usize,
+    parallel_group_size: usize,
+    wait_reason: String,
+}
+
 // ── SubTask ───────────────────────────────────────────────────────────
 
 /// 子任务状态
@@ -602,6 +616,8 @@ impl AgentOrchestrator {
                 "plan_id": subtask.parent_id,
                 "subtask_name": subtask.name,
                 "original_task_type": subtask.task_type,
+                "orchestration_subtask": true,
+                "streaming_observable": true,
             }),
             LoweringPrimitive::Query => json!({
                 "query": ["request"],
@@ -645,6 +661,8 @@ impl AgentOrchestrator {
                 "parallel_safe": parallel_safe,
                 "result_kind": primitive.result_kind(),
                 "orchestration_rule": plan.matched_rule,
+                "orchestration_subtask": true,
+                "streaming_observable": matches!(primitive, LoweringPrimitive::ApiCall),
             })),
         });
         LoweredTask {
@@ -696,6 +714,70 @@ impl AgentOrchestrator {
             &plan.id,
             session_id,
         );
+
+        let finalize_plan = |publish_event: &mut F, result_status: &str| {
+            let finalize_started_at_ms = now_ms();
+            publish_event(
+                "orchestration_plan_finalize_started",
+                json!({
+                    "parent_job_id": plan.parent_job_id,
+                    "plan_id": plan.id,
+                    "started_at_ms": finalize_started_at_ms,
+                    "result_status": result_status,
+                }),
+            );
+            let active_subtasks = plan
+                .subtasks
+                .values()
+                .filter(|subtask| {
+                    matches!(
+                        *subtask.status.lock().unwrap_or_else(|e| e.into_inner()),
+                        SubTaskStatus::Running | SubTaskStatus::Pending
+                    )
+                })
+                .map(|subtask| subtask.id.clone())
+                .collect::<Vec<_>>();
+            let active_plan_present_before_cleanup = self
+                .active_plans
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&plan.id);
+            {
+                let mut plans = self.active_plans.lock().unwrap_or_else(|e| e.into_inner());
+                plans.shift_remove(&plan.id);
+            }
+            let active_plan_present_after_cleanup = self
+                .active_plans
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&plan.id);
+            if !active_subtasks.is_empty() || active_plan_present_after_cleanup {
+                publish_event(
+                    "orchestration_plan_cleanup_incomplete",
+                    json!({
+                        "parent_job_id": plan.parent_job_id,
+                        "plan_id": plan.id,
+                        "result_status": result_status,
+                        "active_subtask_ids": active_subtasks,
+                        "active_plan_present_before_cleanup": active_plan_present_before_cleanup,
+                        "active_plan_present_after_cleanup": active_plan_present_after_cleanup,
+                    }),
+                );
+            }
+            let finished_at_ms = now_ms();
+            publish_event(
+                "orchestration_plan_finalize_finished",
+                json!({
+                    "parent_job_id": plan.parent_job_id,
+                    "plan_id": plan.id,
+                    "started_at_ms": finalize_started_at_ms,
+                    "finished_at_ms": finished_at_ms,
+                    "finalize_duration_ms": finished_at_ms.saturating_sub(finalize_started_at_ms),
+                    "result_status": result_status,
+                    "active_plan_present_after_cleanup": active_plan_present_after_cleanup,
+                }),
+            );
+        };
 
         publish_event(
             "orchestration_plan_created",
@@ -779,11 +861,7 @@ impl AgentOrchestrator {
                         }
                     } else {
                         *plan.status.lock().unwrap_or_else(|e| e.into_inner()) = PlanStatus::Failed;
-                        {
-                            let mut plans =
-                                self.active_plans.lock().unwrap_or_else(|e| e.into_inner());
-                            plans.shift_remove(&plan.id);
-                        }
+                        finalize_plan(&mut publish_event, &result.status);
                         {
                             let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
                             m.plans_failed += 1;
@@ -844,10 +922,7 @@ impl AgentOrchestrator {
         }
 
         *plan.status.lock().unwrap_or_else(|e| e.into_inner()) = PlanStatus::Completed;
-        {
-            let mut plans = self.active_plans.lock().unwrap_or_else(|e| e.into_inner());
-            plans.shift_remove(&plan.id);
-        }
+        finalize_plan(&mut publish_event, &final_result.status);
         {
             let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
             m.plans_completed += 1;
@@ -865,6 +940,7 @@ impl AgentOrchestrator {
             && group.iter().all(|task| task.parallel_safe)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_group_serial<F>(
         &self,
         plan: &Arc<OrchestrationPlan>,
@@ -935,6 +1011,26 @@ impl AgentOrchestrator {
 
         let mut last_success = None;
         for (lowered, rx) in receivers {
+            let Some(subtask) = plan.subtasks.get(&lowered.name) else {
+                continue;
+            };
+            let wait_started_at_ms = now_ms();
+            publish_event(
+                "orchestration_wait_started",
+                json!({
+                    "plan_id": subtask.parent_id,
+                    "parent_job_id": subtask.parent_job_id,
+                    "subtask_id": subtask.id,
+                    "subtask_name": subtask.name,
+                    "task_id": lowered.task.id,
+                    "task_type": lowered.task.task_type,
+                    "execution_mode": execution_mode,
+                    "parallel_group_index": parallel_group_index,
+                    "parallel_group_size": group.len(),
+                    "started_at_ms": wait_started_at_ms,
+                    "wait_reason": "parallel_group",
+                }),
+            );
             let result = rx.recv().unwrap_or_else(|_| {
                 make_task_result(MakeTaskResult {
                     task_id: lowered.task.id.clone(),
@@ -946,9 +1042,28 @@ impl AgentOrchestrator {
                     result: None,
                 })
             });
-            let Some(subtask) = plan.subtasks.get(&lowered.name) else {
-                continue;
-            };
+            let wait_finished_at_ms = now_ms();
+            publish_event(
+                "orchestration_wait_finished",
+                json!({
+                    "plan_id": subtask.parent_id,
+                    "parent_job_id": subtask.parent_job_id,
+                    "subtask_id": subtask.id,
+                    "subtask_name": subtask.name,
+                    "task_id": lowered.task.id,
+                    "task_type": lowered.task.task_type,
+                    "execution_mode": execution_mode,
+                    "parallel_group_index": parallel_group_index,
+                    "parallel_group_size": group.len(),
+                    "started_at_ms": wait_started_at_ms,
+                    "finished_at_ms": wait_finished_at_ms,
+                    "wait_duration_ms": wait_finished_at_ms.saturating_sub(wait_started_at_ms),
+                    "wait_reason": "parallel_group",
+                    "result_status": result.status,
+                    "worker_id": result.worker_id,
+                    "error": result.error,
+                }),
+            );
             self.finalize_subtask_result(
                 plan,
                 subtask,
@@ -969,6 +1084,7 @@ impl AgentOrchestrator {
         Ok(last_success)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_lowered_subtask<F>(
         &self,
         plan: &Arc<OrchestrationPlan>,
@@ -994,7 +1110,19 @@ impl AgentOrchestrator {
             execution_mode,
             publish_event,
         );
-        let result = Self::wait_for_task(&self.worker_pool, task);
+        let wait_context = WaitDiagnosticContext {
+            plan_id: subtask.parent_id.clone(),
+            parent_job_id: subtask.parent_job_id.clone(),
+            subtask_id: subtask.id.clone(),
+            subtask_name: subtask.name.clone(),
+            task_id: task.id.clone(),
+            task_type: task.task_type.clone(),
+            execution_mode: execution_mode.to_string(),
+            parallel_group_index,
+            parallel_group_size,
+            wait_reason: "single_task".into(),
+        };
+        let result = Self::wait_for_task(&self.worker_pool, task, Some(wait_context), publish_event);
         self.finalize_subtask_result(
             plan,
             subtask,
@@ -1077,6 +1205,7 @@ impl AgentOrchestrator {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finalize_subtask_result<F>(
         &self,
         plan: &Arc<OrchestrationPlan>,
@@ -1468,7 +1597,7 @@ impl AgentOrchestrator {
                             obj.insert("previous-result".into(), previous.clone());
                         }
                     }
-                    let result = Self::wait_for_task(worker_pool, task);
+                    let result = Self::wait_for_task(worker_pool, task, None, &mut |_, _| {});
                     if result.status != "success" {
                         return result;
                     }
@@ -1528,13 +1657,40 @@ impl AgentOrchestrator {
                 Value::String(session_id.to_string()),
             );
         }
-        Self::wait_for_task(worker_pool, task)
+        Self::wait_for_task(worker_pool, task, None, &mut |_, _| {})
     }
 
     /// 同步等待任务结果，通道关闭时返回失败
-    pub fn wait_for_task(worker_pool: &Arc<WorkerPool>, task: Task) -> TaskResult {
+    fn wait_for_task<F>(
+        worker_pool: &Arc<WorkerPool>,
+        task: Task,
+        wait_context: Option<WaitDiagnosticContext>,
+        publish_event: &mut F,
+    ) -> TaskResult
+    where
+        F: FnMut(&str, Value),
+    {
         let rx = worker_pool.submit_task(task.clone());
-        rx.recv().unwrap_or_else(|_| {
+        let wait_started_at_ms = now_ms();
+        if let Some(context) = wait_context.as_ref() {
+            publish_event(
+                "orchestration_wait_started",
+                json!({
+                    "plan_id": context.plan_id,
+                    "parent_job_id": context.parent_job_id,
+                    "subtask_id": context.subtask_id,
+                    "subtask_name": context.subtask_name,
+                    "task_id": context.task_id,
+                    "task_type": context.task_type,
+                    "execution_mode": context.execution_mode,
+                    "parallel_group_index": context.parallel_group_index,
+                    "parallel_group_size": context.parallel_group_size,
+                    "started_at_ms": wait_started_at_ms,
+                    "wait_reason": context.wait_reason,
+                }),
+            );
+        }
+        let result = rx.recv().unwrap_or_else(|_| {
             make_task_result(MakeTaskResult {
                 task_id: task.id,
                 trace_id: task.trace_id,
@@ -1544,7 +1700,32 @@ impl AgentOrchestrator {
                 worker_id: None,
                 result: None,
             })
-        })
+        });
+        if let Some(context) = wait_context.as_ref() {
+            let wait_finished_at_ms = now_ms();
+            publish_event(
+                "orchestration_wait_finished",
+                json!({
+                    "plan_id": context.plan_id,
+                    "parent_job_id": context.parent_job_id,
+                    "subtask_id": context.subtask_id,
+                    "subtask_name": context.subtask_name,
+                    "task_id": context.task_id,
+                    "task_type": context.task_type,
+                    "execution_mode": context.execution_mode,
+                    "parallel_group_index": context.parallel_group_index,
+                    "parallel_group_size": context.parallel_group_size,
+                    "started_at_ms": wait_started_at_ms,
+                    "finished_at_ms": wait_finished_at_ms,
+                    "wait_duration_ms": wait_finished_at_ms.saturating_sub(wait_started_at_ms),
+                    "wait_reason": context.wait_reason,
+                    "result_status": result.status,
+                    "worker_id": result.worker_id,
+                    "error": result.error,
+                }),
+            );
+        }
+        result
     }
 
     /// 构造一个通用失败结果
