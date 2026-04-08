@@ -1,5 +1,17 @@
-use anima_runtime::agent::{CurrentTaskInfo, ExecutionSummary, RuntimeFailureSnapshot, RuntimeTimelineEvent, WorkerStatus};
+use anima_runtime::agent::{
+    CurrentTaskInfo, ExecutionSummary, RuntimeFailureSnapshot, RuntimeTimelineEvent, WorkerStatus,
+};
+use anima_runtime::runtime::{
+    build_projection, completed_current_step, creating_session_current_step,
+    executing_plan_current_step, failed_current_step, followup_current_step,
+    planning_ready_current_step, planning_stalled_current_step, preparing_context_current_step,
+    queued_current_step, session_ready_current_step, tool_execution_failed_current_step,
+    tool_execution_finished_current_step, tool_permission_resolved_current_step,
+    tool_phase_current_step, tool_result_recorded_current_step, waiting_user_input_current_step,
+    worker_executing_current_step, RuntimeProjectionView, RuntimeStateSnapshot,
+};
 use anima_runtime::support::now_ms;
+use anima_runtime::tasks::{run_by_job_id, tasks_for_job};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -68,6 +80,20 @@ pub struct WorkerTaskView {
     pub task_type: String,
     pub elapsed_ms: u64,
     pub content_preview: String,
+    pub phase: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolStateView {
+    pub invocation_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub phase: String,
+    pub permission_state: Option<String>,
+    pub input_preview: Option<String>,
+    pub result_preview: Option<String>,
+    pub error: Option<String>,
+    pub awaits_user_confirmation: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,6 +107,7 @@ pub enum JobKind {
 pub struct OrchestrationView {
     pub plan_id: Option<String>,
     pub active_subtask_name: Option<String>,
+    pub active_subtask_type: Option<String>,
     pub active_subtask_id: Option<String>,
     pub total_subtasks: usize,
     pub active_subtasks: usize,
@@ -110,6 +137,7 @@ pub struct JobView {
     pub pending_question: Option<QuestionView>,
     pub recent_events: Vec<JobEventView>,
     pub worker: Option<WorkerTaskView>,
+    pub tool_state: Option<ToolStateView>,
     pub execution_summary: Option<Value>,
     pub failure: Option<Value>,
     pub review: Option<JobReviewView>,
@@ -182,6 +210,48 @@ pub fn build_job_views(
     workers: &[WorkerStatus],
     store: &JobStore,
 ) -> Vec<JobView> {
+    let runtime_snapshot = RuntimeStateSnapshot::default();
+    let runtime_projection = build_projection(&runtime_snapshot);
+    build_job_views_with_projection(
+        timeline,
+        summaries,
+        failures,
+        workers,
+        store,
+        &runtime_snapshot,
+        &runtime_projection,
+    )
+}
+
+pub fn build_job_views_with_runtime(
+    timeline: &[RuntimeTimelineEvent],
+    summaries: &[ExecutionSummary],
+    failures: &[RuntimeFailureSnapshot],
+    workers: &[WorkerStatus],
+    store: &JobStore,
+    runtime_snapshot: &RuntimeStateSnapshot,
+) -> Vec<JobView> {
+    let runtime_projection = build_projection(runtime_snapshot);
+    build_job_views_with_projection(
+        timeline,
+        summaries,
+        failures,
+        workers,
+        store,
+        runtime_snapshot,
+        &runtime_projection,
+    )
+}
+
+pub fn build_job_views_with_projection(
+    timeline: &[RuntimeTimelineEvent],
+    summaries: &[ExecutionSummary],
+    failures: &[RuntimeFailureSnapshot],
+    workers: &[WorkerStatus],
+    store: &JobStore,
+    runtime_snapshot: &RuntimeStateSnapshot,
+    runtime_projection: &RuntimeProjectionView,
+) -> Vec<JobView> {
     let now = now_ms();
     let mut ordered_ids = Vec::new();
     let mut seen_ids = HashSet::new();
@@ -190,6 +260,12 @@ pub fn build_job_views(
     for job in store.accepted.values() {
         if seen_ids.insert(job.job_id.clone()) {
             ordered_ids.push(job.job_id.clone());
+        }
+    }
+
+    for run in runtime_snapshot.runs.values() {
+        if seen_ids.insert(run.job_id.clone()) {
+            ordered_ids.push(run.job_id.clone());
         }
     }
 
@@ -207,49 +283,148 @@ pub fn build_job_views(
         let accepted_job = store.accepted_job(&job_id);
         let first = events.first().cloned();
         let last = events.last().cloned().or(first.clone());
-        let recent_events = events
+        let recent_events = collect_recent_job_events(&events);
+        let runtime_run = run_by_job_id(runtime_snapshot, &job_id);
+        let runtime_backed = runtime_run.is_some();
+        let summary = summaries
             .iter()
-            .rev()
-            .take(MAX_JOB_EVENTS)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .map(|event| JobEventView {
-                event: event.event,
-                recorded_at_ms: event.recorded_at_ms,
-                payload: event.payload,
-            })
-            .collect::<Vec<_>>();
-        let summary = summaries.iter().find(|summary| summary.message_id == job_id).cloned();
-        let failure = failures.iter().find(|failure| failure.message_id == job_id).cloned();
+            .find(|summary| summary.message_id == job_id)
+            .cloned();
+        let runtime_execution_summary = runtime_projection
+            .execution_summaries
+            .get(&job_id)
+            .and_then(|summary| serde_json::to_value(summary).ok());
+        let failure = failures
+            .iter()
+            .find(|failure| failure.message_id == job_id)
+            .cloned();
         let review = store.review_for(&job_id);
         let worker = match_worker(job_id.as_str(), workers);
-        let pending_question = derive_pending_question(&events);
-        let started_at_ms = first
-            .as_ref()
-            .map(|event| event.recorded_at_ms)
+        let runtime_pending_question = runtime_projection
+            .pending_questions
+            .get(&job_id)
+            .cloned()
+            .map(|question| QuestionView {
+                question_id: question.question_id,
+                question_kind: question_kind_label(&question.question_kind),
+                prompt: question.prompt,
+                options: question.options,
+                raw_question: question.raw_question,
+                decision_mode: question_decision_mode_label(&question.decision_mode),
+                risk_level: question_risk_level_label(&question.risk_level),
+                requires_user_confirmation: question.requires_user_confirmation,
+                opencode_session_id: Some(question.opencode_session_id),
+                answer_summary: question.answer_summary,
+                resolution_source: question.resolution_source,
+            });
+        let pending_question = runtime_pending_question.clone().or_else(|| {
+            if runtime_backed {
+                None
+            } else {
+                derive_pending_question(&events)
+            }
+        });
+        let runtime_tool_state =
+            runtime_projection
+                .tool_states
+                .get(&job_id)
+                .cloned()
+                .map(|tool_state| ToolStateView {
+                    invocation_id: tool_state.invocation_id,
+                    tool_name: tool_state.tool_name,
+                    tool_use_id: tool_state.tool_use_id,
+                    phase: tool_state.phase,
+                    permission_state: tool_state.permission_state,
+                    input_preview: tool_state.input_preview,
+                    result_preview: tool_state.result_preview,
+                    error: tool_state.error,
+                    awaits_user_confirmation: tool_state.awaits_user_confirmation,
+                });
+        let tool_state = runtime_tool_state.or_else(|| {
+            if runtime_backed {
+                None
+            } else {
+                derive_tool_state(&events, pending_question.as_ref())
+            }
+        });
+        let started_at_ms = runtime_run
+            .map(|run| run.created_at_ms)
+            .or_else(|| first.as_ref().map(|event| event.recorded_at_ms))
             .or_else(|| accepted_job.as_ref().map(|job| job.accepted_at_ms))
             .unwrap_or(now);
         let updated_at_ms = worker
             .as_ref()
             .map(|worker| now.saturating_sub(worker.elapsed_ms))
+            .or_else(|| runtime_run.map(|run| run.updated_at_ms))
             .or_else(|| last.as_ref().map(|event| event.recorded_at_ms))
             .unwrap_or(started_at_ms);
-        let (status, status_label, current_step) = derive_job_status(
-            &events,
-            pending_question.as_ref(),
-            summary.as_ref(),
-            failure.as_ref(),
-            review.as_ref(),
-            worker.as_ref(),
-            now.saturating_sub(updated_at_ms),
-        );
-        let execution_summary = summary.as_ref().map(summary_to_value);
-        let failure_value = failure.as_ref().map(failure_to_value);
-        let trace_id = first
-            .as_ref()
-            .map(|event| event.trace_id.clone())
+        let execution_summary = runtime_execution_summary.or_else(|| {
+            if runtime_backed {
+                None
+            } else {
+                summary.as_ref().map(summary_to_value)
+            }
+        });
+        let runtime_failure = runtime_projection
+            .failures
+            .get(&job_id)
+            .and_then(|failure| serde_json::to_value(failure).ok())
+            .or_else(|| runtime_run.and_then(|run| runtime_failure_from_run(run, &job_id)));
+        let failure_value = runtime_failure.or_else(|| failure.as_ref().map(failure_to_value));
+        let runtime_failure_status = failure_value.as_ref().map(|_| {
+            (
+                JobStatus::Failed,
+                "failed".to_string(),
+                failed_current_step(),
+            )
+        });
+        let execution_summary_failure_status = execution_summary.as_ref().and_then(|summary| {
+            let status = summary.get("status").and_then(Value::as_str)?;
+            if matches!(status, "failure" | "followup_exhausted") {
+                Some((
+                    JobStatus::Failed,
+                    "failed".to_string(),
+                    failed_current_step(),
+                ))
+            } else {
+                None
+            }
+        });
+        let runtime_status = runtime_failure_status
+            .or(execution_summary_failure_status)
+            .or_else(|| {
+                if failure.is_some() {
+                    None
+                } else {
+                    runtime_projection.job_statuses.get(&job_id).map(|summary| {
+                        let worker_override = worker
+                            .as_ref()
+                            .and_then(|worker| runtime_status_with_worker(summary, worker));
+                        worker_override.unwrap_or_else(|| {
+                            (
+                                job_status_from_label(&summary.status_label),
+                                summary.status_label.clone(),
+                                summary.current_step.clone(),
+                            )
+                        })
+                    })
+                }
+            });
+        let (status, status_label, current_step) = runtime_status.unwrap_or_else(|| {
+            derive_job_status(
+                &events,
+                pending_question.as_ref(),
+                tool_state.as_ref(),
+                summary.as_ref(),
+                failure.as_ref(),
+                review.as_ref(),
+                worker.as_ref(),
+                now.saturating_sub(updated_at_ms),
+            )
+        });
+        let trace_id = runtime_run
+            .map(|run| run.trace_id.clone())
+            .or_else(|| first.as_ref().map(|event| event.trace_id.clone()))
             .or_else(|| accepted_job.as_ref().map(|job| job.trace_id.clone()))
             .unwrap_or_else(|| job_id.clone());
         let (kind, parent_job_id) = derive_job_hierarchy(
@@ -257,20 +432,22 @@ pub fn build_job_views(
             &events,
             &trace_id,
             store,
+            runtime_snapshot,
+            &job_id,
         );
         let message_id = first
             .as_ref()
             .map(|event| event.message_id.clone())
             .or_else(|| accepted_job.as_ref().map(|job| job.message_id.clone()))
             .unwrap_or_else(|| job_id.clone());
-        let channel = first
-            .as_ref()
-            .map(|event| event.channel.clone())
+        let channel = runtime_run
+            .map(|run| run.channel.clone())
+            .or_else(|| first.as_ref().map(|event| event.channel.clone()))
             .or_else(|| accepted_job.as_ref().map(|job| job.channel.clone()))
             .unwrap_or_else(|| "web".into());
-        let chat_id = first
-            .as_ref()
-            .and_then(|event| event.chat_id.clone())
+        let chat_id = runtime_run
+            .and_then(|run| run.chat_id.clone())
+            .or_else(|| first.as_ref().and_then(|event| event.chat_id.clone()))
             .or_else(|| accepted_job.as_ref().and_then(|job| job.chat_id.clone()));
         let sender_id = first
             .as_ref()
@@ -299,6 +476,7 @@ pub fn build_job_views(
             pending_question,
             recent_events,
             worker,
+            tool_state,
             execution_summary,
             failure: failure_value,
             review,
@@ -306,14 +484,16 @@ pub fn build_job_views(
         });
     }
 
-    let child_ids_by_parent = jobs.iter().fold(HashMap::<String, Vec<String>>::new(), |mut acc, job| {
-        if let Some(parent_job_id) = &job.parent_job_id {
-            acc.entry(parent_job_id.clone())
-                .or_default()
-                .push(job.job_id.clone());
-        }
-        acc
-    });
+    let child_ids_by_parent =
+        jobs.iter()
+            .fold(HashMap::<String, Vec<String>>::new(), |mut acc, job| {
+                if let Some(parent_job_id) = &job.parent_job_id {
+                    acc.entry(parent_job_id.clone())
+                        .or_default()
+                        .push(job.job_id.clone());
+                }
+                acc
+            });
 
     for job in &mut jobs {
         if job.kind != JobKind::Main {
@@ -323,14 +503,13 @@ pub fn build_job_views(
             .get(&job.job_id)
             .cloned()
             .unwrap_or_default();
-        let orchestration = derive_orchestration_view(job, &child_job_ids, &child_ids_by_parent);
-        if let Some(orchestration) = orchestration.as_ref() {
-            if let Some(active_subtask_name) = orchestration.active_subtask_name.as_ref() {
-                job.current_step = format!("正在执行子任务：{active_subtask_name}");
-            } else if orchestration.total_subtasks > 0 && matches!(job.status, JobStatus::Planning | JobStatus::Executing) {
-                job.current_step = format!("orchestration v1：共 {} 个子任务", orchestration.total_subtasks);
-            }
-        }
+        let orchestration = derive_orchestration_view(
+            job,
+            &child_job_ids,
+            &child_ids_by_parent,
+            runtime_snapshot,
+            runtime_projection,
+        );
         job.orchestration = orchestration;
     }
 
@@ -354,6 +533,7 @@ fn match_worker(job_id: &str, workers: &[WorkerStatus]) -> Option<WorkerTaskView
                 task_type: task.task_type.clone(),
                 elapsed_ms: now.saturating_sub(task.started_ms),
                 content_preview: task.content_preview.clone(),
+                phase: Some(task.phase.clone()),
             })
         } else {
             None
@@ -361,13 +541,89 @@ fn match_worker(job_id: &str, workers: &[WorkerStatus]) -> Option<WorkerTaskView
     })
 }
 
+fn job_status_from_label(label: &str) -> JobStatus {
+    match label {
+        "queued" => JobStatus::Queued,
+        "preparing_context" => JobStatus::PreparingContext,
+        "creating_session" => JobStatus::CreatingSession,
+        "planning" => JobStatus::Planning,
+        "executing" => JobStatus::Executing,
+        "waiting_user_input" => JobStatus::WaitingUserInput,
+        "stalled" => JobStatus::Stalled,
+        "completed" => JobStatus::Completed,
+        "failed" => JobStatus::Failed,
+        _ => JobStatus::Executing,
+    }
+}
+
+fn question_kind_label(kind: &anima_runtime::agent::QuestionKind) -> String {
+    match kind {
+        anima_runtime::agent::QuestionKind::Confirm => "confirm".into(),
+        anima_runtime::agent::QuestionKind::Choice => "choice".into(),
+        anima_runtime::agent::QuestionKind::Input => "input".into(),
+    }
+}
+
+fn question_decision_mode_label(mode: &anima_runtime::agent::QuestionDecisionMode) -> String {
+    match mode {
+        anima_runtime::agent::QuestionDecisionMode::AutoAllowed => "auto_allowed".into(),
+        anima_runtime::agent::QuestionDecisionMode::UserRequired => "user_required".into(),
+    }
+}
+
+fn question_risk_level_label(level: &anima_runtime::agent::QuestionRiskLevel) -> String {
+    match level {
+        anima_runtime::agent::QuestionRiskLevel::Low => "low".into(),
+        anima_runtime::agent::QuestionRiskLevel::High => "high".into(),
+    }
+}
+
+fn runtime_status_with_worker(
+    summary: &anima_runtime::runtime::ProjectionJobStatusSummary,
+    worker: &WorkerTaskView,
+) -> Option<(JobStatus, String, String)> {
+    if matches!(
+        summary.status_label.as_str(),
+        "completed" | "failed" | "waiting_user_input"
+    ) {
+        return None;
+    }
+
+    if worker.task_type == "session-create" {
+        return Some((
+            JobStatus::CreatingSession,
+            "creating_session".into(),
+            creating_session_current_step(worker.phase.as_deref()),
+        ));
+    }
+
+    if matches!(
+        summary.status_label.as_str(),
+        "executing" | "planning" | "preparing_context"
+    ) {
+        let current_step =
+            worker_executing_current_step(&worker.task_type, worker.phase.as_deref());
+        return Some((JobStatus::Executing, "executing".into(), current_step));
+    }
+
+    None
+}
+
 fn derive_job_hierarchy(
     accepted_job: Option<&AcceptedJob>,
     events: &[RuntimeTimelineEvent],
     trace_id: &str,
     store: &JobStore,
+    runtime_snapshot: &RuntimeStateSnapshot,
+    job_id: &str,
 ) -> (JobKind, Option<String>) {
     let self_job_id = events.first().map(|event| event.message_id.as_str());
+    if let Some(parent_job_id) = runtime_parent_job_id(runtime_snapshot, job_id) {
+        if Some(parent_job_id.as_str()) != self_job_id {
+            return (JobKind::Subtask, Some(parent_job_id));
+        }
+    }
+
     if let Some(parent_job_id) = event_parent_job_id(events) {
         if Some(parent_job_id.as_str()) != self_job_id {
             return (JobKind::Subtask, Some(parent_job_id));
@@ -403,8 +659,33 @@ fn derive_orchestration_view(
     job: &JobView,
     child_job_ids: &[String],
     child_ids_by_parent: &HashMap<String, Vec<String>>,
+    runtime_snapshot: &RuntimeStateSnapshot,
+    runtime_projection: &RuntimeProjectionView,
 ) -> Option<OrchestrationView> {
-    let plan_id = latest_payload_string(&job.recent_events, &["orchestration_plan_created"], "plan_id");
+    if let Some(runtime_plan) = runtime_projection.orchestration.get(&job.job_id) {
+        return Some(OrchestrationView {
+            plan_id: runtime_plan.plan_id.clone(),
+            active_subtask_name: runtime_plan.active_subtask_name.clone(),
+            active_subtask_type: runtime_plan.active_subtask_type.clone(),
+            active_subtask_id: runtime_plan.active_subtask_id.clone(),
+            total_subtasks: runtime_plan.total_subtasks,
+            active_subtasks: runtime_plan.active_subtasks,
+            completed_subtasks: runtime_plan.completed_subtasks,
+            failed_subtasks: runtime_plan.failed_subtasks,
+            child_job_ids: child_job_ids.to_vec(),
+        });
+    }
+
+    let plan_id = tasks_for_job(runtime_snapshot, &job.job_id)
+        .into_iter()
+        .find_map(|task| task.plan_id.clone())
+        .or_else(|| {
+            latest_payload_string(
+                &job.recent_events,
+                &["orchestration_plan_created"],
+                "plan_id",
+            )
+        });
     let active_subtask_name = latest_payload_string(
         &job.recent_events,
         &["orchestration_subtask_started"],
@@ -414,6 +695,11 @@ fn derive_orchestration_view(
         &job.recent_events,
         &["orchestration_subtask_started"],
         "subtask_id",
+    );
+    let active_subtask_type = latest_payload_string(
+        &job.recent_events,
+        &["orchestration_subtask_started"],
+        "original_task_type",
     );
     let total_subtasks = latest_payload_usize(
         &job.recent_events,
@@ -426,7 +712,6 @@ fn derive_orchestration_view(
     let active_subtasks = usize::from(active_subtask_name.is_some() && failed_subtasks == 0);
 
     let has_orchestration_signal = plan_id.is_some()
-        || total_subtasks > 0
         || child_ids_by_parent.contains_key(&job.job_id)
         || job
             .recent_events
@@ -440,6 +725,7 @@ fn derive_orchestration_view(
     Some(OrchestrationView {
         plan_id,
         active_subtask_name,
+        active_subtask_type,
         active_subtask_id,
         total_subtasks,
         active_subtasks,
@@ -449,7 +735,70 @@ fn derive_orchestration_view(
     })
 }
 
-fn latest_payload_string(events: &[JobEventView], event_names: &[&str], key: &str) -> Option<String> {
+fn collect_recent_job_events(events: &[RuntimeTimelineEvent]) -> Vec<JobEventView> {
+    let mut recent_events_source = events
+        .iter()
+        .rev()
+        .take(MAX_JOB_EVENTS)
+        .cloned()
+        .collect::<Vec<_>>();
+    let retained_plan_created = recent_events_source
+        .iter()
+        .any(|event| event.event == "orchestration_plan_created");
+    let injected_plan_created = if !retained_plan_created {
+        events
+            .iter()
+            .rev()
+            .find(|event| event.event == "orchestration_plan_created")
+            .cloned()
+            .map(|event| {
+                recent_events_source.push(event);
+                true
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    recent_events_source.sort_by_key(|event| event.recorded_at_ms);
+    if recent_events_source.len() > MAX_JOB_EVENTS {
+        if injected_plan_created {
+            while recent_events_source.len() > MAX_JOB_EVENTS {
+                if let Some(index) = recent_events_source
+                    .iter()
+                    .position(|event| event.event != "orchestration_plan_created")
+                {
+                    recent_events_source.remove(index);
+                } else {
+                    recent_events_source.drain(..recent_events_source.len() - MAX_JOB_EVENTS);
+                }
+            }
+        } else {
+            recent_events_source.drain(..recent_events_source.len() - MAX_JOB_EVENTS);
+        }
+    }
+
+    recent_events_source
+        .into_iter()
+        .map(|event| JobEventView {
+            event: event.event,
+            recorded_at_ms: event.recorded_at_ms,
+            payload: event.payload,
+        })
+        .collect()
+}
+
+fn runtime_parent_job_id(snapshot: &RuntimeStateSnapshot, job_id: &str) -> Option<String> {
+    tasks_for_job(snapshot, job_id)
+        .into_iter()
+        .find_map(|task| task.parent_job_id.clone())
+}
+
+fn latest_payload_string(
+    events: &[JobEventView],
+    event_names: &[&str],
+    key: &str,
+) -> Option<String> {
     events
         .iter()
         .rev()
@@ -459,22 +808,18 @@ fn latest_payload_string(events: &[JobEventView], event_names: &[&str], key: &st
         .map(ToString::to_string)
 }
 
-fn latest_payload_usize(events: &[JobEventView], event_names: &[&str], key: &str) -> Option<usize> {
+fn count_events(events: &[JobEventView], event_name: &str) -> usize {
     events
         .iter()
-        .rev()
-        .find(|event| event_names.contains(&event.event.as_str()))
-        .and_then(|event| event.payload.get(key))
-        .and_then(|value| value.as_u64())
-        .map(|value| value as usize)
-}
-
-fn count_events(events: &[JobEventView], event_name: &str) -> usize {
-    events.iter().filter(|event| event.event == event_name).count()
+        .filter(|event| event.event == event_name)
+        .count()
 }
 
 fn derive_pending_question(events: &[RuntimeTimelineEvent]) -> Option<QuestionView> {
-    let asked = events.iter().rev().find(|event| event.event == "question_asked")?;
+    let asked = events
+        .iter()
+        .rev()
+        .find(|event| event.event == "question_asked")?;
     let question_id = asked
         .payload
         .get("question_id")
@@ -501,6 +846,21 @@ fn derive_pending_question(events: &[RuntimeTimelineEvent]) -> Option<QuestionVi
                 .and_then(|value| value.as_str())
                 == Some(question_id.as_str())
     });
+    let permission_requested = events.iter().rev().find(|event| {
+        event.event == "tool_permission_requested"
+            && event
+                .payload
+                .get("question_id")
+                .and_then(|value| value.as_str())
+                == Some(question_id.as_str())
+    });
+    let raw_question = asked
+        .payload
+        .get("raw_question")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let normalized_raw_question =
+        normalize_tool_permission_raw_question(raw_question, permission_requested);
 
     Some(QuestionView {
         question_id,
@@ -514,19 +874,25 @@ fn derive_pending_question(events: &[RuntimeTimelineEvent]) -> Option<QuestionVi
             .payload
             .get("prompt")
             .and_then(|value| value.as_str())
+            .or_else(|| {
+                normalized_raw_question
+                    .get("prompt")
+                    .and_then(Value::as_str)
+            })
             .unwrap_or_default()
             .to_string(),
         options: asked
             .payload
             .get("options")
             .and_then(|value| value.as_array())
-            .map(|values| values.iter().filter_map(|value| value.as_str().map(ToString::to_string)).collect())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(ToString::to_string))
+                    .collect()
+            })
             .unwrap_or_default(),
-        raw_question: asked
-            .payload
-            .get("raw_question")
-            .cloned()
-            .unwrap_or(Value::Null),
+        raw_question: normalized_raw_question,
         decision_mode: asked
             .payload
             .get("decision_mode")
@@ -537,6 +903,11 @@ fn derive_pending_question(events: &[RuntimeTimelineEvent]) -> Option<QuestionVi
             .payload
             .get("risk_level")
             .and_then(|value| value.as_str())
+            .or_else(|| {
+                permission_requested
+                    .and_then(|event| event.payload.get("risk_level"))
+                    .and_then(Value::as_str)
+            })
             .unwrap_or("high")
             .to_string(),
         requires_user_confirmation: asked
@@ -560,9 +931,11 @@ fn derive_pending_question(events: &[RuntimeTimelineEvent]) -> Option<QuestionVi
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn derive_job_status(
     events: &[RuntimeTimelineEvent],
     pending_question: Option<&QuestionView>,
+    tool_state: Option<&ToolStateView>,
     summary: Option<&ExecutionSummary>,
     failure: Option<&RuntimeFailureSnapshot>,
     _review: Option<&JobReviewView>,
@@ -582,27 +955,36 @@ fn derive_job_status(
     let last_event_name = events.last().map(|event| event.event.as_str());
     let summary_status = summary.map(|item| item.status.as_str());
 
-    if failure.is_some() || has_message_failed || has_session_create_failed || has_followup_exhausted || matches!(summary_status, Some("failure" | "followup_exhausted")) {
-        return (
-            JobStatus::Failed,
-            "failed".into(),
-            "执行失败".into(),
-        );
+    if failure.is_some()
+        || has_message_failed
+        || has_session_create_failed
+        || has_followup_exhausted
+        || matches!(summary_status, Some("failure" | "followup_exhausted"))
+    {
+        return (JobStatus::Failed, "failed".into(), failed_current_step());
     }
 
     if has_message_completed && has_requirement_satisfied {
         return (
             JobStatus::Completed,
             "completed".into(),
-            "主 agent 已确认结果满足需求".into(),
+            completed_current_step(),
         );
     }
 
     if let Some(question) = pending_question {
+        let is_tool_permission =
+            question.raw_question.get("type").and_then(Value::as_str) == Some("tool_permission");
         let current_step = if has_event(events, "question_answer_submitted") {
-            "已提交回答，等待主 agent 继续处理".to_string()
+            if is_tool_permission {
+                "已提交工具权限决定，等待主 agent 继续处理".to_string()
+            } else {
+                "已提交回答，等待主 agent 继续处理".to_string()
+            }
+        } else if is_tool_permission {
+            "等待用户确认工具调用权限".to_string()
         } else {
-            "等待用户提供所需输入".to_string()
+            waiting_user_input_current_step()
         };
         return (
             JobStatus::WaitingUserInput,
@@ -622,25 +1004,49 @@ fn derive_job_status(
             return (
                 JobStatus::CreatingSession,
                 "creating_session".into(),
-                "正在创建上游会话".into(),
+                worker
+                    .phase
+                    .as_ref()
+                    .map(|phase| format!("正在创建上游会话（{phase}）"))
+                    .unwrap_or_else(|| "正在创建上游会话".into()),
             );
         }
-        return (
-            JobStatus::Executing,
-            "executing".into(),
-            format!("worker 正在执行 {}", worker.task_type),
-        );
+        let current_step =
+            worker_executing_current_step(&worker.task_type, worker.phase.as_deref());
+        return (JobStatus::Executing, "executing".into(), current_step);
+    }
+
+    if let Some(tool_state) = tool_state {
+        let tool_label = tool_state.tool_name.as_deref().unwrap_or("工具");
+        let current_step = match tool_state.phase.as_str() {
+            "permission_resolved" => tool_permission_resolved_current_step(),
+            "execution_started" | "executing" => format!("正在执行工具：{tool_label}"),
+            "execution_finished" | "completed" => tool_execution_finished_current_step(),
+            "execution_failed" | "failed" => tool_execution_failed_current_step(),
+            "result_recorded" => tool_result_recorded_current_step(),
+            other => tool_phase_current_step(other),
+        };
+        return (JobStatus::Executing, "executing".into(), current_step);
     }
 
     if has_followup_scheduled || matches!(summary_status, Some("followup_pending")) {
         return (
             JobStatus::Executing,
             "executing".into(),
-            "主 agent 判断结果尚未满足需求，正在自动继续补充处理".into(),
+            followup_current_step(),
         );
     }
 
-    if matches!(last_event_name, Some("cache_hit" | "cache_miss" | "upstream_response_observed" | "requirement_evaluation_started" | "requirement_unsatisfied")) {
+    if matches!(
+        last_event_name,
+        Some(
+            "cache_hit"
+                | "cache_miss"
+                | "upstream_response_observed"
+                | "requirement_evaluation_started"
+                | "requirement_unsatisfied"
+        )
+    ) {
         let plan_type = summary
             .map(|item| item.plan_type.clone())
             .or_else(|| last_event_payload_value(events, "plan_built", "plan_type"))
@@ -648,7 +1054,7 @@ fn derive_job_status(
         return (
             JobStatus::Executing,
             "executing".into(),
-            format!("已进入执行阶段，正在处理 {plan_type}"),
+            executing_plan_current_step(&plan_type),
         );
     }
 
@@ -658,18 +1064,20 @@ fn derive_job_status(
             .or_else(|| last_event_payload_value(events, "plan_built", "plan_type"))
             .unwrap_or_else(|| "single".into());
 
-        if matches!(last_event_name, Some("plan_built")) && idle_since_update_ms >= UPSTREAM_INPUT_STALL_MS {
+        if matches!(last_event_name, Some("plan_built"))
+            && idle_since_update_ms >= UPSTREAM_INPUT_STALL_MS
+        {
             return (
                 JobStatus::Stalled,
                 "stalled".into(),
-                "规划已完成，但长时间没有新的运行时进展".into(),
+                planning_stalled_current_step(),
             );
         }
 
         return (
             JobStatus::Planning,
             "planning".into(),
-            format!("已完成规划，准备执行 {plan_type}"),
+            planning_ready_current_step(&plan_type),
         );
     }
 
@@ -677,7 +1085,7 @@ fn derive_job_status(
         return (
             JobStatus::Planning,
             "planning".into(),
-            "会话已就绪，正在构建计划".into(),
+            session_ready_current_step(),
         );
     }
 
@@ -685,22 +1093,234 @@ fn derive_job_status(
         return (
             JobStatus::PreparingContext,
             "preparing_context".into(),
-            "正在准备上下文".into(),
+            preparing_context_current_step(),
         );
     }
 
-    (
-        JobStatus::Queued,
-        "queued".into(),
-        "已进入队列".into(),
-    )
+    (JobStatus::Queued, "queued".into(), queued_current_step())
+}
+
+fn derive_tool_state(
+    events: &[RuntimeTimelineEvent],
+    pending_question: Option<&QuestionView>,
+) -> Option<ToolStateView> {
+    let event = events.iter().rev().find(|event| {
+        matches!(
+            event.event.as_str(),
+            "tool_result_recorded"
+                | "tool_execution_failed"
+                | "tool_execution_finished"
+                | "tool_execution_started"
+                | "tool_permission_resolved"
+                | "tool_permission_requested"
+                | "tool_invocation_detected"
+        )
+    })?;
+    let tool_invocation = event.payload.get("tool_invocation");
+    let details = event.payload.get("details");
+    let raw_tool_name = event
+        .payload
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            tool_invocation
+                .and_then(|value| value.get("tool_name"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| pending_question.and_then(tool_permission_tool_name));
+    let raw_tool_use_id = event
+        .payload
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            tool_invocation
+                .and_then(|value| value.get("tool_use_id"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| pending_question.and_then(tool_permission_tool_use_id));
+    let raw_invocation_id = event
+        .payload
+        .get("invocation_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            tool_invocation
+                .and_then(|value| value.get("invocation_id"))
+                .and_then(Value::as_str)
+        });
+    let permission_state = event
+        .payload
+        .get("permission_state")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            tool_invocation
+                .and_then(|value| value.get("permission_state"))
+                .and_then(Value::as_str)
+        });
+    let result_preview = event
+        .payload
+        .get("result_summary")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            tool_invocation
+                .and_then(|value| value.get("result_summary"))
+                .and_then(Value::as_str)
+        });
+    let error = event
+        .payload
+        .get("error_summary")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            details
+                .and_then(|value| value.get("error"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            tool_invocation
+                .and_then(|value| value.get("error_summary"))
+                .and_then(Value::as_str)
+        });
+    let input_preview = details
+        .and_then(|value| value.get("tool_input"))
+        .map(json_preview)
+        .or_else(|| event.payload.get("tool_input").map(json_preview))
+        .or_else(|| pending_question.and_then(tool_permission_input_preview));
+    let phase = event
+        .payload
+        .get("phase")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| map_tool_event_to_phase(event.event.as_str()).to_string());
+    let awaits_user_confirmation = pending_question
+        .map(|question| {
+            question.requires_user_confirmation
+                && question.raw_question.get("type").and_then(Value::as_str)
+                    == Some("tool_permission")
+        })
+        .unwrap_or(false);
+
+    Some(ToolStateView {
+        invocation_id: raw_invocation_id.map(ToString::to_string),
+        tool_name: raw_tool_name.map(ToString::to_string),
+        tool_use_id: raw_tool_use_id.map(ToString::to_string),
+        phase,
+        permission_state: permission_state.map(ToString::to_string),
+        input_preview,
+        result_preview: result_preview.map(ToString::to_string),
+        error: error.map(ToString::to_string),
+        awaits_user_confirmation,
+    })
+}
+
+fn normalize_tool_permission_raw_question(
+    raw_question: Value,
+    permission_requested: Option<&RuntimeTimelineEvent>,
+) -> Value {
+    let mut object = match raw_question {
+        Value::Object(map) => map,
+        Value::Null => serde_json::Map::new(),
+        other => return other,
+    };
+
+    let is_tool_permission = object.get("type").and_then(Value::as_str) == Some("tool_permission")
+        || permission_requested.is_some();
+    if !is_tool_permission {
+        return Value::Object(object);
+    }
+
+    object
+        .entry("type")
+        .or_insert_with(|| Value::String("tool_permission".into()));
+    if let Some(event) = permission_requested {
+        copy_string_field_if_missing(&mut object, &event.payload, "tool_name");
+        copy_string_field_if_missing(&mut object, &event.payload, "tool_use_id");
+        copy_value_field_if_missing(&mut object, &event.payload, "tool_input");
+        copy_string_field_if_missing(&mut object, &event.payload, "prompt");
+        if !object.contains_key("input_preview") {
+            if let Some(value) = event.payload.get("tool_input") {
+                object.insert("input_preview".into(), Value::String(json_preview(value)));
+            }
+        }
+    }
+
+    Value::Object(object)
+}
+
+fn copy_string_field_if_missing(
+    target: &mut serde_json::Map<String, Value>,
+    source: &Value,
+    key: &str,
+) {
+    if target.contains_key(key) {
+        return;
+    }
+    if let Some(value) = source.get(key).and_then(Value::as_str) {
+        target.insert(key.into(), Value::String(value.to_string()));
+    }
+}
+
+fn copy_value_field_if_missing(
+    target: &mut serde_json::Map<String, Value>,
+    source: &Value,
+    key: &str,
+) {
+    if target.contains_key(key) {
+        return;
+    }
+    if let Some(value) = source.get(key) {
+        target.insert(key.into(), value.clone());
+    }
+}
+
+fn tool_permission_tool_name(question: &QuestionView) -> Option<&str> {
+    question
+        .raw_question
+        .get("tool_name")
+        .and_then(Value::as_str)
+}
+
+fn tool_permission_tool_use_id(question: &QuestionView) -> Option<&str> {
+    question
+        .raw_question
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+}
+
+fn tool_permission_input_preview(question: &QuestionView) -> Option<String> {
+    question
+        .raw_question
+        .get("input_preview")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| question.raw_question.get("tool_input").map(json_preview))
+}
+
+fn json_preview(value: &Value) -> String {
+    let raw = serde_json::to_string(value).unwrap_or_default();
+    raw.chars().take(240).collect()
+}
+
+fn map_tool_event_to_phase(event: &str) -> &'static str {
+    match event {
+        "tool_invocation_detected" => "detected",
+        "tool_permission_requested" => "permission_requested",
+        "tool_permission_resolved" => "permission_resolved",
+        "tool_execution_started" => "execution_started",
+        "tool_execution_finished" => "execution_finished",
+        "tool_execution_failed" => "execution_failed",
+        "tool_result_recorded" => "result_recorded",
+        _ => "unknown",
+    }
 }
 
 fn has_event(events: &[RuntimeTimelineEvent], name: &str) -> bool {
     events.iter().any(|event| event.event == name)
 }
 
-fn last_event_payload_value(events: &[RuntimeTimelineEvent], event_name: &str, key: &str) -> Option<String> {
+fn last_event_payload_value(
+    events: &[RuntimeTimelineEvent],
+    event_name: &str,
+    key: &str,
+) -> Option<String> {
     events
         .iter()
         .rev()
@@ -708,6 +1328,16 @@ fn last_event_payload_value(events: &[RuntimeTimelineEvent], event_name: &str, k
         .and_then(|event| event.payload.get(key))
         .and_then(|value| value.as_str())
         .map(ToString::to_string)
+}
+
+fn latest_payload_usize(events: &[JobEventView], event_names: &[&str], key: &str) -> Option<usize> {
+    events
+        .iter()
+        .rev()
+        .find(|event| event_names.contains(&event.event.as_str()))
+        .and_then(|event| event.payload.get(key))
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
 }
 
 fn summary_to_value(summary: &ExecutionSummary) -> Value {
@@ -743,4 +1373,17 @@ fn failure_to_value(failure: &RuntimeFailureSnapshot) -> Value {
         "occurred_at_ms": failure.occurred_at_ms,
         "internal_message": failure.internal_message,
     })
+}
+
+fn runtime_failure_from_run(run: &anima_runtime::tasks::RunRecord, job_id: &str) -> Option<Value> {
+    let latest_error = run.latest_error.as_ref()?;
+    Some(serde_json::json!({
+        "error_code": "runtime_run_failed",
+        "error_stage": "runtime",
+        "message_id": job_id,
+        "channel": run.channel,
+        "chat_id": run.chat_id,
+        "occurred_at_ms": run.completed_at_ms.unwrap_or(run.updated_at_ms),
+        "internal_message": latest_error,
+    }))
 }

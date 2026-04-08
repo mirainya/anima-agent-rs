@@ -13,56 +13,52 @@
 
 use anima_sdk::facade::Client as SdkClient;
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use uuid::Uuid;
 
+use super::event_emitter::RuntimeEventEmitter;
 use super::executor::{SdkTaskExecutor, TaskExecutor};
-use super::types::{
-    make_task, make_task_result, ExecutionPlan, MakeTask, MakeTaskResult, TaskResult,
-};
+use super::requirement::RequirementCoordinator;
+use super::runtime_error::classify_runtime_error;
+use super::runtime_helpers::truncate_preview;
+use super::types::{ExecutionPlan, TaskResult};
 use super::worker::{WorkerPool, WorkerPoolStatus};
-use crate::classifier::rule::AgentClassifier;
-use crate::execution::agentic_loop::{
-    continue_agentic_loop, resume_suspended_tool_invocation, run_agentic_loop, AgenticLoopConfig,
-    AgenticLoopOutcome, AgenticLoopSuspension,
+use crate::bus::ControlSignal;
+use crate::bus::{
+    make_internal, make_outbound, Bus, InboundMessage, MakeInternal, MakeOutbound, OutboundMessage,
 };
-use crate::hooks::HookRegistry;
-use crate::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
-use crate::streaming::types::{ContentBlock, ContentDelta, StreamEvent};
-use crate::orchestrator::specialist_pool::SpecialistPool;
-use crate::permissions::PermissionChecker;
-use crate::prompt::PromptAssembler;
-use crate::tools::registry::ToolRegistry;
-use crate::bus::{make_outbound, make_internal, Bus, InboundMessage, MakeInternal, MakeOutbound, OutboundMessage};
-use crate::bus::{ControlSignal};
 use crate::channel::SessionStore;
+use crate::classifier::rule::AgentClassifier;
+use crate::execution::agentic_loop::AgenticLoopConfig;
 use crate::execution::context_assembly::{
     assemble_context, ContextAssemblyMode, ContextAssemblyRequest, ContextAssemblyResult,
 };
-use crate::execution::driver::{build_api_call_task, execute_api_call, ApiCallExecutionRequest, ExecutionKind};
-use crate::execution::turn_coordinator::{
-    assembly_mode_for_source, plan_turn_outcome, prepare_completed_branch_data,
-    prepare_followup_branch_data, prepare_question_asked_payload,
-    prepare_requirement_evaluation, prepare_requirement_evaluation_started_payload,
-    prepare_requirement_satisfied_payload, prepare_upstream_response_observed_payload,
-    prepare_waiting_user_input_branch_data, RequirementEvaluationPreparation,
-    TurnOutcomePlan, TurnSource,
+use crate::execution::driver::ExecutionKind;
+use crate::execution::turn_coordinator::{TurnOutcomePlan, TurnSource};
+use crate::hooks::HookRegistry;
+use crate::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
+use crate::orchestrator::specialist_pool::SpecialistPool;
+use crate::permissions::PermissionChecker;
+use crate::runtime::{
+    build_projection, RuntimeProjectionView, RuntimeStateSnapshot, RuntimeStateStore,
+    SharedRuntimeStateStore,
 };
-use crate::execution::requirement_judge::{judge_requirement, AgentFollowupPlan, RequirementProgressState};
-use crate::support::{make_api_cache_key, now_ms, ContextManager, LruCache, MetricsCollector};
+use crate::runtime::{
+    planning_ready_current_step, preparing_context_current_step, session_ready_current_step,
+};
+use crate::support::{now_ms, ContextManager, LruCache, MetricsCollector};
+use crate::tasks::{RunStatus, SuspensionKind, SuspensionStatus, TaskStatus, TurnStatus};
+use crate::tools::registry::ToolRegistry;
 
 #[derive(Debug, Clone)]
-struct RuntimeErrorInfo {
-    code: &'static str,
-    stage: &'static str,
-    user_message: String,
-    internal_message: String,
+pub(crate) struct RuntimeErrorInfo {
+    pub(crate) code: &'static str,
+    pub(crate) stage: &'static str,
+    pub(crate) user_message: String,
+    pub(crate) internal_message: String,
 }
 
 // 事件类型已下沉到 anima-types::event，此处 re-export
@@ -71,61 +67,12 @@ pub use anima_types::event::{
     RuntimeTimelineEvent,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum QuestionKind {
-    Confirm,
-    Choice,
-    Input,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum QuestionDecisionMode {
-    AutoAllowed,
-    UserRequired,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum QuestionRiskLevel {
-    Low,
-    High,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingQuestionSourceKind {
-    UpstreamQuestion,
-    ToolPermission,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PendingQuestion {
-    pub question_id: String,
-    pub job_id: String,
-    pub opencode_session_id: String,
-    pub question_kind: QuestionKind,
-    pub prompt: String,
-    pub options: Vec<String>,
-    pub raw_question: Value,
-    pub decision_mode: QuestionDecisionMode,
-    pub risk_level: QuestionRiskLevel,
-    pub requires_user_confirmation: bool,
-    pub source_kind: PendingQuestionSourceKind,
-    pub continuation_token: Option<String>,
-    pub asked_at_ms: u64,
-    pub answer_submitted: bool,
-    pub answer_summary: Option<String>,
-    pub resolution_source: Option<String>,
-    #[serde(skip_serializing, skip_deserializing)]
-    pub inbound: Option<InboundMessage>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QuestionAnswerInput {
-    pub question_id: String,
-    pub source: String,
-    pub answer_type: String,
-    pub answer: String,
-}
+// 挂起相关类型从 suspension 模块导入
+pub use super::suspension::{
+    PendingQuestion, PendingQuestionSourceKind, QuestionAnswerInput, QuestionDecisionMode,
+    QuestionKind, QuestionRiskLevel,
+};
+use super::suspension::{SuspendedToolInvocationState, SuspensionCoordinator};
 
 /// 单个会话的上下文信息，包含 SDK 会话 ID 和对话历史
 #[derive(Debug, Clone, PartialEq)]
@@ -140,37 +87,113 @@ pub struct SessionContext {
 const MAX_SESSIONS: usize = 1000;
 /// 每个会话最多保留的历史消息条数
 const MAX_SESSION_HISTORY: usize = 200;
-const DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS: usize = 3;
+pub(crate) const DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq)]
-struct ExecutionContext {
-    memory_key: String,
-    history_session_id: String,
-    opencode_session_id: String,
-    plan_type: String,
-    context_ms: u64,
-    session_ms: u64,
-    classify_ms: u64,
-    execute_ms: u64,
-    total_ms: u64,
-    cache_hit: bool,
+pub(crate) struct ExecutionContext {
+    pub(crate) memory_key: String,
+    pub(crate) history_session_id: String,
+    pub(crate) opencode_session_id: String,
+    pub(crate) plan_type: String,
+    pub(crate) context_ms: u64,
+    pub(crate) session_ms: u64,
+    pub(crate) classify_ms: u64,
+    pub(crate) execute_ms: u64,
+    pub(crate) total_ms: u64,
+    pub(crate) cache_hit: bool,
 }
 
-#[derive(Debug, Clone)]
-struct SuspendedToolInvocationState {
-    suspension: AgenticLoopSuspension,
-    inbound: InboundMessage,
-    opencode_session_id: String,
+pub(crate) struct ToolPermissionResumePreparation {
+    pub(crate) suspended: SuspendedToolInvocationState,
+    pub(crate) config: AgenticLoopConfig,
+    pub(crate) resumed_messages: Vec<crate::messages::types::InternalMsg>,
+}
+
+pub(crate) struct InitialAgenticLoopRunPreparation {
+    pub(crate) initial_messages: Vec<crate::messages::types::InternalMsg>,
+    pub(crate) config: AgenticLoopConfig,
+}
+
+pub(crate) struct InitialPlanDispatchContext<'a> {
+    pub(crate) inbound_msg: &'a InboundMessage,
+    pub(crate) plan: &'a ExecutionPlan,
+    pub(crate) opencode_session_id: &'a str,
+    pub(crate) memory_key: &'a str,
+    pub(crate) execution_kind: ExecutionKind,
+}
+
+pub(crate) struct InitialExecutionOutcome {
+    pub(crate) plan_type: String,
+    pub(crate) cache_hit: bool,
+    pub(crate) execute_ms: u64,
+    pub(crate) result: TaskResult,
+}
+
+pub(crate) struct ProcessInboundResolutionContext<'a> {
+    pub(crate) inbound_msg: &'a InboundMessage,
+    pub(crate) key: &'a str,
+    pub(crate) opencode_session_id: &'a str,
+    pub(crate) plan_type: &'a str,
+    pub(crate) context_ms: u64,
+    pub(crate) session_ms: u64,
+    pub(crate) classify_ms: u64,
+    pub(crate) execute_ms: u64,
+    pub(crate) total_ms: u64,
+    pub(crate) cache_hit: bool,
+}
+
+pub(crate) struct InboundContextPreparation {
+    pub(crate) key: String,
+    pub(crate) context_ms: u64,
+}
+
+pub(crate) struct SessionPreparation {
+    pub(crate) opencode_session_id: String,
+    pub(crate) session_ms: u64,
+}
+
+pub(crate) struct PlanPreparation {
+    pub(crate) plan: ExecutionPlan,
+    pub(crate) classify_ms: u64,
+}
+
+pub(crate) struct AgentFollowupPreparation {
+    pub(crate) progress: crate::execution::requirement_judge::RequirementProgressState,
+    pub(crate) next_round: usize,
+    pub(crate) fingerprint: String,
+    pub(crate) followup_branch: crate::execution::turn_coordinator::FollowupBranchData,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SuccessSource {
+pub(crate) enum RuntimeTaskPhase {
+    Main,
+    Question,
+    ToolPermission,
+    Followup,
+    Requirement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SuccessSource {
     Initial,
     QuestionContinuation,
     AgentFollowup,
 }
 
-fn turn_source_from_success(source: SuccessSource) -> TurnSource {
+pub(crate) struct UpstreamTurnContext<'a> {
+    pub(crate) inbound_msg: &'a InboundMessage,
+    pub(crate) exec_ctx: &'a ExecutionContext,
+    pub(crate) result: &'a TaskResult,
+    pub(crate) resolved_question: Option<&'a PendingQuestion>,
+    pub(crate) turn_source_label: &'a str,
+}
+
+pub(crate) struct UpstreamRequirementContext {
+    pub(crate) turn_plan: TurnOutcomePlan,
+    pub(crate) turn_source_label: &'static str,
+}
+
+pub(crate) fn turn_source_from_success(source: SuccessSource) -> TurnSource {
     match source {
         SuccessSource::Initial => TurnSource::Initial,
         SuccessSource::QuestionContinuation => TurnSource::QuestionContinuation,
@@ -181,29 +204,28 @@ fn turn_source_from_success(source: SuccessSource) -> TurnSource {
 /// 核心智能体，承载消息循环、会话管理、任务调度等核心逻辑。
 /// 通过 Bus 接收入站消息，经分类和编排后交由 WorkerPool 执行。
 pub struct CoreAgent {
-    bus: Arc<Bus>,
-    _client: SdkClient,
+    pub(crate) bus: Arc<Bus>,
+    pub(crate) _client: SdkClient,
     session_store: Arc<SessionStore>,
-    worker_pool: Arc<WorkerPool>,
-    orchestrator: Arc<AgentOrchestrator>,
-    context_manager: Arc<ContextManager>,
-    result_cache: Arc<LruCache>,
-    metrics: Arc<MetricsCollector>,
+    pub(crate) worker_pool: Arc<WorkerPool>,
+    pub(crate) orchestrator: Arc<AgentOrchestrator>,
+    pub(crate) context_manager: Arc<ContextManager>,
+    pub(crate) result_cache: Arc<LruCache>,
+    pub(crate) metrics: Arc<MetricsCollector>,
     /// Agentic loop 用：工具注册中心
-    tool_registry: Arc<ToolRegistry>,
+    pub(crate) tool_registry: Arc<ToolRegistry>,
     /// Agentic loop 用：权限检查器
-    permission_checker: Option<Arc<PermissionChecker>>,
+    pub(crate) permission_checker: Option<Arc<PermissionChecker>>,
     /// Agentic loop 用：钩子注册中心
-    hook_registry: Option<Arc<HookRegistry>>,
+    pub(crate) hook_registry: Option<Arc<HookRegistry>>,
     /// Agentic loop 用：保存 executor 引用以便在循环中直接使用
-    executor: Arc<dyn TaskExecutor>,
-    memory: Mutex<indexmap::IndexMap<String, SessionContext>>,
-    failures: Mutex<RuntimeFailureStatus>,
-    timeline: Arc<Mutex<Vec<RuntimeTimelineEvent>>>,
-    execution_summaries: Mutex<Vec<ExecutionSummary>>,
-    pending_questions: Mutex<HashMap<String, PendingQuestion>>,
-    suspended_tool_invocations: Mutex<HashMap<String, SuspendedToolInvocationState>>,
-    requirement_progress: Mutex<HashMap<String, RequirementProgressState>>,
+    pub(crate) executor: Arc<dyn TaskExecutor>,
+    pub(crate) memory: Mutex<indexmap::IndexMap<String, SessionContext>>,
+    pub(crate) emitter: Arc<RuntimeEventEmitter>,
+    pub(crate) runtime_state_store: SharedRuntimeStateStore,
+    /// 挂起状态协调器
+    pub(crate) suspension: Arc<SuspensionCoordinator>,
+    pub(crate) requirement: Arc<RequirementCoordinator>,
     running: AtomicBool,
     loop_handle: Mutex<Option<thread::JoinHandle<()>>>,
     control_handle: Mutex<Option<thread::JoinHandle<()>>>,
@@ -239,66 +261,74 @@ impl CoreAgent {
         let worker_timeline = Arc::new(Mutex::new(Vec::<RuntimeTimelineEvent>::new()));
         let bus_for_worker_events = Arc::clone(&bus);
         let worker_timeline_for_events = Arc::clone(&worker_timeline);
-        let worker_runtime_event_publisher = Arc::new(move |trace_id: &str, event: &str, payload: Value| {
-            let message_id = payload
-                .get("message_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or(trace_id)
-                .to_string();
-            let channel = payload
-                .get("channel")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let chat_id = payload
-                .get("chat_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let sender_id = payload
-                .get("sender_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            {
-                let mut timeline = worker_timeline_for_events.lock();
-                timeline.push(RuntimeTimelineEvent {
-                    event: event.to_string(),
-                    trace_id: trace_id.to_string(),
-                    message_id,
-                    channel: channel.clone(),
-                    chat_id: chat_id.clone(),
-                    sender_id: sender_id.clone(),
-                    recorded_at_ms: now_ms(),
-                    payload: payload.clone(),
-                });
-                if timeline.len() > 50 {
-                    let excess = timeline.len() - 50;
-                    timeline.drain(..excess);
+        let worker_runtime_event_publisher =
+            Arc::new(move |trace_id: &str, event: &str, payload: Value| {
+                let message_id = payload
+                    .get("message_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(trace_id)
+                    .to_string();
+                let channel = payload
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let chat_id = payload
+                    .get("chat_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let sender_id = payload
+                    .get("sender_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                {
+                    let mut timeline = worker_timeline_for_events.lock();
+                    timeline.push(RuntimeTimelineEvent {
+                        event: event.to_string(),
+                        trace_id: trace_id.to_string(),
+                        message_id,
+                        channel: channel.clone(),
+                        chat_id: chat_id.clone(),
+                        sender_id: sender_id.clone(),
+                        recorded_at_ms: now_ms(),
+                        payload: payload.clone(),
+                    });
+                    if timeline.len() > 50 {
+                        let excess = timeline.len() - 50;
+                        timeline.drain(..excess);
+                    }
                 }
-            }
-            let _ = bus_for_worker_events.publish_internal(make_internal(MakeInternal {
-                source: "worker-agent".into(),
-                trace_id: Some(trace_id.to_string()),
-                payload: json!({
-                    "event": event,
-                    "message_id": trace_id,
-                    "channel": channel,
-                    "chat_id": chat_id,
-                    "sender_id": sender_id,
-                    "payload": payload,
-                }),
-                ..Default::default()
-            }));
-        });
+                let _ = bus_for_worker_events.publish_internal(make_internal(MakeInternal {
+                    source: "worker-agent".into(),
+                    trace_id: Some(trace_id.to_string()),
+                    payload: json!({
+                        "event": event,
+                        "message_id": trace_id,
+                        "channel": channel,
+                        "chat_id": chat_id,
+                        "sender_id": sender_id,
+                        "payload": payload,
+                    }),
+                    ..Default::default()
+                }));
+            });
         let worker_pool = Arc::new(
             WorkerPool::new(client.clone(), executor.clone(), pool_size, None, None)
                 .with_runtime_event_publisher(worker_runtime_event_publisher),
         );
         let specialist_pool = Arc::new(SpecialistPool::new(worker_pool.clone()));
+        let runtime_state_store = Arc::new(RuntimeStateStore::new());
         let orchestrator = Arc::new(AgentOrchestrator::new(
             worker_pool.clone(),
             specialist_pool,
+            runtime_state_store.clone(),
             OrchestratorConfig::default(),
+        ));
+        let emitter = Arc::new(RuntimeEventEmitter::new(
+            bus.clone(),
+            worker_timeline.clone(),
+            runtime_state_store.clone(),
         ));
         Self {
             bus,
@@ -314,12 +344,16 @@ impl CoreAgent {
             hook_registry: None,
             executor,
             memory: Mutex::new(indexmap::IndexMap::new()),
-            failures: Mutex::new(RuntimeFailureStatus::default()),
-            timeline: worker_timeline,
-            execution_summaries: Mutex::new(Vec::new()),
-            pending_questions: Mutex::new(HashMap::new()),
-            suspended_tool_invocations: Mutex::new(HashMap::new()),
-            requirement_progress: Mutex::new(HashMap::new()),
+            emitter: emitter.clone(),
+            runtime_state_store: runtime_state_store.clone(),
+            suspension: Arc::new(SuspensionCoordinator::new(
+                runtime_state_store.clone(),
+                emitter.clone(),
+            )),
+            requirement: Arc::new(RequirementCoordinator::new(
+                runtime_state_store,
+                emitter.clone(),
+            )),
             running: AtomicBool::new(false),
             loop_handle: Mutex::new(None),
             control_handle: Mutex::new(None),
@@ -430,9 +464,6 @@ impl CoreAgent {
 
     pub fn status(&self) -> CoreAgentStatus {
         let memory = self.memory.lock();
-        let failures = self.failures.lock().clone();
-        let timeline = self.timeline.lock().clone();
-        let summaries = self.execution_summaries.lock().clone();
         CoreAgentStatus {
             status: if self.is_running() {
                 "running"
@@ -446,343 +477,184 @@ impl CoreAgent {
             cache_entries: self.result_cache.stats().entry_count,
             metrics: self.metrics.snapshot(),
             recent_sessions: memory.values().rev().take(5).cloned().collect(),
-            failures,
-            runtime_timeline: timeline,
-            recent_execution_summaries: summaries,
+            failures: self.emitter.failures_snapshot(),
+            runtime_timeline: self.emitter.timeline_snapshot(),
+            recent_execution_summaries: self.emitter.execution_summaries_snapshot(),
         }
     }
 
-    /// 处理一条入站消息的完整流程：
-    /// 上下文初始化 → 获取/创建 SDK 会话 → 分类 → 缓存检查 → 编排执行 → 发送响应
-    pub fn process_inbound_message(&self, inbound_msg: InboundMessage) {
-        let started = now_ms();
-        self.metrics.counter_inc("messages_received");
-        let key = memory_key(&inbound_msg);
+    pub fn runtime_state_snapshot(&self) -> RuntimeStateSnapshot {
+        self.runtime_state_store.snapshot()
+    }
+
+    pub fn runtime_projection_snapshot(&self) -> RuntimeProjectionView {
+        build_projection(&self.runtime_state_store.snapshot())
+    }
+
+    #[doc(hidden)]
+    pub fn evict_resume_state_cache_for_testing(&self, job_id: &str) {
+        self.suspension.evict_cache_for_testing(job_id);
+    }
+
+    pub(crate) fn upsert_runtime_run(
+        &self,
+        inbound_msg: &InboundMessage,
+        status: RunStatus,
+        current_turn_id: Option<String>,
+    ) {
+        self.emitter
+            .upsert_run(inbound_msg, status, current_turn_id);
+    }
+
+    pub(crate) fn upsert_runtime_turn(
+        &self,
+        inbound_msg: &InboundMessage,
+        source: &str,
+        status: TurnStatus,
+    ) -> String {
+        self.emitter.upsert_turn(inbound_msg, source, status)
+    }
+
+    pub(crate) fn upsert_runtime_task(
+        &self,
+        inbound_msg: &InboundMessage,
+        phase: RuntimeTaskPhase,
+        status: TaskStatus,
+        description: impl Into<String>,
+        error: Option<String>,
+    ) -> String {
+        self.emitter
+            .upsert_task(inbound_msg, phase, status, description, error)
+    }
+
+    pub(crate) fn upsert_runtime_suspension(
+        &self,
+        inbound_msg: &InboundMessage,
+        question: &PendingQuestion,
+        task_id: Option<String>,
+        invocation_id: Option<String>,
+        kind: SuspensionKind,
+        status: SuspensionStatus,
+    ) -> String {
+        self.emitter
+            .upsert_suspension(inbound_msg, question, task_id, invocation_id, kind, status)
+    }
+
+    pub(crate) fn append_transcript_messages(
+        &self,
+        inbound_msg: &InboundMessage,
+        messages: &[crate::messages::types::InternalMsg],
+    ) {
+        self.emitter
+            .append_transcript_messages(inbound_msg, messages);
+    }
+
+    pub(crate) fn prepare_inbound_context(
+        &self,
+        inbound_msg: &InboundMessage,
+    ) -> InboundContextPreparation {
+        let key = memory_key(inbound_msg);
         let context_started = now_ms();
-        self.publish_runtime_event("message_received", &inbound_msg, json!({
-            "memory_key": key,
-            "content_preview": truncate_preview(&inbound_msg.content, 120),
-        }));
-        self.ensure_context(&inbound_msg, &key);
+        self.emitter.publish(
+            "message_received",
+            inbound_msg,
+            json!({
+                "memory_key": key,
+                "content_preview": truncate_preview(&inbound_msg.content, 120),
+            }),
+        );
+        self.emitter.record_job_lifecycle_hint(
+            &inbound_msg.id,
+            "preparing_context",
+            preparing_context_current_step(),
+        );
+        self.ensure_context(inbound_msg, &key);
         let user_entry = json!({"role": "user", "content": inbound_msg.content.clone()});
         self.append_history(&key, user_entry.clone());
         let history_session_id = inbound_msg
             .chat_id
             .clone()
             .unwrap_or_else(|| inbound_msg.id.clone());
+        self.append_session_store_history(&history_session_id, user_entry.clone());
         self.context_manager
             .add_to_session_history(&history_session_id, user_entry);
         self.metrics.update_session_gauge(self.memory.lock().len());
-        let context_ms = now_ms().saturating_sub(context_started);
 
-        let session_started = now_ms();
-        let opencode_session_id = match self.get_or_create_opencode_session(&inbound_msg, &key) {
-            Ok(session_id) => session_id,
-            Err(error_text) => {
-                let error_info = classify_runtime_error(Some(error_text.as_str()), Some("session_create"));
-                self.record_failure(&inbound_msg, &error_info);
-                self.metrics.counter_inc("messages_failed");
-                self.publish_runtime_event("session_create_failed", &inbound_msg, json!({
-                    "memory_key": key,
-                    "error_code": error_info.code,
-                    "error_stage": error_info.stage,
-                    "error_message": error_info.internal_message,
-                }));
-                self.send_error_response(&inbound_msg, &error_info);
-                return;
-            }
-        };
-        let session_ms = now_ms().saturating_sub(session_started);
-        self.publish_runtime_event("session_ready", &inbound_msg, json!({
-            "memory_key": key,
-            "opencode_session_id": opencode_session_id.clone(),
-        }));
-
-        // 分类消息：direct 类型直接响应，无需走 Worker
-        let classify_started = now_ms();
-        let plan = AgentClassifier::build_plan(&inbound_msg);
-        let classify_ms = now_ms().saturating_sub(classify_started);
-        self.publish_runtime_event("plan_built", &inbound_msg, json!({
-            "memory_key": key,
-            "plan_type": plan.plan_type.clone(),
-            "plan_kind": format!("{:?}", plan.kind),
-            "task_count": plan.tasks.len(),
-            "specialist": plan.specialist.clone(),
-        }));
-        if plan.plan_type == "direct" {
-            let duration_ms = now_ms().saturating_sub(started);
-            self.metrics.counter_inc("messages_processed");
-            self.metrics
-                .histogram_record("message_latency", duration_ms);
-            self.record_execution_summary(ExecutionSummary {
-                trace_id: inbound_msg.id.clone(),
-                message_id: inbound_msg.id.clone(),
-                channel: inbound_msg.channel.clone(),
-                chat_id: inbound_msg.chat_id.clone(),
-                plan_type: plan.plan_type.clone(),
-                status: "success".into(),
-                cache_hit: false,
-                worker_id: None,
-                error_code: None,
-                error_stage: None,
-                task_duration_ms: 0,
-                stages: ExecutionStageDurations {
-                    context_ms,
-                    session_ms,
-                    classify_ms,
-                    execute_ms: 0,
-                    total_ms: duration_ms,
-                },
-            });
-            self.publish_runtime_event("message_completed", &inbound_msg, json!({
-                "memory_key": key,
-                "plan_type": plan.plan_type,
-                "status": "success",
-                "cached": false,
-                "duration_ms": duration_ms,
-                "response_preview": "Command processed.",
-            }));
-            self.send_response(&inbound_msg, "Command processed.");
-            return;
-        }
-
-        // single 类型先查缓存，命中则直接返回；multi-step 类型不走缓存
-        let cache_key = make_api_cache_key(&opencode_session_id, &inbound_msg.content);
-        let use_orchestration_v1 = AgentClassifier::should_upgrade_to_orchestration_v1(&inbound_msg);
-        let plan_type = if use_orchestration_v1 {
-            "orchestration-v1".to_string()
-        } else {
-            plan.plan_type.clone()
-        };
-        let execute_started = now_ms();
-        let mut cache_hit = false;
-        let result = if use_orchestration_v1 {
-            self.publish_runtime_event("orchestration_selected", &inbound_msg, json!({
-                "memory_key": key,
-                "plan_type": plan.plan_type.clone(),
-                "selected_plan_type": plan_type.clone(),
-                "reason": "web_complex_request",
-            }));
-            match self.orchestrator.execute_orchestration_for_main_chain(
-                &inbound_msg.content,
-                &inbound_msg.id,
-                &inbound_msg.id,
-                &opencode_session_id,
-                |event, payload| self.publish_runtime_event(event, &inbound_msg, payload),
-            ) {
-                Ok(execution) => execution.result,
-                Err(error) => {
-                    self.publish_runtime_event("orchestration_fallback", &inbound_msg, json!({
-                        "memory_key": key,
-                        "plan_type": plan_type.clone(),
-                        "fallback_plan_type": plan.plan_type.clone(),
-                        "reason": error,
-                    }));
-                    self.execute_initial_plan(
-                        &inbound_msg,
-                        &plan,
-                        &opencode_session_id,
-                        &key,
-                        ExecutionKind::Initial,
-                    )
-                }
-            }
-        } else if plan_type == "single" {
-            if let Some(cached) = self.result_cache.get(&cache_key) {
-                cache_hit = true;
-                self.metrics.counter_inc("cache_hits");
-                self.publish_runtime_event("cache_hit", &inbound_msg, json!({
-                    "memory_key": key,
-                    "cache_key": cache_key.clone(),
-                    "plan_type": plan_type.clone(),
-                }));
-                make_task_result(MakeTaskResult {
-                    task_id: Uuid::new_v4().to_string(),
-                    trace_id: inbound_msg.id.clone(),
-                    status: "success".into(),
-                    result: Some(cached),
-                    error: None,
-                    duration_ms: 0,
-                    worker_id: None,
-                })
-            } else {
-                self.metrics.counter_inc("cache_misses");
-                self.publish_runtime_event("cache_miss", &inbound_msg, json!({
-                    "memory_key": key,
-                    "cache_key": cache_key.clone(),
-                    "plan_type": plan_type.clone(),
-                }));
-                let result = self.execute_initial_plan(
-                    &inbound_msg,
-                    &plan,
-                    &opencode_session_id,
-                    &key,
-                    ExecutionKind::Initial,
-                );
-                if result.status == "success" {
-                    if let Some(value) = result.result.clone() {
-                        self.result_cache.set(&cache_key, value, None);
-                    }
-                }
-                result
-            }
-        } else {
-            self.execute_initial_plan(
-                &inbound_msg,
-                &plan,
-                &opencode_session_id,
-                &key,
-                ExecutionKind::Initial,
-            )
-        };
-
-        let total_ms = now_ms().saturating_sub(started);
-        let execute_ms = now_ms().saturating_sub(execute_started);
-        self.metrics
-            .histogram_record("message_latency", total_ms);
-        let worker_statuses = self.worker_pool.status().workers;
-        let active = worker_statuses
-            .iter()
-            .filter(|worker| worker.status == "busy")
-            .count();
-        let idle = worker_statuses
-            .iter()
-            .filter(|worker| worker.status == "idle")
-            .count();
-        self.metrics.update_worker_gauges(active, idle);
-
-        if result.status == "success" {
-            let initial_context = self.assemble_turn_context(
-                &inbound_msg,
-                ContextAssemblyMode::Initial,
-                opencode_session_id.clone(),
-                None,
-                Some(inbound_msg.content.clone()),
-            );
-            let exec_ctx = ExecutionContext {
-                memory_key: initial_context.metadata.memory_key,
-                history_session_id: initial_context.metadata.history_session_id,
-                opencode_session_id: initial_context.metadata.opencode_session_id,
-                plan_type: plan_type.clone(),
-                context_ms,
-                session_ms,
-                classify_ms,
-                execute_ms,
-                total_ms,
-                cache_hit,
-            };
-            let _ = self.handle_upstream_result(
-                &inbound_msg,
-                &exec_ctx,
-                result,
-                SuccessSource::Initial,
-                None,
-            );
-        } else {
-            let error_info = classify_runtime_error(result.error.as_deref(), Some("plan_execute"));
-            self.record_failure(&inbound_msg, &error_info);
-            self.metrics.counter_inc("messages_failed");
-            self.record_execution_summary(ExecutionSummary {
-                trace_id: inbound_msg.id.clone(),
-                message_id: inbound_msg.id.clone(),
-                channel: inbound_msg.channel.clone(),
-                chat_id: inbound_msg.chat_id.clone(),
-                plan_type: plan_type.clone(),
-                status: result.status.clone(),
-                cache_hit,
-                worker_id: result.worker_id.clone(),
-                error_code: Some(error_info.code.to_string()),
-                error_stage: Some(error_info.stage.to_string()),
-                task_duration_ms: result.duration_ms,
-                stages: ExecutionStageDurations {
-                    context_ms,
-                    session_ms,
-                    classify_ms,
-                    execute_ms,
-                    total_ms,
-                },
-            });
-            self.publish_runtime_event("message_failed", &inbound_msg, json!({
-                "memory_key": key,
-                "plan_type": plan_type,
-                "status": result.status.clone(),
-                "cached": cache_hit,
-                "worker_id": result.worker_id.clone(),
-                "task_duration_ms": result.duration_ms,
-                "message_latency_ms": total_ms,
-                "error_code": error_info.code,
-                "error_stage": error_info.stage,
-                "error": error_info.internal_message,
-            }));
-            self.send_error_response(&inbound_msg, &error_info);
+        InboundContextPreparation {
+            key,
+            context_ms: now_ms().saturating_sub(context_started),
         }
     }
 
-    /// 获取已有的 SDK 会话 ID，若不存在则通过 WorkerPool 创建新会话
-    fn get_or_create_opencode_session(
+    pub(crate) fn prepare_inbound_session(
         &self,
         inbound_msg: &InboundMessage,
         key: &str,
-    ) -> Result<String, String> {
-        if let Some(existing_id) = self
-            .memory
-            .lock()
-            .get(key)
-            .and_then(|ctx| ctx.session_id.clone())
-        {
-            return Ok(existing_id);
-        }
+    ) -> Result<SessionPreparation, RuntimeErrorInfo> {
+        let session_started = now_ms();
+        let opencode_session_id = self
+            .get_or_create_opencode_session(inbound_msg, key)
+            .map_err(|error_text| {
+                classify_runtime_error(Some(error_text.as_str()), Some("session_create"))
+            })?;
+        let session_ms = now_ms().saturating_sub(session_started);
+        self.emitter.publish(
+            "session_ready",
+            inbound_msg,
+            json!({
+                "memory_key": key,
+                "opencode_session_id": opencode_session_id.clone(),
+            }),
+        );
+        self.emitter.record_job_lifecycle_hint(
+            &inbound_msg.id,
+            "planning",
+            session_ready_current_step(),
+        );
 
-        let task = make_task(MakeTask {
-            trace_id: Some(inbound_msg.id.clone()),
-            task_type: "session-create".into(),
-            payload: Some(json!({})),
-            ..Default::default()
-        });
-        self.publish_runtime_event("worker_task_assigned", inbound_msg, json!({
-            "memory_key": key,
-            "plan_type": "session-create",
-            "task_id": task.id,
-            "task_type": task.task_type,
-            "task_summary": "为当前 job 创建上游会话",
-            "task_preview": "创建新的上游会话",
-        }));
-        let result = self
-            .worker_pool
-            .submit_task(task)
-            .recv()
-            .map_err(|error| format!("Failed to receive session-create result: {error}"))?;
+        Ok(SessionPreparation {
+            opencode_session_id,
+            session_ms,
+        })
+    }
 
-        if result.status != "success" {
-            let error_text = result
-                .error
-                .clone()
-                .unwrap_or_else(|| format!("Failed to create session: task status={}", result.status));
-            return Err(error_text);
-        }
+    pub(crate) fn prepare_inbound_plan(
+        &self,
+        inbound_msg: &InboundMessage,
+        key: &str,
+    ) -> PlanPreparation {
+        let classify_started = now_ms();
+        let plan = AgentClassifier::build_plan(inbound_msg);
+        let classify_ms = now_ms().saturating_sub(classify_started);
+        self.emitter.publish(
+            "plan_built",
+            inbound_msg,
+            json!({
+                "memory_key": key,
+                "plan_type": plan.plan_type.clone(),
+                "plan_kind": format!("{:?}", plan.kind),
+                "task_count": plan.tasks.len(),
+                "specialist": plan.specialist.clone(),
+            }),
+        );
+        self.emitter.record_job_lifecycle_hint(
+            &inbound_msg.id,
+            "planning",
+            planning_ready_current_step(&plan.plan_type),
+        );
 
-        if let Some(error_text) = result.error.clone() {
-            return Err(error_text);
-        }
+        PlanPreparation { plan, classify_ms }
+    }
 
-        let session_id = result
-            .result
-            .as_ref()
-            .and_then(|value| value.get("opencode-session-id"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Failed to create session: no ID returned".to_string())?
-            .to_string();
-
-        self.memory.lock().entry(key.to_string()).and_modify(|ctx| {
-            ctx.session_id = Some(session_id.clone());
-        });
-
-        Ok(session_id)
+    /// 处理一条入站消息的完整流程：
+    /// 上下文初始化 → 获取/创建 SDK 会话 → 分类 → 缓存检查 → 编排执行 → 发送响应
+    pub fn process_inbound_message(&self, inbound_msg: InboundMessage) {
+        self.process_inbound_message_flow(inbound_msg);
     }
 
     /// 确保消息对应的会话上下文存在。
     /// 若内存中会话数达到上限，淘汰最早插入的会话（LRU 策略）。
-    fn ensure_context(&self, inbound_msg: &InboundMessage, key: &str) {
+    pub(crate) fn ensure_context(&self, inbound_msg: &InboundMessage, key: &str) {
         let chat_id = inbound_msg
             .chat_id
             .clone()
@@ -819,7 +691,7 @@ impl CoreAgent {
     }
 
     /// 追加消息到会话历史，超过上限时裁剪最早的记录
-    fn append_history(&self, key: &str, message: Value) {
+    pub(crate) fn append_history(&self, key: &str, message: Value) {
         if let Some(ctx) = self.memory.lock().get_mut(key) {
             ctx.history.push(message);
             if ctx.history.len() > MAX_SESSION_HISTORY {
@@ -829,7 +701,19 @@ impl CoreAgent {
         }
     }
 
-    fn send_response(&self, inbound_msg: &InboundMessage, response_text: &str) -> OutboundMessage {
+    pub(crate) fn append_session_store_history(&self, session_id: &str, message: Value) {
+        let _ = self.session_store.add_to_history(session_id, message);
+    }
+
+    pub fn session_context_history(&self, session_id: &str) -> Vec<Value> {
+        self.context_manager.get_session_history(session_id)
+    }
+
+    pub(crate) fn send_response(
+        &self,
+        inbound_msg: &InboundMessage,
+        response_text: &str,
+    ) -> OutboundMessage {
         let outbound = make_outbound(MakeOutbound {
             channel: inbound_msg.channel.clone(),
             account_id: inbound_msg
@@ -847,497 +731,7 @@ impl CoreAgent {
         outbound
     }
 
-    fn record_failure(&self, inbound_msg: &InboundMessage, error: &RuntimeErrorInfo) {
-        let mut failures = self.failures.lock();
-        let count = failures
-            .counts_by_error_code
-            .entry(error.code.to_string())
-            .or_insert(0);
-        *count += 1;
-        failures.last_failure = Some(RuntimeFailureSnapshot {
-            error_code: error.code.to_string(),
-            error_stage: error.stage.to_string(),
-            message_id: inbound_msg.id.clone(),
-            channel: inbound_msg.channel.clone(),
-            chat_id: inbound_msg.chat_id.clone(),
-            occurred_at_ms: now_ms(),
-            internal_message: error.internal_message.clone(),
-        });
-    }
-
-    fn record_timeline_event(&self, event: &str, inbound_msg: &InboundMessage, payload: Value) {
-        let mut timeline = self.timeline.lock();
-        timeline.push(RuntimeTimelineEvent {
-            event: event.to_string(),
-            trace_id: inbound_msg.id.clone(),
-            message_id: runtime_message_id(inbound_msg),
-            channel: inbound_msg.channel.clone(),
-            chat_id: inbound_msg.chat_id.clone(),
-            sender_id: inbound_msg.sender_id.clone(),
-            recorded_at_ms: now_ms(),
-            payload,
-        });
-        if timeline.len() > 50 {
-            let excess = timeline.len() - 50;
-            timeline.drain(..excess);
-        }
-    }
-
-    fn record_execution_summary(&self, summary: ExecutionSummary) {
-        let mut summaries = self.execution_summaries.lock();
-        summaries.push(summary);
-        if summaries.len() > 20 {
-            let excess = summaries.len() - 20;
-            summaries.drain(..excess);
-        }
-    }
-
-    fn latest_execution_summary_for(&self, inbound_msg: &InboundMessage) -> Option<ExecutionSummary> {
-        self.execution_summaries
-            .lock()
-            .iter()
-            .rev()
-            .find(|summary| {
-                summary.trace_id == inbound_msg.id
-                    || summary.message_id == runtime_message_id(inbound_msg)
-            })
-            .cloned()
-    }
-
-    fn execute_api_call_request(
-        &self,
-        inbound_msg: &InboundMessage,
-        memory_key: &str,
-        plan_type: &str,
-        request: &ApiCallExecutionRequest,
-        task_summary: &str,
-        extra_payload: Value,
-    ) -> Result<TaskResult, String> {
-        let task = build_api_call_task(request);
-        let extra_payload_for_started = extra_payload.clone();
-        let mut assigned_payload = json!({
-            "memory_key": memory_key,
-            "plan_type": plan_type,
-            "task_id": task.id.clone(),
-            "task_type": "api-call",
-            "execution_kind": execution_kind_label(request.kind),
-            "task_summary": task_summary,
-            "task_preview": truncate_preview(&request.content, 160),
-            "opencode_session_id": request.session_id.clone(),
-        });
-        if let Some(map) = assigned_payload.as_object_mut() {
-            if let Some(extra) = extra_payload.as_object() {
-                for (key, value) in extra {
-                    map.insert(key.clone(), value.clone());
-                }
-            }
-        }
-        self.publish_runtime_event("worker_task_assigned", inbound_msg, assigned_payload);
-        self.publish_runtime_event("api_call_started", inbound_msg, json!({
-            "memory_key": memory_key,
-            "plan_type": plan_type,
-            "task_id": task.id.clone(),
-            "task_type": "api-call",
-            "execution_kind": execution_kind_label(request.kind),
-            "request_preview": truncate_preview(&request.content, 160),
-            "opencode_session_id": request.session_id.clone(),
-            "question_id": extra_payload_for_started
-                .get("question_id")
-                .cloned()
-                .unwrap_or(Value::Null),
-        }));
-        execute_api_call(&self.worker_pool, request.clone())
-    }
-
-    fn execute_initial_plan(
-        &self,
-        inbound_msg: &InboundMessage,
-        plan: &ExecutionPlan,
-        opencode_session_id: &str,
-        memory_key: &str,
-        execution_kind: ExecutionKind,
-    ) -> TaskResult {
-        let plan_type = plan.plan_type.clone();
-        if plan.tasks.len() == 1 {
-            if let Some(task) = plan.tasks.front() {
-                let task_preview = task
-                    .payload
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .map(|text| truncate_preview(text, 160));
-                self.publish_runtime_event("worker_task_assigned", inbound_msg, json!({
-                    "memory_key": memory_key,
-                    "plan_type": plan_type.clone(),
-                    "task_id": task.id.clone(),
-                    "task_type": task.task_type.clone(),
-                    "execution_kind": execution_kind_label(execution_kind),
-                    "task_summary": "主 agent 已将任务派发给 worker",
-                    "task_preview": task_preview,
-                    "opencode_session_id": opencode_session_id,
-                }));
-                if task.task_type == "api-call" {
-                    self.publish_runtime_event("api_call_started", inbound_msg, json!({
-                        "memory_key": memory_key,
-                        "plan_type": plan_type.clone(),
-                        "task_id": task.id.clone(),
-                        "task_type": task.task_type.clone(),
-                        "execution_kind": execution_kind_label(execution_kind),
-                        "request_preview": task_preview,
-                        "opencode_session_id": opencode_session_id,
-                    }));
-                }
-            }
-        }
-        self.metrics.counter_inc("tasks_submitted");
-        self.publish_worker_event("task_start", inbound_msg, &plan_type);
-
-        // Agentic loop 分支：工具注册中心非空时，走 agentic loop
-        let result = if !self.tool_registry.is_empty() {
-            self.run_agentic_loop_for_plan(inbound_msg, opencode_session_id)
-        } else {
-            self.orchestrator
-                .execute_plan_instance(plan, opencode_session_id)
-        };
-
-        self.publish_worker_event("task_end", inbound_msg, &plan_type);
-        if result.status == "success" {
-            self.metrics.counter_inc("tasks_completed");
-        } else {
-            self.metrics.counter_inc("tasks_failed");
-        }
-        result
-    }
-
-    /// 使用 agentic loop 执行当前消息
-    fn run_agentic_loop_for_plan(
-        &self,
-        inbound_msg: &InboundMessage,
-        opencode_session_id: &str,
-    ) -> TaskResult {
-        use crate::messages::types::{InternalMsg, MessageRole};
-        let started = now_ms();
-        let initial_messages = vec![InternalMsg {
-            role: MessageRole::User,
-            content: json!(inbound_msg.content.clone()),
-            message_id: inbound_msg.id.clone(),
-            tool_use_id: None,
-            filtered: false,
-            metadata: json!({}),
-        }];
-
-        let system_prompt = {
-            let mut asm = PromptAssembler::new();
-            asm.add_text("identity", "你是 Anima 智能助手。", 0);
-            Some(asm.build().text)
-        };
-
-        let bus = self.bus.clone();
-        let out_channel = inbound_msg.channel.clone();
-        let out_chat_id = inbound_msg.chat_id.clone();
-        let out_sender = inbound_msg.sender_id.clone();
-        let out_trace_id = inbound_msg.id.clone();
-        let on_stream_event: Arc<dyn Fn(StreamEvent) + Send + Sync> = Arc::new(move |event| {
-            match &event {
-                StreamEvent::ContentBlockDelta {
-                    delta: ContentDelta::TextDelta { text },
-                    ..
-                } => {
-                    let _ = bus.publish_outbound(make_outbound(MakeOutbound {
-                        channel: out_channel.clone(),
-                        chat_id: out_chat_id.clone(),
-                        content: text.clone(),
-                        reply_target: Some(out_sender.clone()),
-                        stage: Some("streaming".into()),
-                        ..Default::default()
-                    }));
-                }
-                StreamEvent::ContentBlockStart {
-                    content_block: ContentBlock::ToolUse { name, .. },
-                    ..
-                } => {
-                    let _ = bus.publish_internal(make_internal(MakeInternal {
-                        source: "agentic-loop".into(),
-                        trace_id: Some(out_trace_id.clone()),
-                        payload: json!({
-                            "event": "tool_call_detected",
-                            "tool_name": name,
-                            "message_id": out_trace_id.clone(),
-                            "channel": out_channel.clone(),
-                            "chat_id": out_chat_id.clone(),
-                            "sender_id": out_sender.clone(),
-                        }),
-                        ..Default::default()
-                    }));
-                }
-                _ => {}
-            }
-        });
-
-        let config = AgenticLoopConfig {
-            max_iterations: 10,
-            session_id: opencode_session_id.to_string(),
-            trace_id: inbound_msg.id.clone(),
-            system_prompt,
-            tool_definitions: Some(self.tool_registry.tool_definitions()),
-            streaming: true,
-            on_stream_event: Some(on_stream_event),
-            ..Default::default()
-        };
-
-        let perm_ref = self.permission_checker.as_deref();
-        let hook_ref = self.hook_registry.as_deref();
-
-        match run_agentic_loop(
-            &self._client,
-            self.executor.as_ref(),
-            &self.tool_registry,
-            perm_ref,
-            hook_ref,
-            initial_messages,
-            &config,
-        ) {
-            Ok(AgenticLoopOutcome::Completed(loop_result)) => {
-                let duration_ms = now_ms().saturating_sub(started);
-                make_task_result(MakeTaskResult {
-                    task_id: Uuid::new_v4().to_string(),
-                    trace_id: inbound_msg.id.clone(),
-                    status: "success".into(),
-                    result: Some(json!({
-                        "text": loop_result.final_text,
-                        "iterations": loop_result.iterations,
-                        "hit_limit": loop_result.hit_limit,
-                    })),
-                    error: None,
-                    duration_ms,
-                    worker_id: None,
-                })
-            }
-            Ok(AgenticLoopOutcome::Suspended(suspension)) => {
-                let question_id = Uuid::new_v4().to_string();
-                let raw_question = json!({
-                    "type": "tool_permission",
-                    "tool_name": suspension.suspended_tool.tool_name,
-                    "tool_use_id": suspension.suspended_tool.tool_use_id,
-                    "tool_input": suspension.suspended_tool.tool_input,
-                    "prompt": suspension.suspended_tool.permission_request.prompt,
-                    "input_preview": suspension.suspended_tool.permission_request.input_preview,
-                });
-                let pending_question = PendingQuestion {
-                    question_id: question_id.clone(),
-                    job_id: inbound_msg.id.clone(),
-                    opencode_session_id: opencode_session_id.to_string(),
-                    question_kind: QuestionKind::Confirm,
-                    prompt: suspension.suspended_tool.permission_request.prompt.clone(),
-                    options: vec!["allow".into(), "deny".into()],
-                    raw_question,
-                    decision_mode: QuestionDecisionMode::UserRequired,
-                    risk_level: permission_risk_to_question_risk(
-                        &suspension.suspended_tool.permission_request.risk_level,
-                    ),
-                    requires_user_confirmation: true,
-                    source_kind: PendingQuestionSourceKind::ToolPermission,
-                    continuation_token: Some(question_id.clone()),
-                    asked_at_ms: now_ms(),
-                    answer_submitted: false,
-                    answer_summary: None,
-                    resolution_source: None,
-                    inbound: Some(inbound_msg.clone()),
-                };
-                self.store_pending_question(inbound_msg.id.clone(), pending_question.clone());
-                self.store_suspended_tool_invocation(
-                    question_id.clone(),
-                    SuspendedToolInvocationState {
-                        suspension: suspension.clone(),
-                        inbound: inbound_msg.clone(),
-                        opencode_session_id: opencode_session_id.to_string(),
-                    },
-                );
-                self.publish_runtime_event("tool_permission_requested", inbound_msg, json!({
-                    "question_id": question_id,
-                    "tool_use_id": suspension.suspended_tool.tool_use_id,
-                    "tool_name": suspension.suspended_tool.tool_name,
-                    "tool_input": suspension.suspended_tool.tool_input,
-                    "prompt": suspension.suspended_tool.permission_request.prompt,
-                    "risk_level": question_risk_level_str(&permission_risk_to_question_risk(
-                        &suspension.suspended_tool.permission_request.risk_level,
-                    )),
-                    "source": "agentic_loop",
-                }));
-                self.publish_question_asked(
-                    inbound_msg,
-                    &memory_key(inbound_msg),
-                    &pending_question,
-                    None,
-                    now_ms().saturating_sub(started),
-                    now_ms().saturating_sub(started),
-                    false,
-                    "single",
-                );
-                make_task_result(MakeTaskResult {
-                    task_id: Uuid::new_v4().to_string(),
-                    trace_id: inbound_msg.id.clone(),
-                    status: "success".into(),
-                    result: Some(json!({
-                        "status": "waiting_user_input",
-                        "question_id": pending_question.question_id,
-                        "tool_name": pending_question
-                            .raw_question
-                            .get("tool_name")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default(),
-                    })),
-                    error: None,
-                    duration_ms: now_ms().saturating_sub(started),
-                    worker_id: None,
-                })
-            }
-            Err(err) => {
-                let duration_ms = now_ms().saturating_sub(started);
-                make_task_result(MakeTaskResult {
-                    task_id: Uuid::new_v4().to_string(),
-                    trace_id: inbound_msg.id.clone(),
-                    status: "error".into(),
-                    result: None,
-                    error: Some(err.to_string()),
-                    duration_ms,
-                    worker_id: None,
-                })
-            }
-        }
-    }
-
-    fn resume_suspended_tool_permission(
-        &self,
-        job_id: &str,
-        pending: PendingQuestion,
-        answer: &str,
-    ) -> Result<(), String> {
-        let suspended = self
-            .suspended_tool_invocation(&pending.question_id)
-            .ok_or_else(|| format!("Missing suspended tool invocation for question: {}", pending.question_id))?;
-        let allow = matches!(answer, "allow" | "ALLOW" | "Allow");
-
-        let config = AgenticLoopConfig {
-            max_iterations: 10,
-            session_id: suspended.opencode_session_id.clone(),
-            trace_id: suspended.inbound.id.clone(),
-            system_prompt: Some({
-                let mut asm = PromptAssembler::new();
-                asm.add_text("identity", "你是 Anima 智能助手。", 0);
-                asm.build().text
-            }),
-            tool_definitions: Some(self.tool_registry.tool_definitions()),
-            streaming: true,
-            on_stream_event: None,
-            ..Default::default()
-        };
-
-        let resumed_messages = resume_suspended_tool_invocation(
-            &suspended.suspension,
-            allow,
-            &self.tool_registry,
-            self.hook_registry.as_deref(),
-            &config,
-        )
-        .map_err(|err| err.to_string())?;
-
-        self.publish_runtime_event("tool_permission_resolved", &suspended.inbound, json!({
-            "question_id": pending.question_id,
-            "tool_use_id": suspended.suspension.suspended_tool.tool_use_id,
-            "tool_name": suspended.suspension.suspended_tool.tool_name,
-            "decision": if allow { "allow" } else { "deny" },
-            "source": pending.resolution_source,
-        }));
-
-        match continue_agentic_loop(
-            &self._client,
-            self.executor.as_ref(),
-            &self.tool_registry,
-            self.permission_checker.as_deref(),
-            self.hook_registry.as_deref(),
-            resumed_messages,
-            suspended.suspension.iterations,
-            suspended.suspension.compact_count,
-            &config,
-        )
-        .map_err(|err| err.to_string())? {
-            AgenticLoopOutcome::Completed(loop_result) => {
-                self.publish_runtime_event("question_resolved", &suspended.inbound, json!({
-                    "memory_key": memory_key(&suspended.inbound),
-                    "question_id": pending.question_id,
-                    "question_kind": question_kind_str(&pending.question_kind),
-                    "answer_summary": pending.answer_summary,
-                    "resolution_source": pending.resolution_source,
-                    "opencode_session_id": pending.opencode_session_id,
-                }));
-                self.clear_pending_question(job_id);
-                self.clear_suspended_tool_invocation(&pending.question_id);
-                let _ = self.send_response(&suspended.inbound, &loop_result.final_text);
-                self.publish_runtime_event("message_completed", &suspended.inbound, json!({
-                    "memory_key": memory_key(&suspended.inbound),
-                    "plan_type": "single",
-                    "status": "success",
-                    "response_preview": truncate_preview(&loop_result.final_text, 160),
-                }));
-                Ok(())
-            }
-            AgenticLoopOutcome::Suspended(next_suspension) => {
-                let next_question_id = Uuid::new_v4().to_string();
-                let raw_question = json!({
-                    "type": "tool_permission",
-                    "tool_name": next_suspension.suspended_tool.tool_name,
-                    "tool_use_id": next_suspension.suspended_tool.tool_use_id,
-                    "tool_input": next_suspension.suspended_tool.tool_input,
-                    "prompt": next_suspension.suspended_tool.permission_request.prompt,
-                    "input_preview": next_suspension.suspended_tool.permission_request.input_preview,
-                });
-                let next_pending = PendingQuestion {
-                    question_id: next_question_id.clone(),
-                    job_id: job_id.to_string(),
-                    opencode_session_id: suspended.opencode_session_id.clone(),
-                    question_kind: QuestionKind::Confirm,
-                    prompt: next_suspension.suspended_tool.permission_request.prompt.clone(),
-                    options: vec!["allow".into(), "deny".into()],
-                    raw_question,
-                    decision_mode: QuestionDecisionMode::UserRequired,
-                    risk_level: permission_risk_to_question_risk(
-                        &next_suspension.suspended_tool.permission_request.risk_level,
-                    ),
-                    requires_user_confirmation: true,
-                    source_kind: PendingQuestionSourceKind::ToolPermission,
-                    continuation_token: Some(next_question_id.clone()),
-                    asked_at_ms: now_ms(),
-                    answer_submitted: false,
-                    answer_summary: None,
-                    resolution_source: None,
-                    inbound: Some(suspended.inbound.clone()),
-                };
-                self.store_pending_question(job_id.to_string(), next_pending.clone());
-                self.store_suspended_tool_invocation(
-                    next_question_id,
-                    SuspendedToolInvocationState {
-                        suspension: next_suspension,
-                        inbound: suspended.inbound.clone(),
-                        opencode_session_id: suspended.opencode_session_id,
-                    },
-                );
-                self.clear_suspended_tool_invocation(&pending.question_id);
-                self.publish_question_asked(
-                    &suspended.inbound,
-                    &memory_key(&suspended.inbound),
-                    &next_pending,
-                    None,
-                    0,
-                    0,
-                    false,
-                    "single",
-                );
-                Ok(())
-            }
-        }
-    }
-
-    fn assemble_turn_context(
+    pub(crate) fn assemble_turn_context(
         &self,
         inbound_msg: &InboundMessage,
         mode: ContextAssemblyMode,
@@ -1345,7 +739,9 @@ impl CoreAgent {
         pending_question: Option<PendingQuestion>,
         followup_prompt: Option<String>,
     ) -> ContextAssemblyResult {
-        let progress = self.ensure_requirement_progress(inbound_msg);
+        let progress = self
+            .requirement
+            .ensure(inbound_msg, DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS);
         assemble_context(ContextAssemblyRequest {
             mode,
             inbound_id: inbound_msg.id.clone(),
@@ -1354,7 +750,7 @@ impl CoreAgent {
             original_user_request: progress.original_user_request.clone(),
             opencode_session_id,
             pending_question,
-            latest_summary: self.latest_execution_summary_for(inbound_msg),
+            latest_summary: self.emitter.latest_summary(inbound_msg),
             attempted_rounds: progress.attempted_rounds,
             max_rounds: progress.max_rounds,
             previous_fingerprint: progress.last_result_fingerprint.clone(),
@@ -1362,59 +758,7 @@ impl CoreAgent {
         })
     }
 
-    /// 发布 Worker 进度事件到 internal bus，供 Web UI 等消费
-    fn publish_worker_event(&self, event: &str, inbound_msg: &InboundMessage, task_type: &str) {
-        let worker_statuses = self.worker_pool.status().workers;
-        for w in &worker_statuses {
-            let status = if event == "task_start" && w.status == "busy" {
-                "busy"
-            } else if event == "task_end" {
-                "idle"
-            } else {
-                &w.status
-            };
-            let _ = self.bus.publish_internal(make_internal(MakeInternal {
-                source: "core-agent".into(),
-                trace_id: Some(inbound_msg.id.clone()),
-                payload: json!({
-                    "event": format!("worker_{}", event),
-                    "worker_id": w.id,
-                    "status": status,
-                    "task_type": task_type,
-                    "channel": inbound_msg.channel,
-                    "message_id": inbound_msg.id,
-                    "chat_id": inbound_msg.chat_id,
-                }),
-                ..Default::default()
-            }));
-        }
-    }
-
-    fn publish_runtime_event(
-        &self,
-        event: &str,
-        inbound_msg: &InboundMessage,
-        payload: Value,
-    ) {
-        let payload = merge_runtime_metadata(inbound_msg, payload);
-        let message_id = runtime_message_id(inbound_msg);
-        self.record_timeline_event(event, inbound_msg, payload.clone());
-        let _ = self.bus.publish_internal(make_internal(MakeInternal {
-            source: "core-agent".into(),
-            trace_id: Some(inbound_msg.id.clone()),
-            payload: json!({
-                "event": event,
-                "message_id": message_id,
-                "channel": inbound_msg.channel,
-                "chat_id": inbound_msg.chat_id,
-                "sender_id": inbound_msg.sender_id,
-                "payload": payload,
-            }),
-            ..Default::default()
-        }));
-    }
-
-    fn send_error_response(
+    pub(crate) fn send_error_response(
         &self,
         inbound_msg: &InboundMessage,
         error: &RuntimeErrorInfo,
@@ -1431,908 +775,13 @@ impl CoreAgent {
         outbound
     }
 
-    fn store_pending_question(&self, job_id: String, question: PendingQuestion) {
-        self.pending_questions.lock().insert(job_id, question);
-    }
-
-    fn store_suspended_tool_invocation(&self, question_id: String, state: SuspendedToolInvocationState) {
-        self.suspended_tool_invocations.lock().insert(question_id, state);
-    }
-
-    fn suspended_tool_invocation(&self, question_id: &str) -> Option<SuspendedToolInvocationState> {
-        self.suspended_tool_invocations.lock().get(question_id).cloned()
-    }
-
-    fn clear_pending_question(&self, job_id: &str) {
-        self.pending_questions.lock().remove(job_id);
-    }
-
-    fn clear_suspended_tool_invocation(&self, question_id: &str) {
-        self.suspended_tool_invocations.lock().remove(question_id);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn publish_question_asked(
-        &self,
-        inbound_msg: &InboundMessage,
-        key: &str,
-        question: &PendingQuestion,
-        worker_id: Option<String>,
-        total_ms: u64,
-        task_duration_ms: u64,
-        cache_hit: bool,
-        plan_type: &str,
-    ) {
-        let asked_payload = prepare_question_asked_payload(question);
-        if matches!(question.decision_mode, QuestionDecisionMode::UserRequired) {
-            self.publish_runtime_event("question_escalated_to_user", inbound_msg, json!({
-                "memory_key": key,
-                "plan_type": plan_type,
-                "cached": cache_hit,
-                "worker_id": worker_id,
-                "task_duration_ms": task_duration_ms,
-                "message_latency_ms": total_ms,
-                "question_id": asked_payload.question_id,
-                "question_kind": question_kind_str(&question.question_kind),
-                "prompt": asked_payload.prompt.clone(),
-                "options": asked_payload.options.clone(),
-                "decision_mode": question_decision_mode_str(&question.decision_mode),
-                "risk_level": question_risk_level_str(&question.risk_level),
-                "requires_user_confirmation": asked_payload.requires_user_confirmation,
-                "opencode_session_id": asked_payload.opencode_session_id.clone(),
-                "raw_question": asked_payload.raw_question.clone(),
-            }));
-        }
-        self.publish_runtime_event("question_asked", inbound_msg, json!({
-            "memory_key": key,
-            "plan_type": plan_type,
-            "cached": cache_hit,
-            "worker_id": worker_id,
-            "task_duration_ms": task_duration_ms,
-            "message_latency_ms": total_ms,
-            "question_id": asked_payload.question_id,
-            "question_kind": question_kind_str(&question.question_kind),
-            "prompt": asked_payload.prompt,
-            "options": asked_payload.options,
-            "decision_mode": question_decision_mode_str(&question.decision_mode),
-            "risk_level": question_risk_level_str(&question.risk_level),
-            "requires_user_confirmation": asked_payload.requires_user_confirmation,
-            "opencode_session_id": asked_payload.opencode_session_id,
-            "raw_question": asked_payload.raw_question,
-        }));
-    }
-
-    fn ensure_requirement_progress(&self, inbound_msg: &InboundMessage) -> RequirementProgressState {
-        let mut progress = self.requirement_progress.lock();
-        progress
-            .entry(inbound_msg.id.clone())
-            .or_insert_with(|| RequirementProgressState {
-                original_user_request: inbound_msg.content.clone(),
-                attempted_rounds: 0,
-                max_rounds: DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS,
-                last_result_fingerprint: None,
-                last_reason: None,
-            })
-            .clone()
-    }
-
-    fn update_requirement_progress(
-        &self,
-        job_id: &str,
-        attempted_rounds: usize,
-        last_result_fingerprint: Option<String>,
-        last_reason: Option<String>,
-    ) {
-        if let Some(progress) = self.requirement_progress.lock().get_mut(job_id) {
-            progress.attempted_rounds = attempted_rounds;
-            progress.last_result_fingerprint = last_result_fingerprint;
-            progress.last_reason = last_reason;
-        }
-    }
-
-    fn clear_requirement_progress(&self, job_id: &str) {
-        self.requirement_progress.lock().remove(job_id);
-    }
-
-    fn publish_requirement_satisfied(
-        &self,
-        inbound_msg: &InboundMessage,
-        exec_ctx: &ExecutionContext,
-        worker_id: Option<String>,
-        task_duration_ms: u64,
-        response_text: &str,
-    ) {
-        let satisfied_payload = prepare_requirement_satisfied_payload(response_text);
-        self.publish_runtime_event("requirement_satisfied", inbound_msg, json!({
-            "memory_key": exec_ctx.memory_key,
-            "plan_type": exec_ctx.plan_type,
-            "cached": exec_ctx.cache_hit,
-            "worker_id": worker_id,
-            "task_duration_ms": task_duration_ms,
-            "message_latency_ms": exec_ctx.total_ms,
-            "response_preview": satisfied_payload.response_preview,
-        }));
-    }
-
-    fn schedule_agent_followup(
-        &self,
-        inbound_msg: &InboundMessage,
-        exec_ctx: &ExecutionContext,
-        worker_id: Option<String>,
-        task_duration_ms: u64,
-        plan: AgentFollowupPlan,
-    ) -> Result<(), String> {
-        let progress = self.ensure_requirement_progress(inbound_msg);
-        let next_round = progress.attempted_rounds + 1;
-        let fingerprint = plan.result_fingerprint.clone();
-
-        let followup_branch = prepare_followup_branch_data(
-            plan.reason.clone(),
-            plan.missing_requirements.clone(),
-            plan.followup_prompt.clone(),
-            fingerprint.clone(),
-            next_round,
-            progress.max_rounds,
-            worker_id.clone(),
-            task_duration_ms,
-            exec_ctx.context_ms,
-            exec_ctx.session_ms,
-            exec_ctx.classify_ms,
-            exec_ctx.execute_ms,
-            exec_ctx.total_ms,
-        );
-        self.publish_runtime_event("requirement_unsatisfied", inbound_msg, json!({
-            "memory_key": exec_ctx.memory_key,
-            "plan_type": exec_ctx.plan_type,
-            "cached": exec_ctx.cache_hit,
-            "worker_id": worker_id,
-            "task_duration_ms": task_duration_ms,
-            "message_latency_ms": exec_ctx.total_ms,
-            "attempted_rounds": progress.attempted_rounds,
-            "max_rounds": progress.max_rounds,
-            "result_fingerprint": fingerprint,
-            "payload": followup_branch.unsatisfied.payload,
-        }));
-
-        if next_round > progress.max_rounds
-            || progress
-                .last_result_fingerprint
-                .as_ref()
-                .map(|previous| previous == &fingerprint)
-                .unwrap_or(false)
-        {
-            self.update_requirement_progress(
-                &inbound_msg.id,
-                next_round,
-                Some(fingerprint.clone()),
-                Some(plan.reason.clone()),
-            );
-            self.record_execution_summary(ExecutionSummary {
-                trace_id: inbound_msg.id.clone(),
-                message_id: inbound_msg.id.clone(),
-                channel: inbound_msg.channel.clone(),
-                chat_id: inbound_msg.chat_id.clone(),
-                plan_type: exec_ctx.plan_type.clone(),
-                status: followup_branch.exhausted_summary.status,
-                cache_hit: exec_ctx.cache_hit,
-                worker_id: followup_branch.exhausted_summary.worker_id.clone(),
-                error_code: followup_branch.exhausted_summary.error_code.clone(),
-                error_stage: followup_branch.exhausted_summary.error_stage.clone(),
-                task_duration_ms: followup_branch.exhausted_summary.task_duration_ms,
-                stages: followup_branch.exhausted_summary.stages.clone(),
-            });
-            let followup_exhausted_payload = followup_branch.exhausted.clone();
-            self.publish_runtime_event("requirement_followup_exhausted", inbound_msg, json!({
-                "memory_key": exec_ctx.memory_key,
-                "plan_type": exec_ctx.plan_type,
-                "cached": exec_ctx.cache_hit,
-                "worker_id": worker_id,
-                "task_duration_ms": task_duration_ms,
-                "message_latency_ms": exec_ctx.total_ms,
-                "attempted_rounds": followup_exhausted_payload.attempted_rounds,
-                "max_rounds": followup_exhausted_payload.max_rounds,
-                "reason": followup_exhausted_payload.reason,
-                "missing_requirements": followup_exhausted_payload.missing_requirements,
-                "result_fingerprint": followup_exhausted_payload.result_fingerprint,
-            }));
-            self.publish_runtime_event("message_failed", inbound_msg, json!({
-                "memory_key": exec_ctx.memory_key,
-                "plan_type": exec_ctx.plan_type,
-                "status": "followup_exhausted",
-                "cached": exec_ctx.cache_hit,
-                "worker_id": worker_id,
-                "task_duration_ms": task_duration_ms,
-                "message_latency_ms": exec_ctx.total_ms,
-                "error_code": "requirement_followup_exhausted",
-                "error_stage": "requirement_judge",
-                "error": plan.reason,
-            }));
-            self.send_error_response(
-                inbound_msg,
-                &RuntimeErrorInfo {
-                    code: "requirement_followup_exhausted",
-                    stage: "requirement_judge",
-                    user_message: "主 agent 多轮自动补充后仍未能确认需求已满足，请查看任务事件诊断原因。".into(),
-                    internal_message: plan.reason,
-                },
-            );
-            return Ok(());
-        }
-
-        self.update_requirement_progress(
-            &inbound_msg.id,
-            next_round,
-            Some(fingerprint),
-            Some(plan.reason.clone()),
-        );
-        self.record_execution_summary(ExecutionSummary {
-            trace_id: inbound_msg.id.clone(),
-            message_id: inbound_msg.id.clone(),
-            channel: inbound_msg.channel.clone(),
-            chat_id: inbound_msg.chat_id.clone(),
-            plan_type: exec_ctx.plan_type.clone(),
-            status: followup_branch.pending_summary.status,
-            cache_hit: exec_ctx.cache_hit,
-            worker_id: followup_branch.pending_summary.worker_id.clone(),
-            error_code: followup_branch.pending_summary.error_code.clone(),
-            error_stage: followup_branch.pending_summary.error_stage.clone(),
-            task_duration_ms: followup_branch.pending_summary.task_duration_ms,
-            stages: followup_branch.pending_summary.stages.clone(),
-        });
-        let followup_scheduled_payload = followup_branch.scheduled.clone();
-        self.publish_runtime_event("requirement_followup_scheduled", inbound_msg, json!({
-            "memory_key": exec_ctx.memory_key,
-            "plan_type": exec_ctx.plan_type,
-            "cached": exec_ctx.cache_hit,
-            "worker_id": worker_id,
-            "task_duration_ms": task_duration_ms,
-            "message_latency_ms": exec_ctx.total_ms,
-            "attempted_rounds": followup_scheduled_payload.attempted_rounds,
-            "max_rounds": followup_scheduled_payload.max_rounds,
-            "reason": followup_scheduled_payload.reason,
-            "missing_requirements": followup_scheduled_payload.missing_requirements,
-            "followup_prompt": followup_scheduled_payload.followup_prompt,
-        }));
-
-        let followup_assembly = self.assemble_turn_context(
-            inbound_msg,
-            ContextAssemblyMode::Followup,
-            exec_ctx.opencode_session_id.clone(),
-            None,
-            Some(plan.followup_prompt.clone()),
-        );
-        let followup_request = ApiCallExecutionRequest {
-            trace_id: inbound_msg.id.clone(),
-            session_id: followup_assembly.metadata.opencode_session_id.clone(),
-            content: followup_assembly.prompt_text.clone(),
-            kind: ExecutionKind::Followup,
-            metadata: Some(json!({})),
-        };
-        let followup_result = self.execute_api_call_request(
-            inbound_msg,
-            &exec_ctx.memory_key,
-            &exec_ctx.plan_type,
-            &followup_request,
-            "主 agent 触发自动 followup，派发给 worker 继续推进",
-            json!({}),
-        )?;
-
-        if followup_result.status != "success" {
-            let error_info = classify_runtime_error(followup_result.error.as_deref(), Some("plan_execute"));
-            self.record_failure(inbound_msg, &error_info);
-            self.publish_runtime_event("message_failed", inbound_msg, json!({
-                "memory_key": exec_ctx.memory_key,
-                "plan_type": exec_ctx.plan_type,
-                "status": followup_result.status,
-                "cached": false,
-                "worker_id": followup_result.worker_id,
-                "task_duration_ms": followup_result.duration_ms,
-                "message_latency_ms": exec_ctx.total_ms.saturating_add(followup_result.duration_ms),
-                "error_code": error_info.code,
-                "error_stage": error_info.stage,
-                "error": error_info.internal_message,
-            }));
-            self.send_error_response(inbound_msg, &error_info);
-            return Ok(());
-        }
-
-        let followup_ctx = ExecutionContext {
-            memory_key: exec_ctx.memory_key.clone(),
-            history_session_id: exec_ctx.history_session_id.clone(),
-            opencode_session_id: exec_ctx.opencode_session_id.clone(),
-            plan_type: exec_ctx.plan_type.clone(),
-            context_ms: exec_ctx.context_ms,
-            session_ms: exec_ctx.session_ms,
-            classify_ms: exec_ctx.classify_ms,
-            execute_ms: exec_ctx.execute_ms.saturating_add(followup_result.duration_ms),
-            total_ms: exec_ctx.total_ms.saturating_add(followup_result.duration_ms),
-            cache_hit: false,
-        };
-        self.handle_upstream_result(
-            inbound_msg,
-            &followup_ctx,
-            followup_result,
-            SuccessSource::AgentFollowup,
-            None,
-        )?;
-        Ok(())
-    }
-
-    fn handle_upstream_result(
-        &self,
-        inbound_msg: &InboundMessage,
-        exec_ctx: &ExecutionContext,
-        result: TaskResult,
-        source: SuccessSource,
-        resolved_question: Option<&PendingQuestion>,
-    ) -> Result<Option<PendingQuestion>, String> {
-        let task_type = "api-call".to_string();
-        let provider = infer_provider(result.result.as_ref());
-        let operation = infer_operation(result.result.as_ref());
-        let response_text = extract_response_text(result.result.as_ref());
-        let observed_payload = prepare_upstream_response_observed_payload(
-            result.worker_id.clone(),
-            task_type,
-            provider,
-            operation,
-            exec_ctx.opencode_session_id.clone(),
-            truncate_preview(&response_text, 200),
-            result.result.clone(),
-        );
-        self.publish_runtime_event("upstream_response_observed", inbound_msg, json!({
-            "memory_key": exec_ctx.memory_key,
-            "plan_type": exec_ctx.plan_type,
-            "worker_id": observed_payload.worker_id,
-            "task_type": observed_payload.task_type,
-            "provider": observed_payload.provider,
-            "operation": observed_payload.operation,
-            "task_duration_ms": result.duration_ms,
-            "message_latency_ms": exec_ctx.total_ms,
-            "opencode_session_id": observed_payload.opencode_session_id,
-            "response_preview": observed_payload.response_preview,
-            "raw_result": observed_payload.raw_result,
-        }));
-        let preparation: RequirementEvaluationPreparation = prepare_requirement_evaluation(
-            turn_source_from_success(source),
-            self.assemble_turn_context(
-                inbound_msg,
-                assembly_mode_for_source(turn_source_from_success(source)),
-                exec_ctx.opencode_session_id.clone(),
-                resolved_question.cloned(),
-                None,
-            ),
-            inbound_msg.id.clone(),
-            inbound_msg.id.clone(),
-            inbound_msg.chat_id.clone(),
-            result.result.clone(),
-        );
-        let evaluation_started_payload =
-            prepare_requirement_evaluation_started_payload(preparation.source_label);
-        self.publish_runtime_event("requirement_evaluation_started", inbound_msg, json!({
-            "memory_key": exec_ctx.memory_key,
-            "plan_type": exec_ctx.plan_type,
-            "worker_id": result.worker_id.clone(),
-            "task_duration_ms": result.duration_ms,
-            "message_latency_ms": exec_ctx.total_ms,
-            "source": evaluation_started_payload.source,
-        }));
-
-        let judgement = judge_requirement(&preparation.judge_context);
-        let turn_plan = plan_turn_outcome(judgement, resolved_question.is_some());
-
-        match turn_plan {
-            TurnOutcomePlan::Complete {
-                should_resolve_question,
-            } => {
-                let branch = prepare_completed_branch_data(
-                    resolved_question,
-                    should_resolve_question,
-                    extract_response_text(result.result.as_ref()),
-                    result.worker_id.clone(),
-                    result.duration_ms,
-                    exec_ctx.context_ms,
-                    exec_ctx.session_ms,
-                    exec_ctx.classify_ms,
-                    exec_ctx.execute_ms,
-                    exec_ctx.total_ms,
-                );
-                if let Some(resolved_payload) = branch.resolved_question.as_ref() {
-                    let pending = resolved_question.expect("resolved question should exist when completed branch includes resolved payload");
-                    self.publish_runtime_event("question_resolved", inbound_msg, json!({
-                        "memory_key": exec_ctx.memory_key,
-                        "question_id": resolved_payload.question_id,
-                        "question_kind": question_kind_str(&pending.question_kind),
-                        "answer_summary": resolved_payload.answer_summary,
-                        "resolution_source": resolved_payload.resolution_source,
-                        "opencode_session_id": resolved_payload.opencode_session_id,
-                    }));
-                }
-                self.clear_pending_question(&inbound_msg.id);
-                self.clear_requirement_progress(&inbound_msg.id);
-                self.append_history(&exec_ctx.memory_key, branch.completion.assistant_entry.clone());
-                self.context_manager
-                    .add_to_session_history(&exec_ctx.history_session_id, branch.completion.assistant_entry.clone());
-                self.metrics.counter_inc("messages_processed");
-                self.record_execution_summary(ExecutionSummary {
-                    trace_id: inbound_msg.id.clone(),
-                    message_id: inbound_msg.id.clone(),
-                    channel: inbound_msg.channel.clone(),
-                    chat_id: inbound_msg.chat_id.clone(),
-                    plan_type: exec_ctx.plan_type.clone(),
-                    status: branch.summary.status,
-                    cache_hit: exec_ctx.cache_hit,
-                    worker_id: branch.summary.worker_id,
-                    error_code: branch.summary.error_code,
-                    error_stage: branch.summary.error_stage,
-                    task_duration_ms: branch.summary.task_duration_ms,
-                    stages: branch.summary.stages,
-                });
-                self.publish_requirement_satisfied(
-                    inbound_msg,
-                    exec_ctx,
-                    result.worker_id.clone(),
-                    result.duration_ms,
-                    &branch.completion.response_text,
-                );
-                self.publish_runtime_event("message_completed", inbound_msg, json!({
-                    "memory_key": exec_ctx.memory_key,
-                    "plan_type": exec_ctx.plan_type,
-                    "status": branch.message_completed.status,
-                    "cached": exec_ctx.cache_hit,
-                    "worker_id": result.worker_id.clone(),
-                    "task_duration_ms": result.duration_ms,
-                    "message_latency_ms": exec_ctx.total_ms,
-                    "response_preview": branch.message_completed.response_preview,
-                    "response_text": branch.message_completed.response_text,
-                }));
-                self.send_response(inbound_msg, &branch.completion.response_text);
-                Ok(resolved_question.cloned())
-            }
-            TurnOutcomePlan::AskUserInput {
-                should_resolve_question,
-                requirement,
-            } => {
-                let branch = prepare_waiting_user_input_branch_data(
-                    resolved_question,
-                    should_resolve_question,
-                    *requirement,
-                    inbound_msg,
-                    result.worker_id.clone(),
-                    result.duration_ms,
-                    exec_ctx.context_ms,
-                    exec_ctx.session_ms,
-                    exec_ctx.classify_ms,
-                    exec_ctx.execute_ms,
-                    exec_ctx.total_ms,
-                    result.result.as_ref(),
-                );
-                if let Some(resolved_payload) = branch.resolved_question.as_ref() {
-                    let resolved = resolved_question.expect("resolved question should exist when waiting branch includes resolved payload");
-                    self.publish_runtime_event("question_resolved", inbound_msg, json!({
-                        "memory_key": exec_ctx.memory_key,
-                        "question_id": resolved_payload.question_id,
-                        "question_kind": question_kind_str(&resolved.question_kind),
-                        "answer_summary": resolved_payload.answer_summary,
-                        "resolution_source": resolved_payload.resolution_source,
-                        "opencode_session_id": resolved_payload.opencode_session_id,
-                    }));
-                }
-                self.publish_runtime_event("requirement_unsatisfied", inbound_msg, json!({
-                    "memory_key": exec_ctx.memory_key,
-                    "plan_type": exec_ctx.plan_type,
-                    "cached": exec_ctx.cache_hit,
-                    "worker_id": result.worker_id.clone(),
-                    "task_duration_ms": result.duration_ms,
-                    "message_latency_ms": exec_ctx.total_ms,
-                    "payload": branch.unsatisfied.payload,
-                }));
-                self.publish_runtime_event("user_input_required", inbound_msg, json!({
-                    "memory_key": exec_ctx.memory_key,
-                    "plan_type": exec_ctx.plan_type,
-                    "reason": branch.user_input_required.reason,
-                    "missing_requirements": branch.user_input_required.missing_requirements,
-                    "question_id": branch.user_input_required.question_id,
-                    "question_kind": question_kind_str(&branch.waiting.question.question_kind),
-                    "prompt": branch.user_input_required.prompt,
-                }));
-                let question = branch.waiting.question;
-                self.store_pending_question(inbound_msg.id.clone(), question.clone());
-                self.record_execution_summary(ExecutionSummary {
-                    trace_id: inbound_msg.id.clone(),
-                    message_id: inbound_msg.id.clone(),
-                    channel: inbound_msg.channel.clone(),
-                    chat_id: inbound_msg.chat_id.clone(),
-                    plan_type: exec_ctx.plan_type.clone(),
-                    status: branch.summary.status,
-                    cache_hit: exec_ctx.cache_hit,
-                    worker_id: branch.summary.worker_id,
-                    error_code: branch.summary.error_code,
-                    error_stage: branch.summary.error_stage,
-                    task_duration_ms: branch.summary.task_duration_ms,
-                    stages: branch.summary.stages,
-                });
-                self.publish_question_asked(
-                    inbound_msg,
-                    &exec_ctx.memory_key,
-                    &question,
-                    result.worker_id,
-                    exec_ctx.total_ms,
-                    result.duration_ms,
-                    exec_ctx.cache_hit,
-                    &exec_ctx.plan_type,
-                );
-                Ok(Some(question))
-            }
-            TurnOutcomePlan::ScheduleFollowup { plan } => {
-                self.schedule_agent_followup(
-                    inbound_msg,
-                    exec_ctx,
-                    result.worker_id,
-                    result.duration_ms,
-                    *plan,
-                )?;
-                Ok(resolved_question.cloned())
-            }
-        }
-    }
-
     pub fn pending_question_for(&self, job_id: &str) -> Option<PendingQuestion> {
-        self.pending_questions.lock().get(job_id).cloned()
-    }
-
-    pub fn submit_question_answer(
-        &self,
-        job_id: &str,
-        answer: QuestionAnswerInput,
-    ) -> Result<PendingQuestion, String> {
-        let pending = {
-            let mut pending_questions = self.pending_questions.lock();
-            let pending = pending_questions
-                .get_mut(job_id)
-                .ok_or_else(|| format!("No pending question for job: {job_id}"))?;
-
-            if pending.question_id != answer.question_id {
-                return Err(format!(
-                    "Question ID mismatch for job {job_id}: expected {}, got {}",
-                    pending.question_id, answer.question_id
-                ));
-            }
-
-            pending.answer_submitted = true;
-            pending.answer_summary = Some(truncate_preview(&answer.answer, 120));
-            pending.resolution_source = Some(answer.source.clone());
-            pending.clone()
-        };
-
-        let inbound = pending
-            .inbound
-            .clone()
-            .ok_or_else(|| format!("Missing inbound context for pending question on job: {job_id}"))?;
-        let key = memory_key(&inbound);
-
-        self.publish_runtime_event("question_answer_submitted", &inbound, json!({
-            "memory_key": key,
-            "question_id": pending.question_id,
-            "question_kind": question_kind_str(&pending.question_kind),
-            "answer_type": answer.answer_type,
-            "answer": answer.answer,
-            "answer_summary": pending.answer_summary,
-            "resolution_source": pending.resolution_source,
-            "opencode_session_id": pending.opencode_session_id,
-        }));
-
-        match pending.source_kind {
-            PendingQuestionSourceKind::UpstreamQuestion => {
-                let continuation_ctx = self.assemble_turn_context(
-                    &inbound,
-                    ContextAssemblyMode::QuestionContinuation,
-                    pending.opencode_session_id.clone(),
-                    Some(pending.clone()),
-                    None,
-                );
-                let continuation_request = ApiCallExecutionRequest {
-                    trace_id: inbound.id.clone(),
-                    session_id: continuation_ctx.metadata.opencode_session_id.clone(),
-                    content: continuation_ctx.prompt_text.clone(),
-                    kind: ExecutionKind::QuestionContinuation,
-                    metadata: Some(json!({})),
-                };
-                let continuation_result = self.execute_api_call_request(
-                    &inbound,
-                    &key,
-                    "single",
-                    &continuation_request,
-                    "主 agent 已收到问题答案，派发给 worker 继续执行",
-                    json!({
-                        "question_id": pending.question_id,
-                    }),
-                )?;
-
-                if continuation_result.status != "success" {
-                    return Err(
-                        continuation_result
-                            .error
-                            .unwrap_or_else(|| "Continuation execution failed".to_string()),
-                    );
-                }
-
-                let exec_ctx = ExecutionContext {
-                    memory_key: continuation_ctx.metadata.memory_key,
-                    history_session_id: continuation_ctx.metadata.history_session_id,
-                    opencode_session_id: continuation_ctx.metadata.opencode_session_id,
-                    plan_type: "single".into(),
-                    context_ms: 0,
-                    session_ms: 0,
-                    classify_ms: 0,
-                    execute_ms: continuation_result.duration_ms,
-                    total_ms: continuation_result.duration_ms,
-                    cache_hit: false,
-                };
-                let _ = self.handle_upstream_result(
-                    &inbound,
-                    &exec_ctx,
-                    continuation_result,
-                    SuccessSource::QuestionContinuation,
-                    Some(&pending),
-                )?;
-                Ok(pending)
-            }
-            PendingQuestionSourceKind::ToolPermission => {
-                self.resume_suspended_tool_permission(job_id, pending.clone(), answer.answer.trim())?;
-                Ok(pending)
-            }
-        }
-    }
-}
-
-fn question_kind_str(kind: &QuestionKind) -> &'static str {
-    match kind {
-        QuestionKind::Confirm => "confirm",
-        QuestionKind::Choice => "choice",
-        QuestionKind::Input => "input",
-    }
-}
-
-fn question_decision_mode_str(mode: &QuestionDecisionMode) -> &'static str {
-    match mode {
-        QuestionDecisionMode::AutoAllowed => "auto_allowed",
-        QuestionDecisionMode::UserRequired => "user_required",
-    }
-}
-
-fn question_risk_level_str(level: &QuestionRiskLevel) -> &'static str {
-    match level {
-        QuestionRiskLevel::Low => "low",
-        QuestionRiskLevel::High => "high",
-    }
-}
-
-fn permission_risk_to_question_risk(level: &crate::permissions::PermissionRiskLevel) -> QuestionRiskLevel {
-    match level {
-        crate::permissions::PermissionRiskLevel::Low => QuestionRiskLevel::Low,
-        crate::permissions::PermissionRiskLevel::High => QuestionRiskLevel::High,
-    }
-}
-
-pub(crate) fn detect_pending_question(result: Option<&Value>, opencode_session_id: &str) -> Option<PendingQuestion> {
-    let response = result?;
-
-    if response.get("type").and_then(Value::as_str) == Some("question") {
-        let question = response.get("question")?;
-        return build_pending_question(question, opencode_session_id);
-    }
-
-    if let Some(question) = response.get("question") {
-        return build_pending_question(question, opencode_session_id);
-    }
-
-    None
-}
-
-fn build_pending_question(question: &Value, opencode_session_id: &str) -> Option<PendingQuestion> {
-    let prompt = question
-        .get("prompt")
-        .or_else(|| question.get("message"))
-        .or_else(|| question.get("text"))
-        .and_then(Value::as_str)?
-        .trim()
-        .to_string();
-    let options = question
-        .get("options")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| {
-                    value
-                        .get("value")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string)
-                        .or_else(|| value.get("label").and_then(Value::as_str).map(ToString::to_string))
-                        .or_else(|| value.as_str().map(ToString::to_string))
-                })
-                .collect::<Vec<_>>()
+        self.suspension.question_state(job_id, false).or_else(|| {
+            self.runtime_projection_snapshot()
+                .pending_questions
+                .get(job_id)
+                .cloned()
         })
-        .unwrap_or_default();
-    let question_kind = classify_question_kind(question, &options);
-    let decision_mode = classify_question_decision_mode(&prompt, &options);
-    let risk_level = classify_question_risk_level(&prompt, &options);
-    let requires_user_confirmation = matches!(decision_mode, QuestionDecisionMode::UserRequired);
-
-    Some(PendingQuestion {
-        question_id: question
-            .get("question_id")
-            .or_else(|| question.get("id"))
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .unwrap_or_else(|| Uuid::new_v4().to_string()),
-        job_id: String::new(),
-        opencode_session_id: opencode_session_id.to_string(),
-        question_kind,
-        prompt,
-        options,
-        raw_question: question.clone(),
-        decision_mode,
-        risk_level,
-        requires_user_confirmation,
-        source_kind: PendingQuestionSourceKind::UpstreamQuestion,
-        continuation_token: None,
-        asked_at_ms: now_ms(),
-        answer_submitted: false,
-        answer_summary: None,
-        resolution_source: None,
-        inbound: None,
-    })
-}
-
-fn classify_question_kind(question: &Value, options: &[String]) -> QuestionKind {
-    match question.get("kind").and_then(Value::as_str) {
-        Some("confirm") => QuestionKind::Confirm,
-        Some("choice") => QuestionKind::Choice,
-        Some("input") => QuestionKind::Input,
-        _ if !options.is_empty() => QuestionKind::Choice,
-        _ => QuestionKind::Input,
-    }
-}
-
-fn classify_question_decision_mode(prompt: &str, options: &[String]) -> QuestionDecisionMode {
-    if classify_question_requires_user_confirmation(prompt, options) {
-        QuestionDecisionMode::UserRequired
-    } else {
-        QuestionDecisionMode::AutoAllowed
-    }
-}
-
-fn classify_question_risk_level(prompt: &str, options: &[String]) -> QuestionRiskLevel {
-    if classify_question_requires_user_confirmation(prompt, options) {
-        QuestionRiskLevel::High
-    } else {
-        QuestionRiskLevel::Low
-    }
-}
-
-pub(crate) fn classify_question_requires_user_confirmation(prompt: &str, options: &[String]) -> bool {
-    let normalized = format!("{} {}", prompt.to_ascii_lowercase(), options.join(" ").to_ascii_lowercase());
-    [
-        "delete",
-        "remove",
-        "overwrite",
-        "rollback",
-        "force",
-        "deploy",
-        "production",
-        "database",
-        "sql",
-        "drop table",
-        "grant",
-        "permission",
-        "credential",
-        "secret",
-        "token",
-        "send email",
-        "send message",
-        "post",
-        "external",
-        "write operation",
-    ]
-    .iter()
-    .any(|needle| normalized.contains(needle))
-}
-
-fn classify_runtime_error(error: Option<&str>, fallback_stage: Option<&'static str>) -> RuntimeErrorInfo {
-    let raw = error.unwrap_or("Unknown runtime error");
-    let raw_lower = raw.to_ascii_lowercase();
-    let is_session_create_stage = fallback_stage == Some("session_create");
-    let is_plan_execute_stage = fallback_stage == Some("plan_execute");
-    let looks_like_session_transport_error = raw_lower.contains("http transport error")
-        || raw_lower.contains("error sending request")
-        || raw_lower.contains("/session)")
-        || raw_lower.contains("/session ")
-        || raw_lower.ends_with("/session")
-        || raw_lower.contains("/session?");
-    let looks_like_upstream_stream_error = raw_lower.contains("empty_stream")
-        || raw_lower.contains("upstream stream closed before first payload")
-        || raw_lower.contains("stream disconnected before completion")
-        || raw_lower.contains("stream closed before response.completed");
-    let looks_like_upstream_timeout = raw_lower.contains("request timeout")
-        || raw_lower.contains("408 request timeout")
-        || raw_lower.contains("timed out")
-        || raw_lower.contains("timeout");
-
-    if raw.contains("OpenCode session")
-        || raw.contains("no ID returned")
-        || raw.contains("Failed to create session")
-        || raw_lower.contains("create session")
-        || raw_lower.contains("session-create")
-        || (is_session_create_stage && looks_like_session_transport_error)
-    {
-        return RuntimeErrorInfo {
-            code: "session_create_failed",
-            stage: "session_create",
-            user_message: "无法创建上游会话，请确认 opencode-server 是否正常运行。".into(),
-            internal_message: raw.to_string(),
-        };
-    }
-
-    if is_plan_execute_stage && looks_like_upstream_timeout {
-        return RuntimeErrorInfo {
-            code: "upstream_timeout",
-            stage: "plan_execute",
-            user_message: "上游模型响应超时，请稍后重试。".into(),
-            internal_message: raw.to_string(),
-        };
-    }
-
-    if is_plan_execute_stage && looks_like_upstream_stream_error {
-        return RuntimeErrorInfo {
-            code: "upstream_stream_failed",
-            stage: "plan_execute",
-            user_message: "上游模型流式响应异常中断，请稍后重试或检查代理服务状态。".into(),
-            internal_message: raw.to_string(),
-        };
-    }
-
-    if raw.contains("Worker pool is not running") || raw.contains("Worker is not running") {
-        return RuntimeErrorInfo {
-            code: "worker_unavailable",
-            stage: "worker_pool",
-            user_message: "当前执行器未就绪，暂时无法处理请求。".into(),
-            internal_message: raw.to_string(),
-        };
-    }
-
-    if raw.contains("Worker is busy") || raw.contains("No available worker") {
-        return RuntimeErrorInfo {
-            code: "worker_capacity_exhausted",
-            stage: "worker_pool",
-            user_message: "当前执行队列繁忙，请稍后再试。".into(),
-            internal_message: raw.to_string(),
-        };
-    }
-
-    if raw.contains("Missing required fields") || raw.contains("Missing query") || raw.contains("Missing transform data") {
-        return RuntimeErrorInfo {
-            code: "invalid_task_payload",
-            stage: fallback_stage.unwrap_or("task_execution"),
-            user_message: "运行时生成了无效任务，请检查主链路任务构建逻辑。".into(),
-            internal_message: raw.to_string(),
-        };
-    }
-
-    if raw.contains("Unknown task type") {
-        return RuntimeErrorInfo {
-            code: "unknown_task_type",
-            stage: fallback_stage.unwrap_or("task_execution"),
-            user_message: "运行时生成了未支持的任务类型。".into(),
-            internal_message: raw.to_string(),
-        };
-    }
-
-    RuntimeErrorInfo {
-        code: "task_execution_failed",
-        stage: fallback_stage.unwrap_or("task_execution"),
-        user_message: "任务执行失败，请查看运行时事件获取详细原因。".into(),
-        internal_message: raw.to_string(),
     }
 }
 
@@ -2428,10 +877,19 @@ impl Agent {
     ) -> Result<PendingQuestion, String> {
         self.core_agent.submit_question_answer(job_id, answer)
     }
+
+    pub fn runtime_projection_snapshot(&self) -> RuntimeProjectionView {
+        self.core_agent.runtime_projection_snapshot()
+    }
+
+    #[doc(hidden)]
+    pub fn evict_resume_state_cache_for_testing(&self, job_id: &str) {
+        self.core_agent.evict_resume_state_cache_for_testing(job_id);
+    }
 }
 
 /// 生成会话内存的 key，格式为 "channel:chat_id"
-fn memory_key(inbound_msg: &InboundMessage) -> String {
+pub(crate) fn memory_key(inbound_msg: &InboundMessage) -> String {
     format!(
         "{}:{}",
         inbound_msg.channel,
@@ -2440,145 +898,4 @@ fn memory_key(inbound_msg: &InboundMessage) -> String {
             .clone()
             .unwrap_or_else(|| inbound_msg.id.clone())
     )
-}
-
-/// 从 SDK 响应中提取文本内容。
-/// 支持多种响应格式，按优先级依次尝试：
-/// 1. parts 数组（含 reasoning + text 分区）
-/// 2. data.messages 嵌套结构
-/// 3. content 字符串字段
-/// 4. 直接字符串值
-/// 5. 兜底：序列化为 JSON 字符串
-fn truncate_preview(text: &str, max_chars: usize) -> String {
-    let truncated = text.chars().take(max_chars).collect::<String>();
-    if text.chars().count() > max_chars {
-        format!("{}…", truncated)
-    } else {
-        truncated
-    }
-}
-
-fn execution_kind_label(kind: ExecutionKind) -> &'static str {
-    match kind {
-        ExecutionKind::Initial => "initial",
-        ExecutionKind::QuestionContinuation => "question_continuation",
-        ExecutionKind::Followup => "followup",
-    }
-}
-
-fn infer_provider(response: Option<&Value>) -> Option<String> {
-    response
-        .and_then(|value| value.get("provider").and_then(Value::as_str))
-        .map(ToString::to_string)
-        .or_else(|| Some("opencode".to_string()))
-}
-
-fn infer_operation(response: Option<&Value>) -> Option<String> {
-    response
-        .and_then(|value| value.get("operation").and_then(Value::as_str))
-        .map(ToString::to_string)
-        .or_else(|| {
-            response
-                .and_then(|value| value.get("type").and_then(Value::as_str))
-                .map(ToString::to_string)
-        })
-        .or_else(|| Some("send_prompt".to_string()))
-}
-
-fn subtask_job_id(inbound_msg: &InboundMessage) -> Option<String> {
-    inbound_msg
-        .metadata
-        .get("subtask_id")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-}
-
-fn runtime_message_id(inbound_msg: &InboundMessage) -> String {
-    subtask_job_id(inbound_msg).unwrap_or_else(|| inbound_msg.id.clone())
-}
-
-fn merge_runtime_metadata(inbound_msg: &InboundMessage, payload: Value) -> Value {
-    let mut merged = match payload {
-        Value::Object(map) => map,
-        other => {
-            let mut map = Map::new();
-            map.insert("value".into(), other);
-            map
-        }
-    };
-
-    for key in ["parent_job_id", "subtask_id", "plan_id"] {
-        if let Some(value) = inbound_msg.metadata.get(key).cloned() {
-            merged.entry(key.to_string()).or_insert(value);
-        }
-    }
-
-    Value::Object(merged)
-}
-
-pub(crate) fn extract_response_text(response: Option<&Value>) -> String {
-    let Some(response) = response else {
-        return String::new();
-    };
-
-    if let Some(parts) = response.get("parts").and_then(Value::as_array) {
-        let mut reasoning = Vec::new();
-        let mut text = Vec::new();
-        for part in parts {
-            match part.get("type").and_then(Value::as_str) {
-                Some("reasoning") => {
-                    if let Some(content) = part.get("text").and_then(Value::as_str) {
-                        reasoning.push(content.to_string());
-                    }
-                }
-                Some("text") => {
-                    if let Some(content) = part.get("text").and_then(Value::as_str) {
-                        text.push(content.to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-        if !reasoning.is_empty() {
-            return format!(
-                "【Reasoning】\n{}\n【End Reasoning】\n\n{}",
-                reasoning.join("\n"),
-                text.join("\n")
-            );
-        }
-        return text.join("\n");
-    }
-
-    if let Some(messages) = response
-        .get("data")
-        .and_then(|data| data.get("messages"))
-        .and_then(Value::as_array)
-    {
-        let mut chunks = Vec::new();
-        for message in messages {
-            if let Some(parts) = message.get("parts").and_then(Value::as_array) {
-                for part in parts {
-                    if matches!(
-                        part.get("type").and_then(Value::as_str),
-                        Some("text") | Some("reasoning")
-                    ) {
-                        if let Some(text) = part.get("text").and_then(Value::as_str) {
-                            chunks.push(text.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        return chunks.join("\n");
-    }
-
-    if let Some(content) = response.get("content").and_then(Value::as_str) {
-        return content.to_string();
-    }
-
-    if let Some(content) = response.as_str() {
-        return content.to_string();
-    }
-
-    response.to_string()
 }

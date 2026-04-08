@@ -7,14 +7,17 @@
 //! - 同时提供静态方法 `execute_plan` / `execute_single_task` 用于直接执行 ExecutionPlan
 
 use crate::agent::detect_pending_question;
-use crate::orchestrator::parallel_pool::ParallelPool;
-use crate::orchestrator::specialist_pool::SpecialistPool;
 use crate::agent::types::{
     make_task, make_task_result, ExecutionPlan, ExecutionPlanKind, MakeTask, MakeTaskResult, Task,
     TaskResult,
 };
 use crate::agent::worker::WorkerPool;
+use crate::orchestrator::parallel_pool::ParallelPool;
+use crate::orchestrator::specialist_pool::SpecialistPool;
+use crate::runtime::{RuntimeDomainEvent, SharedRuntimeStateStore};
 use crate::support::now_ms;
+use crate::tasks::query::{plan_task, subtasks_for_plan};
+use crate::tasks::{TaskKind, TaskRecord, TaskStatus};
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -40,15 +43,6 @@ struct WaitDiagnosticContext {
 
 // ── SubTask ───────────────────────────────────────────────────────────
 
-/// 子任务状态
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SubTaskStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-}
-
 /// 子任务：编排计划中的最小执行单元
 ///
 /// 每个子任务声明自己的依赖（dependencies）、所需专家类型（specialist_type），
@@ -65,22 +59,12 @@ pub struct SubTask {
     pub priority: u32,
     pub specialist_type: String,
     pub payload: Value,
-    pub status: Mutex<SubTaskStatus>,
     pub result: Mutex<Option<TaskResult>>,
     pub started_at: Mutex<Option<u64>>,
     pub completed_at: Mutex<Option<u64>>,
 }
 
 // ── OrchestrationPlan ─────────────────────────────────────────────────
-
-/// 编排计划状态
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlanStatus {
-    Created,
-    Running,
-    Completed,
-    Failed,
-}
 
 /// 编排计划的执行进度
 #[derive(Debug, Clone, Default)]
@@ -103,7 +87,6 @@ pub struct OrchestrationPlan {
     pub subtasks: IndexMap<String, Arc<SubTask>>,
     pub execution_order: Vec<String>,
     pub parallel_groups: Vec<Vec<String>>,
-    pub status: Mutex<PlanStatus>,
     pub progress: Mutex<PlanProgress>,
     pub created_at: u64,
 }
@@ -351,7 +334,7 @@ pub struct AgentOrchestrator {
     id: String,
     specialist_pool: Arc<SpecialistPool>,
     worker_pool: Arc<WorkerPool>,
-    active_plans: Mutex<IndexMap<String, Arc<OrchestrationPlan>>>,
+    runtime_state_store: SharedRuntimeStateStore,
     config: OrchestratorConfig,
     running: AtomicBool,
     metrics: Mutex<OrchestratorMetrics>,
@@ -361,17 +344,234 @@ impl AgentOrchestrator {
     pub fn new(
         worker_pool: Arc<WorkerPool>,
         specialist_pool: Arc<SpecialistPool>,
+        runtime_state_store: SharedRuntimeStateStore,
         config: OrchestratorConfig,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             specialist_pool,
             worker_pool,
-            active_plans: Mutex::new(IndexMap::new()),
+            runtime_state_store,
             config,
             running: AtomicBool::new(false),
             metrics: Mutex::new(OrchestratorMetrics::default()),
         }
+    }
+
+    fn runtime_run_id(job_id: &str) -> String {
+        format!("run_{job_id}")
+    }
+
+    fn runtime_plan_task_id(plan_id: &str) -> String {
+        format!("task_plan_{plan_id}")
+    }
+
+    fn runtime_subtask_task_id(subtask_id: &str) -> String {
+        format!("task_subtask_{subtask_id}")
+    }
+
+    fn current_turn_id_for_job(&self, job_id: &str) -> Option<String> {
+        self.runtime_state_store
+            .snapshot()
+            .runs
+            .get(&Self::runtime_run_id(job_id))
+            .and_then(|run| run.current_turn_id.clone())
+    }
+
+    fn upsert_runtime_plan_task(
+        &self,
+        plan: &OrchestrationPlan,
+        status: TaskStatus,
+        error: Option<String>,
+    ) {
+        let updated_at_ms = now_ms();
+        let snapshot = self.runtime_state_store.snapshot();
+        let task_id = Self::runtime_plan_task_id(&plan.id);
+        let existing = snapshot.tasks.get(&task_id);
+        self.runtime_state_store
+            .append(RuntimeDomainEvent::TaskUpserted {
+                task: TaskRecord {
+                    task_id: task_id.clone(),
+                    run_id: Self::runtime_run_id(&plan.parent_job_id),
+                    turn_id: self.current_turn_id_for_job(&plan.parent_job_id),
+                    parent_task_id: None,
+                    trace_id: plan.trace_id.clone(),
+                    job_id: plan.parent_job_id.clone(),
+                    parent_job_id: None,
+                    plan_id: Some(plan.id.clone()),
+                    kind: TaskKind::Plan,
+                    name: "orchestration_plan".into(),
+                    task_type: "orchestration_plan".into(),
+                    description: plan.original_request.clone(),
+                    status: status.clone(),
+                    execution_mode: None,
+                    result_kind: Some("orchestration_plan".into()),
+                    specialist_type: plan.matched_rule.clone(),
+                    dependencies: vec![],
+                    metadata: json!({
+                        "matched_rule": plan.matched_rule.clone(),
+                        "execution_order": plan.execution_order.clone(),
+                        "parallel_groups": plan.parallel_groups.clone(),
+                    }),
+                    started_at_ms: existing
+                        .and_then(|task| task.started_at_ms)
+                        .or(Some(plan.created_at)),
+                    updated_at_ms,
+                    completed_at_ms: match status {
+                        TaskStatus::Completed | TaskStatus::Failed => Some(updated_at_ms),
+                        _ => existing.and_then(|task| task.completed_at_ms),
+                    },
+                    error,
+                },
+            });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_runtime_subtask_task(
+        &self,
+        subtask: &SubTask,
+        lowered: &LoweredTask,
+        status: TaskStatus,
+        execution_mode: Option<&str>,
+        parallel_group_index: Option<usize>,
+        parallel_group_size: Option<usize>,
+        error: Option<String>,
+    ) {
+        let updated_at_ms = now_ms();
+        let snapshot = self.runtime_state_store.snapshot();
+        let task_id = Self::runtime_subtask_task_id(&subtask.id);
+        let existing = snapshot.tasks.get(&task_id);
+        self.runtime_state_store
+            .append(RuntimeDomainEvent::TaskUpserted {
+                task: TaskRecord {
+                    task_id: task_id.clone(),
+                    run_id: Self::runtime_run_id(&subtask.parent_job_id),
+                    turn_id: self.current_turn_id_for_job(&subtask.parent_job_id),
+                    parent_task_id: Some(Self::runtime_plan_task_id(&subtask.parent_id)),
+                    trace_id: subtask.trace_id.clone(),
+                    job_id: subtask.parent_job_id.clone(),
+                    parent_job_id: Some(subtask.parent_job_id.clone()),
+                    plan_id: Some(subtask.parent_id.clone()),
+                    kind: TaskKind::Subtask,
+                    name: subtask.name.clone(),
+                    task_type: lowered.original_task_type.clone(),
+                    description: subtask.description.clone(),
+                    status: status.clone(),
+                    execution_mode: execution_mode.map(ToString::to_string),
+                    result_kind: Some(lowered.primitive.result_kind().to_string()),
+                    specialist_type: if subtask.specialist_type.is_empty() {
+                        None
+                    } else {
+                        Some(subtask.specialist_type.clone())
+                    },
+                    dependencies: subtask.dependencies.iter().cloned().collect(),
+                    metadata: json!({
+                        "subtask_id": subtask.id.clone(),
+                        "parallel_group_index": parallel_group_index,
+                        "parallel_group_size": parallel_group_size,
+                        "original_task_type": lowered.original_task_type.clone(),
+                        "lowered_task_type": lowered.lowered_task_type.clone(),
+                        "parallel_safe": lowered.parallel_safe,
+                        "worker_task_id": lowered.task.id.clone(),
+                    }),
+                    started_at_ms: existing
+                        .and_then(|task| task.started_at_ms)
+                        .or(*subtask.started_at.lock().unwrap_or_else(|e| e.into_inner())),
+                    updated_at_ms,
+                    completed_at_ms: match status {
+                        TaskStatus::Completed | TaskStatus::Failed => Some(updated_at_ms),
+                        _ => existing.and_then(|task| task.completed_at_ms),
+                    },
+                    error,
+                },
+            });
+    }
+
+    fn runtime_active_subtask_ids(&self, plan_id: &str) -> Vec<String> {
+        let snapshot = self.runtime_state_store.snapshot();
+        subtasks_for_plan(&snapshot, plan_id)
+            .into_iter()
+            .filter(|task| {
+                matches!(
+                    task.status,
+                    TaskStatus::Pending | TaskStatus::Running | TaskStatus::Suspended
+                )
+            })
+            .map(|task| task.task_id.clone())
+            .collect()
+    }
+
+    fn runtime_plan_progress_counts(&self, plan_id: &str) -> (usize, usize, usize) {
+        let snapshot = self.runtime_state_store.snapshot();
+        let subtasks = subtasks_for_plan(&snapshot, plan_id);
+        let total = subtasks.len();
+        let completed = subtasks
+            .iter()
+            .filter(|task| matches!(task.status, TaskStatus::Completed))
+            .count();
+        let failed = subtasks
+            .iter()
+            .filter(|task| matches!(task.status, TaskStatus::Failed))
+            .count();
+        (total, completed, failed)
+    }
+
+    fn runtime_plan_status(&self, plan_id: &str) -> Option<TaskStatus> {
+        let snapshot = self.runtime_state_store.snapshot();
+        plan_task(&snapshot, plan_id).map(|task| task.status.clone())
+    }
+
+    fn runtime_active_plan_count(&self) -> usize {
+        let snapshot = self.runtime_state_store.snapshot();
+        snapshot
+            .tasks
+            .values()
+            .filter(|task| {
+                task.kind == TaskKind::Plan
+                    && matches!(
+                        task.status,
+                        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Suspended
+                    )
+            })
+            .count()
+    }
+
+    fn runtime_plan_is_active(&self, plan_id: &str) -> bool {
+        matches!(
+            self.runtime_plan_status(plan_id),
+            Some(TaskStatus::Pending | TaskStatus::Running | TaskStatus::Suspended)
+        )
+    }
+
+    fn update_plan_runtime_status(
+        &self,
+        plan: &OrchestrationPlan,
+        status: TaskStatus,
+        error: Option<String>,
+    ) {
+        self.upsert_runtime_plan_task(plan, status, error);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_subtask_runtime_status(
+        &self,
+        subtask: &SubTask,
+        lowered: &LoweredTask,
+        status: TaskStatus,
+        execution_mode: Option<&str>,
+        parallel_group_index: Option<usize>,
+        parallel_group_size: Option<usize>,
+        error: Option<String>,
+    ) {
+        self.upsert_runtime_subtask_task(
+            subtask,
+            lowered,
+            status,
+            execution_mode,
+            parallel_group_index,
+            parallel_group_size,
+            error,
+        );
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────
@@ -392,11 +592,10 @@ impl AgentOrchestrator {
 
     pub fn status(&self) -> Value {
         let m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
-        let plans = self.active_plans.lock().unwrap_or_else(|e| e.into_inner());
         json!({
             "id": self.id,
             "running": self.is_running(),
-            "active_plans": plans.len(),
+            "active_plans": self.runtime_active_plan_count(),
             "config": {
                 "default_timeout_ms": self.config.default_timeout_ms,
                 "max_retries": self.config.max_retries,
@@ -426,7 +625,12 @@ impl AgentOrchestrator {
     ///
     /// 匹配预定义规则生成子任务，无匹配时创建单个 generic 子任务。
     /// 自动计算拓扑排序和并行分组。
-    pub fn decompose_task(&self, request: &str, trace_id: &str, parent_job_id: &str) -> OrchestrationPlan {
+    pub fn decompose_task(
+        &self,
+        request: &str,
+        trace_id: &str,
+        parent_job_id: &str,
+    ) -> OrchestrationPlan {
         let plan_id = Uuid::new_v4().to_string();
         let matched_rule = TASK_DECOMPOSITION_RULES
             .iter()
@@ -446,15 +650,8 @@ impl AgentOrchestrator {
                         trace_id: trace_id.to_string(),
                         name: template.name.clone(),
                         task_type: template.task_type.clone(),
-                        description: format!(
-                            "{} for: {}",
-                            template.name, request
-                        ),
-                        dependencies: template
-                            .dependencies
-                            .iter()
-                            .cloned()
-                            .collect(),
+                        description: format!("{} for: {}", template.name, request),
+                        dependencies: template.dependencies.iter().cloned().collect(),
                         priority: 5,
                         specialist_type: template.specialist_type.clone(),
                         payload: json!({
@@ -462,7 +659,6 @@ impl AgentOrchestrator {
                             "subtask": template.name,
                             "rule": rule.name,
                         }),
-                        status: Mutex::new(SubTaskStatus::Pending),
                         result: Mutex::new(None),
                         started_at: Mutex::new(None),
                         completed_at: Mutex::new(None),
@@ -484,7 +680,6 @@ impl AgentOrchestrator {
                     priority: 5,
                     specialist_type: "default".into(),
                     payload: json!({ "request": request }),
-                    status: Mutex::new(SubTaskStatus::Pending),
                     result: Mutex::new(None),
                     started_at: Mutex::new(None),
                     completed_at: Mutex::new(None),
@@ -509,7 +704,6 @@ impl AgentOrchestrator {
             subtasks,
             execution_order,
             parallel_groups,
-            status: Mutex::new(PlanStatus::Created),
             progress: Mutex::new(PlanProgress {
                 completed_count: 0,
                 total_count: total,
@@ -596,10 +790,13 @@ impl AgentOrchestrator {
         session_id: &str,
     ) -> LoweredTask {
         let primitive = self.determine_lowering_primitive(subtask);
-        let parallel_safe = matches!(primitive, LoweringPrimitive::Query | LoweringPrimitive::Transform);
+        let parallel_safe = matches!(
+            primitive,
+            LoweringPrimitive::Query | LoweringPrimitive::Transform
+        );
         let lowered_task_type = primitive.as_task_type().to_string();
         let content = format!(
-            "[orchestration/{plan_id}/{subtask_name}] original_task_type={original_task_type}\nparent_job_id={parent_job_id}\nrequest={request}\nsubtask_description={description}",
+            "[orchestration/{plan_id}/{subtask_name}] original_task_type={original_task_type}\nparent_job_id={parent_job_id}\nrequest={request}\nsubtask_description={description}\n\nYou are executing exactly one orchestration subtask inside a larger plan. Focus only on this subtask and return the concrete result needed by downstream steps. Do not re-decompose the whole project. Do not keep planning indefinitely. Do not create or manage todo lists unless the user explicitly asked for that exact output. Do not use tools. Do not spawn subagents. Assume reasonable defaults for minor missing details when you can still produce a useful concrete result. Only ask one focused question if a truly critical detail is missing and you cannot proceed without it. Otherwise, produce a concise final deliverable for this subtask and stop after the result.",
             plan_id = plan.id,
             subtask_name = subtask.name,
             original_task_type = subtask.task_type,
@@ -617,7 +814,7 @@ impl AgentOrchestrator {
                 "subtask_name": subtask.name,
                 "original_task_type": subtask.task_type,
                 "orchestration_subtask": true,
-                "streaming_observable": true,
+                "streaming_observable": false,
             }),
             LoweringPrimitive::Query => json!({
                 "query": ["request"],
@@ -662,7 +859,7 @@ impl AgentOrchestrator {
                 "result_kind": primitive.result_kind(),
                 "orchestration_rule": plan.matched_rule,
                 "orchestration_subtask": true,
-                "streaming_observable": matches!(primitive, LoweringPrimitive::ApiCall),
+                "streaming_observable": false,
             })),
         });
         LoweredTask {
@@ -708,12 +905,23 @@ impl AgentOrchestrator {
             .filter_map(|name| plan.subtasks.get(name))
             .map(|subtask| self.lower_subtask(&plan, subtask, session_id))
             .collect::<Vec<_>>();
-        let mut execution_context = OrchestrationExecutionContext::new(
-            request,
-            parent_job_id,
-            &plan.id,
-            session_id,
-        );
+        let mut execution_context =
+            OrchestrationExecutionContext::new(request, parent_job_id, &plan.id, session_id);
+
+        self.upsert_runtime_plan_task(&plan, TaskStatus::Pending, None);
+        for lowered in &lowered_tasks {
+            if let Some(subtask) = plan.subtasks.get(&lowered.name) {
+                self.upsert_runtime_subtask_task(
+                    subtask,
+                    lowered,
+                    TaskStatus::Pending,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
 
         let finalize_plan = |publish_event: &mut F, result_status: &str| {
             let finalize_started_at_ms = now_ms();
@@ -726,31 +934,9 @@ impl AgentOrchestrator {
                     "result_status": result_status,
                 }),
             );
-            let active_subtasks = plan
-                .subtasks
-                .values()
-                .filter(|subtask| {
-                    matches!(
-                        *subtask.status.lock().unwrap_or_else(|e| e.into_inner()),
-                        SubTaskStatus::Running | SubTaskStatus::Pending
-                    )
-                })
-                .map(|subtask| subtask.id.clone())
-                .collect::<Vec<_>>();
-            let active_plan_present_before_cleanup = self
-                .active_plans
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(&plan.id);
-            {
-                let mut plans = self.active_plans.lock().unwrap_or_else(|e| e.into_inner());
-                plans.shift_remove(&plan.id);
-            }
-            let active_plan_present_after_cleanup = self
-                .active_plans
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(&plan.id);
+            let active_subtasks = self.runtime_active_subtask_ids(&plan.id);
+            let active_plan_present_before_cleanup = self.runtime_plan_is_active(&plan.id);
+            let active_plan_present_after_cleanup = self.runtime_plan_is_active(&plan.id);
             if !active_subtasks.is_empty() || active_plan_present_after_cleanup {
                 publish_event(
                     "orchestration_plan_cleanup_incomplete",
@@ -784,7 +970,12 @@ impl AgentOrchestrator {
             json!({
                 "parent_job_id": plan.parent_job_id,
                 "plan_id": plan.id,
+                "trace_id": plan.trace_id,
+                "original_request": plan.original_request,
                 "plan_rule": plan.matched_rule,
+                "created_at_ms": plan.created_at,
+                "execution_order": plan.execution_order,
+                "subtask_ids": plan.subtasks.values().map(|subtask| subtask.id.clone()).collect::<Vec<_>>(),
                 "subtask_count": lowered_tasks.len(),
                 "parallel_groups": plan.parallel_groups,
                 "lowered_tasks": lowered_tasks
@@ -801,15 +992,11 @@ impl AgentOrchestrator {
         );
 
         {
-            let mut plans = self.active_plans.lock().unwrap_or_else(|e| e.into_inner());
-            plans.insert(plan.id.clone(), Arc::clone(&plan));
-        }
-        {
             let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
             m.plans_created += 1;
         }
 
-        *plan.status.lock().unwrap_or_else(|e| e.into_inner()) = PlanStatus::Running;
+        self.update_plan_runtime_status(&plan, TaskStatus::Running, None);
         let mut last_success: Option<TaskResult> = None;
 
         for (parallel_group_index, group) in plan.parallel_groups.iter().enumerate() {
@@ -855,12 +1042,15 @@ impl AgentOrchestrator {
                     if result.status == "success" {
                         last_success = Some(result.clone());
                         if detect_pending_question(result.result.as_ref(), session_id).is_some() {
-                            *plan.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                                PlanStatus::Completed;
+                            self.update_plan_runtime_status(&plan, TaskStatus::Completed, None);
                             break;
                         }
                     } else {
-                        *plan.status.lock().unwrap_or_else(|e| e.into_inner()) = PlanStatus::Failed;
+                        self.update_plan_runtime_status(
+                            &plan,
+                            TaskStatus::Failed,
+                            result.error.clone(),
+                        );
                         finalize_plan(&mut publish_event, &result.status);
                         {
                             let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
@@ -877,21 +1067,20 @@ impl AgentOrchestrator {
             }
         }
 
-        let mut final_result = last_success.unwrap_or_else(|| {
-            make_task_result(MakeTaskResult {
-                task_id: plan.id.clone(),
-                trace_id: plan.trace_id.clone(),
-                status: "success".into(),
-                result: Some(json!({
-                    "content": format!("orchestration completed: {}", plan.original_request),
-                    "plan_id": plan.id,
-                    "parent_job_id": plan.parent_job_id,
-                })),
-                error: None,
-                duration_ms: now_ms().saturating_sub(plan.created_at),
-                worker_id: None,
-            })
-        });
+        let mut final_result = if last_success.as_ref().is_some_and(|result| {
+            detect_pending_question(result.result.as_ref(), session_id).is_some()
+        }) {
+            last_success
+                .clone()
+                .expect("pending question result should exist")
+        } else {
+            self.build_orchestration_final_result(
+                &plan,
+                &lowered_tasks,
+                &execution_context,
+                last_success.as_ref(),
+            )
+        };
 
         if let Some(result_value) = final_result.result.as_mut() {
             if let Some(result_obj) = result_value.as_object_mut() {
@@ -921,7 +1110,7 @@ impl AgentOrchestrator {
             }
         }
 
-        *plan.status.lock().unwrap_or_else(|e| e.into_inner()) = PlanStatus::Completed;
+        self.update_plan_runtime_status(&plan, TaskStatus::Completed, None);
         finalize_plan(&mut publish_event, &final_result.status);
         {
             let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
@@ -1122,7 +1311,8 @@ impl AgentOrchestrator {
             parallel_group_size,
             wait_reason: "single_task".into(),
         };
-        let result = Self::wait_for_task(&self.worker_pool, task, Some(wait_context), publish_event);
+        let result =
+            Self::wait_for_task(&self.worker_pool, task, Some(wait_context), publish_event);
         self.finalize_subtask_result(
             plan,
             subtask,
@@ -1184,8 +1374,16 @@ impl AgentOrchestrator {
     ) where
         F: FnMut(&str, Value),
     {
-        *subtask.status.lock().unwrap_or_else(|e| e.into_inner()) = SubTaskStatus::Running;
         *subtask.started_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
+        self.update_subtask_runtime_status(
+            subtask,
+            lowered,
+            TaskStatus::Running,
+            Some(execution_mode),
+            Some(parallel_group_index),
+            Some(parallel_group_size),
+            None,
+        );
         publish_event(
             "orchestration_subtask_started",
             json!({
@@ -1208,7 +1406,7 @@ impl AgentOrchestrator {
     #[allow(clippy::too_many_arguments)]
     fn finalize_subtask_result<F>(
         &self,
-        plan: &Arc<OrchestrationPlan>,
+        _plan: &Arc<OrchestrationPlan>,
         subtask: &Arc<SubTask>,
         lowered: &LoweredTask,
         result: &TaskResult,
@@ -1219,7 +1417,10 @@ impl AgentOrchestrator {
     ) where
         F: FnMut(&str, Value),
     {
-        *subtask.completed_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
+        *subtask
+            .completed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
         *subtask.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result.clone());
         {
             let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
@@ -1228,15 +1429,6 @@ impl AgentOrchestrator {
                 m.subtasks_failed += 1;
             }
         }
-        {
-            let mut progress = plan.progress.lock().unwrap_or_else(|e| e.into_inner());
-            if result.status == "success" {
-                progress.completed_count += 1;
-            } else {
-                progress.failed_count += 1;
-            }
-        }
-
         let mut event_payload = json!({
             "parent_job_id": subtask.parent_job_id,
             "subtask_id": subtask.id,
@@ -1257,14 +1449,31 @@ impl AgentOrchestrator {
         });
 
         if result.status == "success" {
-            *subtask.status.lock().unwrap_or_else(|e| e.into_inner()) = SubTaskStatus::Completed;
+            self.update_subtask_runtime_status(
+                subtask,
+                lowered,
+                TaskStatus::Completed,
+                Some(execution_mode),
+                Some(parallel_group_index),
+                Some(parallel_group_size),
+                None,
+            );
             publish_event("orchestration_subtask_completed", event_payload);
         } else {
-            *subtask.status.lock().unwrap_or_else(|e| e.into_inner()) = SubTaskStatus::Failed;
+            let error = result.error.clone();
+            self.update_subtask_runtime_status(
+                subtask,
+                lowered,
+                TaskStatus::Failed,
+                Some(execution_mode),
+                Some(parallel_group_index),
+                Some(parallel_group_size),
+                error.clone(),
+            );
             if let Some(map) = event_payload.as_object_mut() {
                 map.insert(
                     "error".into(),
-                    result.error.clone().map(Value::String).unwrap_or(Value::Null),
+                    error.map(Value::String).unwrap_or(Value::Null),
                 );
             }
             publish_event("orchestration_subtask_failed", event_payload);
@@ -1301,13 +1510,193 @@ impl AgentOrchestrator {
         result
             .result
             .as_ref()
-            .and_then(|value| value.get("content").and_then(Value::as_str).map(ToString::to_string))
+            .and_then(|value| {
+                value
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
             .or_else(|| {
                 result.result.as_ref().map(|value| {
                     let rendered = value.to_string();
                     rendered.chars().take(160).collect::<String>()
                 })
             })
+    }
+
+    fn extract_result_text(value: Option<&Value>) -> String {
+        let Some(value) = value else {
+            return String::new();
+        };
+
+        if let Some(content) = value.get("content").and_then(Value::as_str) {
+            return content.to_string();
+        }
+
+        if let Some(content) = value.get("content").and_then(Value::as_array) {
+            let chunks = content
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>();
+            if !chunks.is_empty() {
+                return chunks.join("\n");
+            }
+        }
+
+        value
+            .as_str()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| value.to_string())
+    }
+
+    fn build_orchestration_summary_text(
+        &self,
+        plan: &OrchestrationPlan,
+        lowered_tasks: &[LoweredTask],
+        execution_context: &OrchestrationExecutionContext,
+    ) -> String {
+        let mut lines = vec![
+            format!(
+                "Orchestration completed for request: {}",
+                plan.original_request
+            ),
+            String::new(),
+            "Subtask outcomes:".to_string(),
+        ];
+
+        for lowered in lowered_tasks {
+            let entry = execution_context
+                .subtask_results
+                .get(&lowered.name)
+                .cloned()
+                .unwrap_or(Value::Null);
+            let status = entry
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let result_text = Self::extract_result_text(entry.get("result"));
+            let preview = if result_text.is_empty() {
+                entry
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(no result)")
+                    .to_string()
+            } else if result_text.chars().count() > 280 {
+                format!("{}…", result_text.chars().take(280).collect::<String>())
+            } else {
+                result_text
+            };
+
+            lines.push(format!(
+                "- {} [{} / {}]: {}",
+                lowered.name, lowered.original_task_type, status, preview
+            ));
+        }
+
+        lines.join("\n")
+    }
+
+    fn infer_missing_context_question(
+        &self,
+        plan: &OrchestrationPlan,
+        lowered_tasks: &[LoweredTask],
+        execution_context: &OrchestrationExecutionContext,
+    ) -> Option<Value> {
+        let mut missing_context_count = 0usize;
+        let mut prompts = Vec::new();
+
+        for lowered in lowered_tasks {
+            let entry = execution_context.subtask_results.get(&lowered.name)?;
+            let result = entry.get("result")?;
+            let content = Self::extract_result_text(Some(result));
+            let normalized = content.to_ascii_lowercase();
+            if normalized.contains("只问一个")
+                || normalized.contains("聚焦问题")
+                || normalized.contains("关键问题")
+                || normalized.contains("what business")
+                || normalized.contains("business type")
+                || normalized.contains("核心用户流程")
+                || normalized.contains("核心页面")
+                || normalized.contains("核心实体")
+            {
+                missing_context_count += 1;
+                prompts.push(content);
+            }
+        }
+
+        if missing_context_count < 2 {
+            return None;
+        }
+
+        Some(json!({
+            "type": "question",
+            "question": {
+                "id": format!("orchestration-context-{}", plan.id),
+                "kind": "input",
+                "prompt": "为了继续完成这个复杂 Web App 的整体拆分与最终交付，我需要一个统一的业务上下文：请告诉我产品类型、核心用户，以及 3-5 个核心功能。若有特殊需求，也请补充是否需要登录、支付、文件上传、实时功能或多租户。",
+                "options": [
+                    "电商平台",
+                    "项目管理系统",
+                    "AI SaaS",
+                    "内容社区"
+                ],
+                "orchestration": {
+                    "reason": "multiple_subtasks_missing_shared_context",
+                    "subtasks": lowered_tasks.iter().map(|task| task.name.clone()).collect::<Vec<_>>(),
+                    "collected_prompts": prompts,
+                }
+            }
+        }))
+    }
+
+    fn build_orchestration_final_result(
+        &self,
+        plan: &OrchestrationPlan,
+        lowered_tasks: &[LoweredTask],
+        execution_context: &OrchestrationExecutionContext,
+        last_success: Option<&TaskResult>,
+    ) -> TaskResult {
+        let aggregated_result = if let Some(question) =
+            self.infer_missing_context_question(plan, lowered_tasks, execution_context)
+        {
+            question
+        } else {
+            let summary_text =
+                self.build_orchestration_summary_text(plan, lowered_tasks, execution_context);
+            json!({
+                "content": summary_text,
+                "plan_id": plan.id,
+                "parent_job_id": plan.parent_job_id,
+                "subtask_results": execution_context.subtask_results.clone(),
+            })
+        };
+
+        let (total_subtasks, completed_subtasks, failed_subtasks) =
+            self.runtime_plan_progress_counts(&plan.id);
+        let mut result = make_task_result(MakeTaskResult {
+            task_id: plan.id.clone(),
+            trace_id: plan.trace_id.clone(),
+            status: "success".into(),
+            result: Some(aggregated_result),
+            error: None,
+            duration_ms: now_ms().saturating_sub(plan.created_at),
+            worker_id: last_success.and_then(|result| result.worker_id.clone()),
+        });
+
+        if let Some(result_value) = result.result.as_mut() {
+            if let Some(result_obj) = result_value.as_object_mut() {
+                result_obj.insert("subtasks_total".into(), Value::from(total_subtasks));
+                result_obj.insert("subtasks_completed".into(), Value::from(completed_subtasks));
+                result_obj.insert("subtasks_failed".into(), Value::from(failed_subtasks));
+            }
+        }
+
+        if let Some(last_success) = last_success {
+            result.duration_ms = result.duration_ms.max(last_success.duration_ms);
+        }
+
+        result
     }
 
     // ── Orchestration ─────────────────────────────────────────────
@@ -1320,11 +1709,6 @@ impl AgentOrchestrator {
         // Decompose
         let plan = Arc::new(self.decompose_task(request, &trace_id, &trace_id));
 
-        // Store in active plans
-        {
-            let mut plans = self.active_plans.lock().unwrap_or_else(|e| e.into_inner());
-            plans.insert(plan.id.clone(), Arc::clone(&plan));
-        }
         {
             let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
             m.plans_created += 1;
@@ -1332,12 +1716,6 @@ impl AgentOrchestrator {
 
         // Execute
         let result = self.execute_orchestration_plan(&plan);
-
-        // Clean up completed plan
-        {
-            let mut plans = self.active_plans.lock().unwrap_or_else(|e| e.into_inner());
-            plans.shift_remove(&plan.id);
-        }
 
         // Update metrics
         let elapsed = now_ms().saturating_sub(started);
@@ -1359,16 +1737,12 @@ impl AgentOrchestrator {
     /// 组内只有一个任务或未启用并行时串行执行，否则并发提交后收集结果。
     /// 任一子任务失败则整个计划标记为 Failed 并提前返回。
     pub fn execute_orchestration_plan(&self, plan: &OrchestrationPlan) -> TaskResult {
-        *plan.status.lock().unwrap_or_else(|e| e.into_inner()) = PlanStatus::Running;
-
         for group in &plan.parallel_groups {
             if group.len() == 1 || !self.config.enable_parallel {
                 // 单任务组或未启用并行：逐个串行执行
                 for name in group {
                     let result = self.execute_subtask(plan, name);
                     if result.status != "success" {
-                        *plan.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                            PlanStatus::Failed;
                         return result;
                     }
                 }
@@ -1377,8 +1751,6 @@ impl AgentOrchestrator {
                 let mut receivers = Vec::new();
                 for name in group {
                     if let Some(subtask) = plan.subtasks.get(name) {
-                        *subtask.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                            SubTaskStatus::Running;
                         *subtask.started_at.lock().unwrap_or_else(|e| e.into_inner()) =
                             Some(now_ms());
 
@@ -1417,18 +1789,16 @@ impl AgentOrchestrator {
                     });
 
                     if let Some(subtask) = plan.subtasks.get(&name) {
-                        *subtask.completed_at.lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some(now_ms());
+                        *subtask
+                            .completed_at
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
 
                         let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
                         m.subtasks_executed += 1;
 
                         if result.status == "success" {
-                            *subtask.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                                SubTaskStatus::Completed;
                         } else {
-                            *subtask.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                                SubTaskStatus::Failed;
                             m.subtasks_failed += 1;
                             failed = true;
                             if fail_result.is_none() {
@@ -1438,34 +1808,29 @@ impl AgentOrchestrator {
                         *subtask.result.lock().unwrap_or_else(|e| e.into_inner()) =
                             Some(result.clone());
                     }
-
-                    let mut progress =
-                        plan.progress.lock().unwrap_or_else(|e| e.into_inner());
-                    if result.status == "success" {
-                        progress.completed_count += 1;
-                    } else {
-                        progress.failed_count += 1;
-                    }
                 }
 
                 if failed {
-                    *plan.status.lock().unwrap_or_else(|e| e.into_inner()) = PlanStatus::Failed;
                     return fail_result.unwrap();
                 }
             }
         }
 
-        *plan.status.lock().unwrap_or_else(|e| e.into_inner()) = PlanStatus::Completed;
-
         make_task_result(MakeTaskResult {
             task_id: plan.id.clone(),
             trace_id: plan.trace_id.clone(),
             status: "success".into(),
-            result: Some(json!({
-                "plan_id": plan.id,
-                "request": plan.original_request,
-                "subtasks_completed": plan.subtasks.len(),
-            })),
+            result: Some({
+                let (total_subtasks, completed_subtasks, failed_subtasks) =
+                    self.runtime_plan_progress_counts(&plan.id);
+                json!({
+                    "plan_id": plan.id,
+                    "request": plan.original_request,
+                    "subtasks_total": total_subtasks,
+                    "subtasks_completed": completed_subtasks,
+                    "subtasks_failed": failed_subtasks,
+                })
+            }),
             error: None,
             duration_ms: now_ms().saturating_sub(plan.created_at),
             worker_id: None,
@@ -1481,7 +1846,6 @@ impl AgentOrchestrator {
             }
         };
 
-        *subtask.status.lock().unwrap_or_else(|e| e.into_inner()) = SubTaskStatus::Running;
         *subtask.started_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
 
         let task = make_task(MakeTask {
@@ -1516,7 +1880,10 @@ impl AgentOrchestrator {
             })
         };
 
-        *subtask.completed_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
+        *subtask
+            .completed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
 
         {
             let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
@@ -1524,16 +1891,6 @@ impl AgentOrchestrator {
             if result.status != "success" {
                 m.subtasks_failed += 1;
             }
-        }
-
-        if result.status == "success" {
-            *subtask.status.lock().unwrap_or_else(|e| e.into_inner()) = SubTaskStatus::Completed;
-            let mut progress = plan.progress.lock().unwrap_or_else(|e| e.into_inner());
-            progress.completed_count += 1;
-        } else {
-            *subtask.status.lock().unwrap_or_else(|e| e.into_inner()) = SubTaskStatus::Failed;
-            let mut progress = plan.progress.lock().unwrap_or_else(|e| e.into_inner());
-            progress.failed_count += 1;
         }
 
         *subtask.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result.clone());

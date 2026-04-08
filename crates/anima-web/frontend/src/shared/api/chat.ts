@@ -17,9 +17,14 @@ interface SendResponse {
 }
 
 async function sendMessageApi(payload: SendRequest): Promise<SendResponse> {
-  return fetchJson<SendResponse>('/api/send', {
+  const endpoint = payload.session_id ? `/api/sessions/${payload.session_id}/send` : '/api/send';
+  const body = payload.session_id
+    ? JSON.stringify({ content: payload.content })
+    : JSON.stringify(payload);
+
+  return fetchJson<SendResponse>(endpoint, {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body,
   });
 }
 
@@ -32,7 +37,7 @@ export function useSendMessageMutation() {
   return useMutation({
     mutationFn: (payload: SendRequest) => sendMessageApi(payload),
     onSuccess: (data, variables) => {
-      const nextSessionId = variables.session_id ?? data.chat_id ?? null;
+      const nextSessionId = variables.session_id ?? data.session_id ?? data.chat_id ?? null;
       if (nextSessionId) {
         setSelectedSessionId(nextSessionId);
       }
@@ -42,6 +47,8 @@ export function useSendMessageMutation() {
       setSelectNewestJob(true);
       queryClient.invalidateQueries({ queryKey: ['status'] });
       queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: ['sessions', nextSessionId, 'history'] });
     },
   });
 }

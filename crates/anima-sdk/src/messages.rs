@@ -39,7 +39,6 @@ pub fn normalize_message(message: Value) -> Result<Value> {
     }
 }
 
-
 pub fn execute_command(
     client: &Client,
     session_id: &str,
@@ -162,8 +161,11 @@ pub fn send_prompt_with_agent(
     if let Some(directory) = client.directory.as_deref() {
         params.insert("directory".into(), Value::String(directory.to_string()));
     }
-    params.insert("workspace".into(), Value::String("global".to_string()));
-    let params_ref = if params.is_empty() { None } else { Some(&params) };
+    let params_ref = if params.is_empty() {
+        None
+    } else {
+        Some(&params)
+    };
 
     utils::handle_response(http::post_request(
         client,
@@ -195,6 +197,10 @@ pub fn subscribe_event_stream(
         params.insert("workspace".into(), Value::String(workspace.to_string()));
     }
 
-    let params_ref = if params.is_empty() { None } else { Some(&params) };
+    let params_ref = if params.is_empty() {
+        None
+    } else {
+        Some(&params)
+    };
     http::get_request_streaming(client, "/event", params_ref)
 }

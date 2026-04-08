@@ -2,8 +2,11 @@ use anima_sdk::{facade::Client as SdkClient, messages, sessions};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
+
+pub type UnifiedStreamLine = Result<String, String>;
+pub type UnifiedStreamSource = Box<dyn Iterator<Item = UnifiedStreamLine>>;
 
 pub trait TaskExecutor: Send + Sync {
     fn send_prompt(
@@ -15,16 +18,16 @@ pub trait TaskExecutor: Send + Sync {
 
     fn create_session(&self, client: &SdkClient) -> Result<Value, String>;
 
-    /// 流式发送 prompt，返回 SSE 行迭代器
+    /// 流式发送 prompt，返回统一流输入。
     ///
-    /// 默认返回 Err（不支持流式）。实现方需要返回可被 `consume_sse_stream(...)`
-    /// 消费的逐行 SSE iterator。
+    /// 默认返回 Err（不支持流式）。实现方需要返回可被 streaming 层消费的
+    /// 逐行 SSE/兼容行迭代器，而不是暴露底层 transport response。
     fn send_prompt_streaming(
         &self,
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Box<dyn Iterator<Item = Result<String, String>>>, String> {
+    ) -> Result<UnifiedStreamSource, String> {
         Err("streaming not supported".into())
     }
 }
@@ -39,7 +42,9 @@ impl TaskExecutor for SdkTaskExecutor {
         session_id: &str,
         content: Value,
     ) -> Result<Value, String> {
-        messages::send_prompt(client, session_id, content, None).map_err(|err| err.to_string())
+        let response = messages::send_prompt(client, session_id, content, None)
+            .map_err(|err| err.to_string())?;
+        wait_for_message_completion(client, session_id, response)
     }
 
     fn create_session(&self, client: &SdkClient) -> Result<Value, String> {
@@ -51,27 +56,15 @@ impl TaskExecutor for SdkTaskExecutor {
         client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Box<dyn Iterator<Item = Result<String, String>>>, String> {
-        let event_response = messages::subscribe_event_stream(client, None, Some("global"))
-            .map_err(|e| e.to_string())?;
-        let lines = BufReader::new(event_response)
-            .lines()
-            .map(|r| r.map_err(|e| e.to_string()));
-
-        let client = client.clone();
-        let session_id_owned = session_id.to_string();
-        let (message_result_tx, message_result_rx) = mpsc::channel();
-        thread::spawn(move || {
-            let result = messages::send_prompt(&client, &session_id_owned, content, None)
-                .map_err(|e| e.to_string())
-                .and_then(|response| extract_message_id_from_response(&response));
-            let _ = message_result_tx.send(result);
-        });
+    ) -> Result<UnifiedStreamSource, String> {
+        let event_lines = open_opencode_event_stream(client)?;
+        let message_result_rx =
+            spawn_message_request(client.clone(), session_id.to_string(), content);
 
         Ok(Box::new(OpenCodeEventAdapter::new(
             session_id.to_string(),
             message_result_rx,
-            Box::new(lines),
+            event_lines,
         )))
     }
 }
@@ -142,7 +135,8 @@ impl OpenCodeEventAdapter {
             Ok(Err(err)) => self.upstream_error = Some(err),
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                self.upstream_error = Some("streaming protocol error: message sender thread disconnected".into())
+                self.upstream_error =
+                    Some("streaming protocol error: message sender thread disconnected".into())
             }
         }
     }
@@ -252,7 +246,10 @@ impl OpenCodeEventAdapter {
         if self.target_user_message_id.is_none() && role.eq_ignore_ascii_case("user") {
             adapter_debug(
                 "user.locked.from_event",
-                &format!("user_message_id={} session_id={}", message_id, self.target_session_id),
+                &format!(
+                    "user_message_id={} session_id={}",
+                    message_id, self.target_session_id
+                ),
             );
             self.target_user_message_id = Some(message_id.clone());
         }
@@ -269,24 +266,41 @@ impl OpenCodeEventAdapter {
             ),
         );
 
-        if self.target_assistant_message_id.is_none()
-            && role.eq_ignore_ascii_case("assistant")
+        let is_same_parent_assistant = role.eq_ignore_ascii_case("assistant")
             && self
                 .target_user_message_id
                 .as_deref()
                 .zip(parent_id.as_deref())
-                .is_some_and(|(user_message_id, parent_id)| user_message_id == parent_id)
-        {
+                .is_some_and(|(user_message_id, parent_id)| user_message_id == parent_id);
+
+        if self.target_assistant_message_id.is_none() && is_same_parent_assistant {
             adapter_debug(
                 "assistant.locked",
                 &format!(
                     "assistant_message_id={} parent_id={:?} user_message_id={:?}",
-                    message_id,
-                    parent_id,
-                    self.target_user_message_id,
+                    message_id, parent_id, self.target_user_message_id,
                 ),
             );
             self.target_assistant_message_id = Some(message_id.clone());
+        } else if is_same_parent_assistant
+            && self.target_message_id() != Some(message_id.as_str())
+            && self
+                .stop_reason
+                .as_deref()
+                .is_some_and(is_tool_calls_stop_reason)
+        {
+            adapter_debug(
+                "assistant.rollover",
+                &format!(
+                    "previous_assistant_message_id={:?} next_assistant_message_id={} parent_id={:?}",
+                    self.target_assistant_message_id,
+                    message_id,
+                    parent_id,
+                ),
+            );
+            self.stop_all_parts();
+            self.target_assistant_message_id = Some(message_id.clone());
+            self.stop_reason = None;
         }
 
         if self.target_message_id() != Some(message_id.as_str()) {
@@ -295,7 +309,15 @@ impl OpenCodeEventAdapter {
 
         self.ensure_message_started();
         if let Some(stop_reason) = extract_stop_reason(raw) {
+            if is_tool_calls_stop_reason(&stop_reason) {
+                self.stop_reason = Some(stop_reason);
+                self.stop_all_parts();
+                return;
+            }
+
             self.stop_reason = Some(stop_reason);
+            self.stop_message_if_needed();
+            return;
         }
         if let Some(status) = extract_status(raw) {
             if is_terminal_status(&status) {
@@ -418,7 +440,7 @@ impl OpenCodeEventAdapter {
 }
 
 impl Iterator for OpenCodeEventAdapter {
-    type Item = Result<String, String>;
+    type Item = UnifiedStreamLine;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut event_data_lines: Vec<String> = Vec::new();
@@ -451,7 +473,10 @@ impl Iterator for OpenCodeEventAdapter {
                         let raw: Value = match serde_json::from_str(trimmed) {
                             Ok(value) => value,
                             Err(err) => {
-                                adapter_debug("event-parse-error", &format!("payload={trimmed} error={err}"));
+                                adapter_debug(
+                                    "event-parse-error",
+                                    &format!("payload={trimmed} error={err}"),
+                                );
                                 continue;
                             }
                         };
@@ -498,11 +523,103 @@ impl Iterator for OpenCodeEventAdapter {
     }
 }
 
+fn open_opencode_event_stream(client: &SdkClient) -> Result<UnifiedStreamSource, String> {
+    let event_response = messages::subscribe_event_stream(client, None, None)
+        .map_err(|e| e.to_string())?;
+    let lines = BufReader::new(event_response)
+        .lines()
+        .map(|r| r.map_err(|e| e.to_string()));
+    Ok(Box::new(lines))
+}
+
+type MessageRequestResult = Result<String, String>;
+
+const MESSAGE_COMPLETION_POLL_ATTEMPTS: usize = 120;
+const MESSAGE_COMPLETION_POLL_INTERVAL_MS: u64 = 250;
+
+fn wait_for_message_completion(
+    client: &SdkClient,
+    session_id: &str,
+    initial_response: Value,
+) -> Result<Value, String> {
+    let message_id = extract_message_id_from_response(&initial_response)?;
+    let initial_message = messages::get_message(client, session_id, &message_id, None)
+        .map_err(|err| err.to_string())?;
+    if message_has_completed_content(&initial_message) {
+        return Ok(initial_message);
+    }
+
+    for _ in 0..MESSAGE_COMPLETION_POLL_ATTEMPTS {
+        std::thread::sleep(std::time::Duration::from_millis(
+            MESSAGE_COMPLETION_POLL_INTERVAL_MS,
+        ));
+        let message = messages::get_message(client, session_id, &message_id, None)
+            .map_err(|err| err.to_string())?;
+        if message_has_completed_content(&message) {
+            return Ok(message);
+        }
+    }
+
+    Err(format!(
+        "timed out waiting for completed message {} in session {}",
+        message_id, session_id
+    ))
+}
+
+fn message_has_completed_content(value: &Value) -> bool {
+    let parts = value
+        .get("parts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let has_content = parts.iter().any(|part| {
+        let part_type = part.get("type").and_then(Value::as_str).unwrap_or_default();
+        match part_type {
+            "text" | "reasoning" | "tool" | "tool_use" | "patch" => true,
+            _ => false,
+        }
+    });
+    if !has_content {
+        return false;
+    }
+
+    let finish = value
+        .get("info")
+        .and_then(|info| info.get("finish"))
+        .and_then(Value::as_str);
+    let status = value
+        .get("info")
+        .and_then(|info| info.get("status"))
+        .and_then(Value::as_str);
+
+    matches!(finish, Some("stop" | "tool-calls" | "tool_calls"))
+        || matches!(status, Some("completed" | "complete" | "done" | "stopped"))
+}
+
+fn spawn_message_request(
+    client: SdkClient,
+    session_id: String,
+    content: Value,
+) -> Receiver<MessageRequestResult> {
+    let (message_result_tx, message_result_rx): (
+        Sender<MessageRequestResult>,
+        Receiver<MessageRequestResult>,
+    ) = mpsc::channel();
+    thread::spawn(move || {
+        let result = messages::send_prompt(&client, &session_id, content, None)
+            .map_err(|e| e.to_string())
+            .and_then(|response| extract_message_id_from_response(&response));
+        let _ = message_result_tx.send(result);
+    });
+    message_result_rx
+}
+
 fn extract_message_id_from_response(value: &Value) -> Result<String, String> {
     string_by_pointers(
         value,
         &[
             "/id",
+            "/info/id",
             "/messageID",
             "/message_id",
             "/message/id",
@@ -512,7 +629,9 @@ fn extract_message_id_from_response(value: &Value) -> Result<String, String> {
         ],
     )
     .map(ToString::to_string)
-    .ok_or_else(|| format!("streaming protocol error: POST /message response missing message id: {value}"))
+    .ok_or_else(|| {
+        format!("streaming protocol error: POST /message response missing message id: {value}")
+    })
 }
 
 fn extract_event_type(value: &Value) -> Option<&str> {
@@ -638,10 +757,14 @@ fn extract_stop_reason(value: &Value) -> Option<String> {
         &[
             "/stopReason",
             "/stop_reason",
+            "/finish",
             "/properties/stopReason",
             "/properties/stop_reason",
+            "/properties/info/finish",
             "/message/stopReason",
             "/message/stop_reason",
+            "/message/finish",
+            "/properties/message/finish",
         ],
     )
     .map(ToString::to_string)
@@ -724,6 +847,10 @@ fn is_terminal_status(status: &str) -> bool {
     )
 }
 
+fn is_tool_calls_stop_reason(stop_reason: &str) -> bool {
+    stop_reason.eq_ignore_ascii_case("tool-calls") || stop_reason.eq_ignore_ascii_case("tool_calls")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,11 +929,20 @@ mod tests {
             "",
         ]));
 
-        assert!(lines.iter().any(|line| line.contains(r#""index":0,"type":"content_block_start""#)));
-        assert!(lines.iter().any(|line| line.contains(r#""partial_json":"{\"command\"""#)));
-        assert!(lines.iter().any(|line| line.contains(r#""partial_json":":\"ls\"}""#)));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains(r#""index":0,"type":"content_block_start""#)));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains(r#""partial_json":"{\"command\"""#)));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains(r#""partial_json":":\"ls\"}""#)));
         assert_eq!(
-            lines.iter().filter(|line| line.contains(r#""index":0"#)).count(),
+            lines
+                .iter()
+                .filter(|line| line.contains(r#""index":0"#))
+                .count(),
             4
         );
     }
@@ -820,6 +956,40 @@ mod tests {
         assert_eq!(
             lines,
             vec![r#"data: {"error":{"message":"boom","type":"error"},"type":"error"}"#]
+        );
+    }
+
+    #[test]
+    fn rolls_over_to_next_assistant_message_after_tool_calls_finish() {
+        let lines = collect_ok_lines(adapter_from_lines(vec![
+            r#"data: {"type":"message.updated","sessionID":"sess-1","messageID":"msg-2","role":"assistant","parentID":"msg-1"}"#,
+            "",
+            r#"data: {"type":"message.part.updated","sessionID":"sess-1","messageID":"msg-2","partID":"tool-part","part":{"id":"tool-part","type":"tool","tool":{"name":"todowrite"}}}"#,
+            "",
+            r#"data: {"type":"message.updated","sessionID":"sess-1","messageID":"msg-2","role":"assistant","parentID":"msg-1","finish":"tool-calls"}"#,
+            "",
+            r#"data: {"type":"message.updated","sessionID":"sess-1","messageID":"msg-3","role":"assistant","parentID":"msg-1"}"#,
+            "",
+            r#"data: {"type":"message.part.updated","sessionID":"sess-1","messageID":"msg-3","partID":"part-2","part":{"id":"part-2","type":"text"}}"#,
+            "",
+            r#"data: {"type":"message.part.delta","sessionID":"sess-1","messageID":"msg-3","partID":"part-2","field":"text","delta":"done"}"#,
+            "",
+            r#"data: {"type":"session.status","sessionID":"sess-1","status":"completed"}"#,
+            "",
+        ]));
+
+        assert_eq!(
+            lines,
+            vec![
+                r#"data: {"message":{"id":"msg-2"},"type":"message_start"}"#,
+                r#"data: {"content_block":{"id":"tool-part","input":{},"name":"todowrite","type":"tool_use"},"index":0,"type":"content_block_start"}"#,
+                r#"data: {"index":0,"type":"content_block_stop"}"#,
+                r#"data: {"content_block":{"text":"","type":"text"},"index":1,"type":"content_block_start"}"#,
+                r#"data: {"delta":{"text":"done","type":"text_delta"},"index":1,"type":"content_block_delta"}"#,
+                r#"data: {"index":1,"type":"content_block_stop"}"#,
+                r#"data: {"delta":{"stop_reason":"completed"},"type":"message_delta"}"#,
+                r#"data: {"type":"message_stop"}"#,
+            ]
         );
     }
 

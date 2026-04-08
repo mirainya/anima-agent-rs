@@ -1,13 +1,18 @@
-use crate::jobs::{build_job_views, AcceptedJob, JobKind, JobReviewInput};
-use anima_runtime::agent::QuestionAnswerInput;
+use crate::jobs::{build_job_views_with_projection, AcceptedJob, JobKind, JobReviewInput};
 use crate::AppState;
+use anima_runtime::agent::QuestionAnswerInput;
+use anima_runtime::messages::types::MessageRole;
+use anima_runtime::runtime::build_projection;
+use anima_runtime::transcript::ContentBlock;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue, StatusCode, Uri};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::{Component, Path as StdPath, PathBuf};
 use std::sync::Arc;
@@ -75,16 +80,43 @@ pub struct QuestionAnswerRequest {
     pub answer: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct SessionListItem {
+    session_id: String,
+    chat_id: String,
+    channel: String,
+    history_len: usize,
+    last_user_message_preview: String,
+    last_active: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SessionHistoryItem {
+    role: Option<String>,
+    content: Value,
+    recorded_at: Option<u64>,
+    raw: Value,
+}
+
 pub fn create_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(index_page))
         .route("/assets/{*path}", get(static_asset))
         .route("/api/send", post(send_message))
+        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions/{session_id}/history", get(session_history))
+        .route(
+            "/api/sessions/{session_id}/send",
+            post(send_message_for_session),
+        )
         .route("/api/events", get(sse_events))
         .route("/api/status", get(system_status))
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{job_id}/review", post(review_job))
-        .route("/api/jobs/{job_id}/question-answer", post(answer_job_question))
+        .route(
+            "/api/jobs/{job_id}/question-answer",
+            post(answer_job_question),
+        )
         .fallback(spa_fallback)
 }
 
@@ -131,10 +163,9 @@ async fn static_asset(Path(path): Path<String>) -> Response {
 
     let mut response = Response::new(bytes.into_response().into_body());
     let content_type = content_type_for_path(&asset_path);
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(content_type),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     response
 }
 
@@ -176,17 +207,39 @@ async fn send_message(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SendMessageRequest>,
 ) -> Json<serde_json::Value> {
+    send_message_impl(state, req).await
+}
+
+async fn send_message_for_session(
+    Path(session_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SendMessageRequest>,
+) -> Json<serde_json::Value> {
+    let request = SendMessageRequest {
+        content: req.content,
+        session_id: Some(session_id),
+    };
+    send_message_impl(state, request).await
+}
+
+async fn send_message_impl(
+    state: Arc<AppState>,
+    req: SendMessageRequest,
+) -> Json<serde_json::Value> {
     let user_content = req.content.clone();
-    let msg = anima_runtime::bus::make_inbound(anima_runtime::bus::MakeInbound {
+    let requested_session_id = req.session_id.clone();
+    let mut msg = anima_runtime::bus::make_inbound(anima_runtime::bus::MakeInbound {
         channel: "web".into(),
         sender_id: Some("web-user".into()),
-        chat_id: req.session_id.clone(),
+        chat_id: requested_session_id.clone(),
         content: req.content,
-        session_key: req.session_id.clone(),
+        session_key: requested_session_id.clone(),
         ..Default::default()
     });
     let job_id = msg.id.clone();
-    let session_id = req.session_id.clone().unwrap_or_else(|| job_id.clone());
+    let session_id = requested_session_id.unwrap_or_else(|| job_id.clone());
+    msg.chat_id = Some(session_id.clone());
+    msg.session_key = Some(session_id.clone());
     {
         let mut jobs = state.jobs.lock().unwrap();
         jobs.register_accepted_job(AcceptedJob {
@@ -209,7 +262,7 @@ async fn send_message(
             "accepted": true,
             "job_id": job_id,
             "chat_id": session_id,
-            "session_id": req.session_id,
+            "session_id": session_id,
         })),
         Err(e) => Json(serde_json::json!({"ok": false, "accepted": false, "error": e})),
     }
@@ -238,12 +291,115 @@ async fn list_jobs(State(state): State<Arc<AppState>>) -> Json<serde_json::Value
     }))
 }
 
+async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let runtime = state.runtime.lock().unwrap();
+    let manager = &runtime.agent.session_manager;
+    let runtime_snapshot = runtime.agent.core_agent().runtime_state_snapshot();
+    let transcript_sessions = build_session_summaries_from_runtime(&runtime_snapshot);
+    let mut sessions_by_id = transcript_sessions
+        .into_iter()
+        .map(|session| (session.session_id.clone(), session))
+        .collect::<HashMap<_, _>>();
+
+    for session in manager.get_all_sessions() {
+        let history = manager.get_history(&session.id);
+        let last_user_message_preview = history
+            .iter()
+            .rev()
+            .find(|entry| entry.get("role").and_then(|value| value.as_str()) == Some("user"))
+            .and_then(|entry| entry.get("content"))
+            .map(json_content_preview)
+            .unwrap_or_default();
+
+        sessions_by_id
+            .entry(session.id.clone())
+            .and_modify(|item| {
+                if item.last_user_message_preview.is_empty()
+                    && !last_user_message_preview.is_empty()
+                {
+                    item.last_user_message_preview = last_user_message_preview.clone();
+                }
+                item.history_len = item.history_len.max(history.len());
+                item.last_active = item.last_active.max(session.last_active);
+            })
+            .or_insert_with(|| SessionListItem {
+                chat_id: session.id.clone(),
+                session_id: session.id,
+                channel: session.channel,
+                history_len: history.len(),
+                last_user_message_preview,
+                last_active: session.last_active,
+            });
+    }
+    drop(runtime);
+
+    let mut sessions = sessions_by_id.into_values().collect::<Vec<_>>();
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.last_active));
+
+    Json(serde_json::json!({
+        "ok": true,
+        "sessions": sessions,
+    }))
+}
+
+async fn session_history(
+    Path(session_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let runtime = state.runtime.lock().unwrap();
+    let mut history = runtime.agent.session_manager.get_history(&session_id);
+    let exists = runtime.agent.session_manager.session_exists(&session_id);
+    if history.is_empty() {
+        history = runtime.agent.core_agent().session_context_history(&session_id);
+    }
+    let history_known = !history.is_empty();
+    drop(runtime);
+
+    if !exists && !history_known {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "session_not_found",
+            "session_id": session_id,
+            "history": [],
+        }));
+    }
+
+    let items = history
+        .into_iter()
+        .map(|entry| SessionHistoryItem {
+            role: entry
+                .get("role")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+            content: entry
+                .get("content")
+                .cloned()
+                .unwrap_or_else(|| entry.clone()),
+            recorded_at: entry
+                .get("timestamp")
+                .and_then(|value| value.as_u64())
+                .or_else(|| entry.get("recorded_at_ms").and_then(|value| value.as_u64())),
+            raw: entry,
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({
+        "ok": true,
+        "session_id": session_id,
+        "history": items,
+    }))
+}
+
 async fn review_job(
     Path(job_id): Path<String>,
     State(state): State<Arc<AppState>>,
     Json(input): Json<JobReviewInput>,
 ) -> Json<serde_json::Value> {
-    let review = state.jobs.lock().unwrap().record_review(job_id.clone(), input);
+    let review = state
+        .jobs
+        .lock()
+        .unwrap()
+        .record_review(job_id.clone(), input);
     let snapshot = build_status_snapshot(state.as_ref());
     let job = snapshot.jobs.into_iter().find(|job| job.job_id == job_id);
     Json(serde_json::json!({
@@ -305,6 +461,7 @@ async fn system_status(State(state): State<Arc<AppState>>) -> Json<serde_json::V
         "runtime_timeline": snapshot.runtime_timeline,
         "recent_execution_summaries": snapshot.recent_execution_summaries,
         "metrics": snapshot.metrics,
+        "unified_runtime": snapshot.unified_runtime,
         "jobs": snapshot.jobs,
     }))
 }
@@ -318,12 +475,90 @@ struct StatusSnapshot {
     runtime_timeline: Vec<serde_json::Value>,
     recent_execution_summaries: Vec<serde_json::Value>,
     metrics: serde_json::Value,
+    unified_runtime: serde_json::Value,
     jobs: Vec<crate::jobs::JobView>,
+}
+
+fn json_content_preview(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.chars().take(80).collect(),
+        other => serde_json::to_string(other)
+            .unwrap_or_default()
+            .chars()
+            .take(80)
+            .collect(),
+    }
+}
+
+fn transcript_content_preview(blocks: &[ContentBlock]) -> String {
+    let text = blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    text.chars().take(80).collect()
+}
+
+fn build_session_summaries_from_runtime(
+    snapshot: &anima_runtime::runtime::RuntimeStateSnapshot,
+) -> Vec<SessionListItem> {
+    let mut sessions = HashMap::<String, SessionListItem>::new();
+
+    for run in snapshot.runs.values() {
+        let Some(chat_id) = run.chat_id.clone() else {
+            continue;
+        };
+
+        let item = sessions
+            .entry(chat_id.clone())
+            .or_insert_with(|| SessionListItem {
+                session_id: chat_id.clone(),
+                chat_id: chat_id.clone(),
+                channel: run.channel.clone(),
+                history_len: 0,
+                last_user_message_preview: String::new(),
+                last_active: run.updated_at_ms,
+            });
+        item.last_active = item.last_active.max(run.updated_at_ms);
+    }
+
+    for message in &snapshot.transcript {
+        let Some(run) = snapshot.runs.get(&message.run_id) else {
+            continue;
+        };
+        let Some(chat_id) = run.chat_id.clone() else {
+            continue;
+        };
+
+        let preview = transcript_content_preview(&message.blocks);
+        let item = sessions
+            .entry(chat_id.clone())
+            .or_insert_with(|| SessionListItem {
+                session_id: chat_id.clone(),
+                chat_id: chat_id.clone(),
+                channel: run.channel.clone(),
+                history_len: 0,
+                last_user_message_preview: String::new(),
+                last_active: message.appended_at_ms,
+            });
+        item.history_len += 1;
+        item.last_active = item.last_active.max(message.appended_at_ms);
+        if message.role == MessageRole::User && !preview.is_empty() {
+            item.last_user_message_preview = preview;
+        }
+    }
+
+    sessions.into_values().collect()
 }
 
 fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
     let runtime = state.runtime.lock().unwrap();
     let agent_status = runtime.agent.status();
+    let runtime_snapshot = runtime.agent.core_agent().runtime_state_snapshot();
+    let runtime_projection = build_projection(&runtime_snapshot);
     let worker_status = agent_status.core.worker_pool.clone();
     let failure_list = agent_status
         .core
@@ -334,12 +569,14 @@ fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
         .collect::<Vec<_>>();
     let jobs = {
         let store = state.jobs.lock().unwrap();
-        build_job_views(
+        build_job_views_with_projection(
             &agent_status.core.runtime_timeline,
             &agent_status.core.recent_execution_summaries,
             &failure_list,
             &worker_status.workers,
             &store,
+            &runtime_snapshot,
+            &runtime_projection,
         )
     };
 
@@ -447,6 +684,22 @@ fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
                     "count": histogram.count,
                 }))
             }).collect::<serde_json::Map<String, serde_json::Value>>(),
+        }),
+        unified_runtime: serde_json::json!({
+            "runs": runtime_projection.runs,
+            "turns": runtime_projection.turns,
+            "tasks": runtime_projection.tasks,
+            "suspensions": runtime_projection.suspensions,
+            "tool_invocations": runtime_projection.tool_invocations,
+            "requirements": runtime_projection.requirements,
+            "transcript": runtime_projection.transcript,
+            "execution_summaries": runtime_projection.execution_summaries,
+            "failures": runtime_projection.failures,
+            "orchestration": runtime_projection.orchestration,
+            "pending_questions": runtime_projection.pending_questions,
+            "tool_states": runtime_projection.tool_states,
+            "job_statuses": runtime_projection.job_statuses,
+            "recent_events": runtime_snapshot.recent_events,
         }),
         jobs,
     }
