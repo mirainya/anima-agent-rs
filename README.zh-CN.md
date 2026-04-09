@@ -172,10 +172,13 @@ Agentic loop
 
 ### 核心领域
 
-- `agent/` — agent 核心引擎、任务类型、执行器、Worker 池
+- `agent/` — agent 核心引擎（CoreAgent facade）、任务类型、执行器、Worker 池、SuspensionCoordinator（挂起状态协调）、TaskRegistry
 - `classifier/` — 规则分类、AI 分类、任务分类与智能路由
 - `orchestrator/` — 编排核心、并行池、专家池
 - `execution/` — 执行驱动、回合协调、上下文装配、需求判定
+- `runtime/` — Event-sourced 统一运行时状态核心（RuntimeDomainEvent → reducer → RuntimeStateSnapshot → projection）
+- `tasks/` — 领域模型定义（Run / Turn / Task / Suspension / Requirement / ToolInvocation 记录）、生命周期、调度、查询
+- `transcript/` — 消息记录模型（MessageRecord）、追加、规范化、配对
 
 ### 基础设施与支撑模块
 
@@ -516,6 +519,88 @@ Web UI 可以在任务执行时持续观察 runtime：
 ### runtime events 和最终返回给用户的响应有什么区别？
 runtime events 是内部可观测性信号，例如 planning、worker activity、followup scheduling、approval requests、failure 等；最终用户响应则是通过 channel 对外投递的回答内容。
 
+## 架构对比：anima-agent-rs vs Claude Code vs OpenClaw
+
+本项目在设计上参考了 Claude Code 和 OpenClaw 两个开源项目，但在定位和架构选择上有明确差异。下面从几个关键维度做横向对比。
+
+### 定位差异
+
+| 项目 | 定位 | 语言 |
+| --- | --- | --- |
+| Claude Code | 开发者 CLI / IDE 编程助手 | TypeScript (Bun) |
+| OpenClaw | 多渠道 AI 消息 Gateway（Telegram / Discord / Slack / WhatsApp 等） | TypeScript (Node.js pnpm monorepo) |
+| anima-agent-rs | 可观测、可调度的 Agent Runtime 引擎 | Rust |
+
+Claude Code 的核心价值是"让开发者在终端里高效写代码"；OpenClaw 的核心价值是"把 AI agent 接入各种 IM 渠道"；anima-agent-rs 的核心价值是"把 agent 执行本身当成一个可治理、可观测的运行时系统来构建"。
+
+### Agentic Loop 对比
+
+**Claude Code** 的 agentic loop 在 `src/query.ts`（~1700 行），是一个 `async function*` 异步生成器，每轮迭代：压缩上下文 → 调用模型 → 消费流式响应 → 执行工具 → 继续循环。状态通过不可变 `State` 结构体每轮重建，用 `continue` 跳转而非递归。工具权限通过 React 状态队列 + Promise 挂起实现 UI 级别的交互式审批。
+
+**OpenClaw** 的 agentic loop 分三层：外层 `runEmbeddedPiAgent` 负责 session lane 排队和 failover 重试；中层 `runEmbeddedAttempt`（~2000 行）负责单次 attempt 的完整生命周期（构建工具集、组装 prompt、创建 session、包装 streamFn decorator 链）；底层的 tool-use 循环由私有包 `@mariozechner/pi-coding-agent` 处理。
+
+**anima-agent-rs** 的 agentic loop 在 `execution/agentic_loop.rs`，是一个同步 `loop {}`：检查迭代上限 → 消息配对修复 → 可选压缩 → 规范化 → 构建 API payload → 调用 executor → 解析响应 → 工具检测与执行 → 继续循环。挂起时返回 `AgenticLoopSuspension`，恢复时通过 `resume_suspended_tool_invocation` 重新进入循环。
+
+### 状态管理对比
+
+| 维度 | Claude Code | OpenClaw | anima-agent-rs |
+| --- | --- | --- | --- |
+| 主状态 | React AppState（类 Redux） | JSON session 文件 + SQLite task registry | Event-sourced RuntimeStateStore |
+| 持久化 | 无（进程内） | 文件 + SQLite | 进程内（snapshot clone） |
+| 查询 | 直接读 state | SQLite query | snapshot().xxx 全量 clone |
+| 事件溯源 | 无 | 无 | 有（RuntimeDomainEvent → reducer → snapshot） |
+
+anima-agent-rs 的 event-sourced 设计是三者中最结构化的，但当前全量 clone snapshot 的方式在长对话场景下有性能隐患。
+
+### 工具执行对比
+
+| 维度 | Claude Code | OpenClaw | anima-agent-rs |
+| --- | --- | --- | --- |
+| 工具定义 | Zod schema + React 渲染组件 | 通过 `createOpenClawCodingTools` 动态构建 | `ToolDefinition` trait + `ToolRegistry` |
+| 执行模式 | 并发（`StreamingToolExecutor`）或串行 | 由底层 pi-agent 处理 | 串行（逐个执行） |
+| 权限 | 多来源规则合并（session / settings / hooks） | exec security + sandbox + host 三维度 | `PermissionChecker` + 策略规则 |
+| Hooks | stop hooks + pre/post tool hooks | 完整插件 hook 生态（~10 种生命周期 hook） | `HookRegistry` pre/post tool + pre/post send |
+
+### 并发模型对比
+
+| 维度 | Claude Code | OpenClaw | anima-agent-rs |
+| --- | --- | --- | --- |
+| 运行时 | Bun 单线程 + async/await | Node.js 单线程 + Promise lane 队列 | std::thread + parking_lot::Mutex + Condvar |
+| 子 agent | 递归调用 `query()` + agentId 隔离 | ACP 协议 spawn/session 模式 | WorkerPool + Orchestrator 分发 |
+| 取消 | AbortController | AbortController + runAbortController | AtomicBool flag |
+
+anima-agent-rs 使用同步线程模型，好处是无 async runtime 依赖、调试简单；代价是无法做细粒度 timeout/cancellation，且与 async web 层（axum/tokio）之间存在边界摩擦。
+
+### anima-agent-rs 的优势
+
+1. **类型安全与编译期保证**：Rust 的所有权系统和类型系统在编译期就能捕获数据竞争、空指针、生命周期错误等问题，这是 TypeScript 项目无法做到的。
+2. **Event-sourced 状态管理**：三者中唯一采用事件溯源的项目。所有状态变更都通过 `RuntimeDomainEvent` 记录，可以做到完整的状态回放和审计。
+3. **结构化的运行时可观测性**：timeline、execution summary、failure snapshot、job view 等多维度观测面，比 Claude Code 的 React 状态和 OpenClaw 的 JSON 文件都更系统化。
+4. **显式的领域分层**：agent / classifier / orchestrator / execution / tools / permissions / hooks / prompt / messages 各自独立，职责边界清晰。Claude Code 的核心逻辑集中在 `query.ts` 一个文件里，OpenClaw 的核心逻辑分散在 `attempt.ts` + 私有包里。
+5. **多 Worker 并行执行**：通过 WorkerPool + Orchestrator 支持真正的多任务并行，而 Claude Code 和 OpenClaw 本质上都是单线程串行。
+6. **独立的消息三层映射**：InternalMsg / ApiMsg / SdkMsg 的分层让 runtime 内部状态和外部 API 格式彻底解耦。
+
+### anima-agent-rs 的不足
+
+1. **CoreAgent 仍然过大**：虽然已经提取了 `SuspensionCoordinator`，但 `core.rs` 仍有 ~3200 行，承担了消息循环、会话管理、事件发布、状态 upsert、执行入口等多重职责。Claude Code 的 `query.ts` 虽然也有 ~1700 行，但它只负责 agentic loop 本身，其他职责分散在独立模块中。
+2. **双重状态追踪**：`RuntimeStateStore` 和 `TaskRegistry` 追踪同一批数据，每次变更要写两遍，一致性靠人工保证。这是当前最大的架构债务。
+3. **Snapshot 全量 clone**：每次读取状态都 clone 整个 snapshot（包含所有 runs、turns、tasks、transcript），随着对话变长开销线性增长。
+4. **缺少插件生态**：OpenClaw 有完整的 npm 插件系统和 ~10 种生命周期 hook；Claude Code 有 MCP server 集成和 feature gate 机制；anima-agent-rs 的 hooks 系统相对基础。
+5. **缺少上下文自动压缩的精细控制**：Claude Code 有 snip / microcompact / autocompact 三级压缩 + token budget 追踪；OpenClaw 有 context engine post-turn 维护；anima-agent-rs 的压缩机制相对简单。
+6. **同步线程模型的局限**：无法做细粒度 timeout、graceful shutdown 和 cancellation，与 async web 层之间需要额外的桥接。
+7. **兼容 re-export 层未清理**：lib.rs 中仍有 12 个旧路径兼容模块，增加了认知负担和编译警告。
+
+### 演进方向
+
+基于以上对比，后续优先级建议：
+
+1. 继续拆分 CoreAgent（提取 RequirementCoordinator、RuntimeEventEmitter）
+2. 统一 RuntimeStateStore 和 TaskRegistry，消除双写
+3. 优化 snapshot 读取（targeted query 或 Arc copy-on-write）
+4. 统一事件发布模式（消除 3 处重复的 timeline + bus publish 逻辑）
+5. 清理兼容 re-export 层
+6. 丰富 hooks / 插件机制
+
 ## 当前限制
 
 有几个重要现状，值得在 README 里明确说明：
@@ -638,9 +723,31 @@ anima-agent-rs/
     ├── anima-runtime/
     │   └── src/
     │       ├── agent/
+    │       │   ├── core.rs
+    │       │   ├── types.rs
+    │       │   ├── executor.rs
+    │       │   ├── worker.rs
+    │       │   ├── registry.rs
+    │       │   └── suspension.rs
     │       ├── classifier/
     │       ├── orchestrator/
     │       ├── execution/
+    │       ├── runtime/
+    │       │   ├── events.rs
+    │       │   ├── reducer.rs
+    │       │   ├── snapshot.rs
+    │       │   ├── projection.rs
+    │       │   └── state_store.rs
+    │       ├── tasks/
+    │       │   ├── model.rs
+    │       │   ├── lifecycle.rs
+    │       │   ├── scheduler.rs
+    │       │   └── query.rs
+    │       ├── transcript/
+    │       │   ├── model.rs
+    │       │   ├── append.rs
+    │       │   ├── normalizer.rs
+    │       │   └── pairing.rs
     │       ├── tools/
     │       ├── streaming/
     │       ├── permissions/
@@ -677,7 +784,7 @@ anima-agent-rs/
 
 ## 当前状态
 
-当前仓库已经包含相当完整的 Rust runtime、CLI 与本地 Web 工作台。这版 README 已同步到最新的 runtime 目录化模块结构、React + Vite 前端构建要求，以及运行时中的主要执行 / 控制机制。整体上它已经是一个可用的 agent runtime 代码库，但部分子系统仍在持续演进。
+当前仓库已经包含相当完整的 Rust runtime、CLI 与本地 Web 工作台。Runtime 已引入 event-sourced 状态管理（`runtime/`）、结构化领域模型（`tasks/`、`transcript/`），并开始将 CoreAgent 的职责拆分为独立 coordinator（已完成 `SuspensionCoordinator`，`RequirementCoordinator` 和 `RuntimeEventEmitter` 在计划中）。整体上它已经是一个可用的 agent runtime 代码库，但部分子系统仍在持续演进。
 
 ## License
 

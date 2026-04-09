@@ -33,3 +33,4 @@ opencode.json
 /docs/
 
 /crates/anima-web/tests
+/crates/anima-web/frontend/target

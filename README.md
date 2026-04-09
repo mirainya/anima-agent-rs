@@ -172,10 +172,13 @@ If you are new to the repository, these are the fastest entry points by concern:
 
 ### Core domains
 
-- `agent/` — core agent engine, task types, executors, worker pool
+- `agent/` — core agent engine (CoreAgent facade), task types, executors, worker pool, SuspensionCoordinator, TaskRegistry
 - `classifier/` — rule-based, AI-assisted, task, and routing classifiers
 - `orchestrator/` — orchestration core, parallel pool, specialist pool
 - `execution/` — execution driver, turn coordination, context assembly, requirement judgment
+- `runtime/` — event-sourced unified runtime state core (RuntimeDomainEvent → reducer → RuntimeStateSnapshot → projection)
+- `tasks/` — domain model definitions (Run / Turn / Task / Suspension / Requirement / ToolInvocation records), lifecycle, scheduling, query
+- `transcript/` — message record model (MessageRecord), append, normalizer, pairing
 
 ### Infrastructure and support
 
@@ -516,6 +519,79 @@ The current compaction logic estimates token usage from serialized message size.
 ### What is the difference between runtime events and final user responses?
 Runtime events are internal observability signals: planning, worker activity, follow-up scheduling, approval requests, failures, and so on. Final user responses are the outward-facing answers delivered through channels.
 
+## Architecture comparison: anima-agent-rs vs Claude Code vs OpenClaw
+
+This project draws design inspiration from both Claude Code and OpenClaw, but makes distinct architectural choices. The following comparison covers key dimensions.
+
+### Positioning
+
+| Project | Focus | Language |
+| --- | --- | --- |
+| Claude Code | Developer CLI / IDE coding assistant | TypeScript (Bun) |
+| OpenClaw | Multi-channel AI message gateway (Telegram / Discord / Slack / WhatsApp etc.) | TypeScript (Node.js pnpm monorepo) |
+| anima-agent-rs | Observable, schedulable agent runtime engine | Rust |
+
+### Agentic loop
+
+**Claude Code**: `src/query.ts` (~1700 lines), an `async function*` generator. Each iteration: compact context → call model → consume streaming response → execute tools → continue. State is rebuilt as an immutable `State` struct each turn. Tool permissions are handled via React state queues + Promise suspension.
+
+**OpenClaw**: three layers — outer `runEmbeddedPiAgent` (session lane queuing + failover retry), middle `runEmbeddedAttempt` (~2000 lines, full attempt lifecycle with streamFn decorator chain), inner tool-use loop delegated to the private `@mariozechner/pi-coding-agent` package.
+
+**anima-agent-rs**: `execution/agentic_loop.rs`, a synchronous `loop {}`: check iteration limit → message pairing repair → optional compaction → normalize → build API payload → call executor → parse response → tool detection and execution → continue. Suspension returns `AgenticLoopSuspension`; resume via `resume_suspended_tool_invocation`.
+
+### State management
+
+| Dimension | Claude Code | OpenClaw | anima-agent-rs |
+| --- | --- | --- | --- |
+| Primary state | React AppState (Redux-like) | JSON session files + SQLite task registry | Event-sourced RuntimeStateStore |
+| Persistence | In-process only | File + SQLite | In-process (snapshot clone) |
+| Querying | Direct state read | SQLite query | snapshot() full clone |
+| Event sourcing | No | No | Yes (RuntimeDomainEvent → reducer → snapshot) |
+
+### Tool execution
+
+| Dimension | Claude Code | OpenClaw | anima-agent-rs |
+| --- | --- | --- | --- |
+| Tool definition | Zod schema + React render component | Dynamic via `createOpenClawCodingTools` | `ToolDefinition` trait + `ToolRegistry` |
+| Execution mode | Concurrent (`StreamingToolExecutor`) or serial | Delegated to pi-agent | Serial (one at a time) |
+| Permissions | Multi-source rule merging (session / settings / hooks) | exec security + sandbox + host | `PermissionChecker` + policy rules |
+| Hooks | stop hooks + pre/post tool hooks | Full plugin hook ecosystem (~10 lifecycle hooks) | `HookRegistry` pre/post tool + pre/post send |
+
+### Concurrency model
+
+| Dimension | Claude Code | OpenClaw | anima-agent-rs |
+| --- | --- | --- | --- |
+| Runtime | Bun single-thread + async/await | Node.js single-thread + Promise lane queues | std::thread + parking_lot::Mutex + Condvar |
+| Sub-agents | Recursive `query()` + agentId isolation | ACP protocol spawn/session | WorkerPool + Orchestrator dispatch |
+| Cancellation | AbortController | AbortController | AtomicBool flag |
+
+### Strengths of anima-agent-rs
+
+1. **Type safety and compile-time guarantees**: Rust's ownership system catches data races, null pointer issues, and lifetime errors at compile time.
+2. **Event-sourced state management**: the only project among the three with event sourcing. All state changes go through `RuntimeDomainEvent`, enabling full state replay and audit.
+3. **Structured runtime observability**: timeline, execution summary, failure snapshot, and job views provide multi-dimensional observability that is more systematic than React state or JSON files.
+4. **Explicit domain layering**: agent / classifier / orchestrator / execution / tools / permissions / hooks / prompt / messages are each independent with clear responsibility boundaries.
+5. **Multi-worker parallel execution**: WorkerPool + Orchestrator supports true multi-task parallelism, while Claude Code and OpenClaw are fundamentally single-threaded.
+6. **Three-layer message mapping**: InternalMsg / ApiMsg / SdkMsg decouples runtime internal state from external API formats.
+
+### Weaknesses of anima-agent-rs
+
+1. **CoreAgent is still too large**: ~3200 lines in `core.rs`, handling message loop, session management, event publishing, state upserts, and execution entry points. Ongoing refactoring (SuspensionCoordinator extracted; RequirementCoordinator and RuntimeEventEmitter planned).
+2. **Dual state tracking**: `RuntimeStateStore` and `TaskRegistry` track the same data, requiring double writes with manually maintained consistency.
+3. **Full snapshot clone on every read**: reading state clones the entire snapshot including all runs, turns, tasks, and transcript. Cost grows linearly with conversation length.
+4. **Limited plugin ecosystem**: compared to OpenClaw's npm plugin system and Claude Code's MCP server integration.
+5. **Basic context compaction**: Claude Code has snip / microcompact / autocompact with token budget tracking; anima-agent-rs's compaction is simpler.
+6. **Sync thread model limitations**: no fine-grained timeout, graceful shutdown, or cancellation; boundary friction with the async web layer (axum/tokio).
+
+### Evolution roadmap
+
+1. Continue CoreAgent decomposition (extract RequirementCoordinator, RuntimeEventEmitter)
+2. Unify RuntimeStateStore and TaskRegistry to eliminate double writes
+3. Optimize snapshot reads (targeted queries or Arc copy-on-write)
+4. Unify event publishing pattern (eliminate 3 duplicate timeline + bus publish sites)
+5. Clean up compatibility re-export layer
+6. Enrich hooks / plugin mechanisms
+
 ## Current limitations
 
 A few important caveats are worth calling out explicitly:
@@ -638,9 +714,31 @@ anima-agent-rs/
     ├── anima-runtime/
     │   └── src/
     │       ├── agent/
+    │       │   ├── core.rs
+    │       │   ├── types.rs
+    │       │   ├── executor.rs
+    │       │   ├── worker.rs
+    │       │   ├── registry.rs
+    │       │   └── suspension.rs
     │       ├── classifier/
     │       ├── orchestrator/
     │       ├── execution/
+    │       ├── runtime/
+    │       │   ├── events.rs
+    │       │   ├── reducer.rs
+    │       │   ├── snapshot.rs
+    │       │   ├── projection.rs
+    │       │   └── state_store.rs
+    │       ├── tasks/
+    │       │   ├── model.rs
+    │       │   ├── lifecycle.rs
+    │       │   ├── scheduler.rs
+    │       │   └── query.rs
+    │       ├── transcript/
+    │       │   ├── model.rs
+    │       │   ├── append.rs
+    │       │   ├── normalizer.rs
+    │       │   └── pairing.rs
     │       ├── tools/
     │       ├── streaming/
     │       ├── permissions/
@@ -677,7 +775,7 @@ anima-agent-rs/
 
 ## Status
 
-The repository already contains a substantial Rust runtime, CLI, and local web workbench. The current documentation reflects the reorganized runtime module layout, the React + Vite frontend build requirement, and the main execution/control mechanisms in the runtime. The project is functional as an agent-runtime codebase, but some subsystems are still actively evolving.
+The repository already contains a substantial Rust runtime, CLI, and local web workbench. The runtime now includes event-sourced state management (`runtime/`), structured domain models (`tasks/`, `transcript/`), and has begun decomposing CoreAgent into independent coordinators (`SuspensionCoordinator` is complete; `RequirementCoordinator` and `RuntimeEventEmitter` are planned). The project is functional as an agent-runtime codebase, but some subsystems are still actively evolving.
 
 ## License
 
