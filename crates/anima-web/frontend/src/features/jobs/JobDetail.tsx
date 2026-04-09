@@ -6,37 +6,14 @@ import { statusTone } from '@/shared/utils/jobStatus';
 import { useReviewJobMutation } from '@/shared/api/review';
 import { useQuestionAnswerMutation } from '@/shared/api/questionAnswer';
 import { deriveJobSummary } from './deriveJobSummary';
-import { deriveAgentDecisionSummary, deriveProcessEntriesFromEvents } from './deriveProcessEntries';
+import { deriveAgentDecisionSummary, deriveProcessEntriesFromJob } from './deriveProcessEntries';
+import { formatActiveSubtask } from './formatOrchestration';
 import './jobs.css';
 
 interface JobDetailProps {
   jobs: JobView[];
   selectedSessionChatId: string | null;
   jobId?: string | null;
-}
-
-interface FailureView {
-  error_code?: string;
-  error_stage?: string;
-  internal_message?: string;
-  occurred_at_ms?: number;
-}
-
-interface ExecutionSummaryView {
-  plan_type?: string;
-  status?: string;
-  cache_hit?: boolean;
-  worker_id?: string | null;
-  error_code?: string | null;
-  error_stage?: string | null;
-  task_duration_ms?: number;
-  stages?: {
-    context_ms?: number;
-    session_ms?: number;
-    classify_ms?: number;
-    execute_ms?: number;
-    total_ms?: number;
-  };
 }
 
 type JobDetailTab = 'summary' | 'result' | 'execution' | 'events';
@@ -55,14 +32,15 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
   }
 
   const canReview = job.status === 'completed';
-  const failure = (job.failure ?? null) as FailureView | null;
-  const executionSummary = (job.execution_summary ?? null) as ExecutionSummaryView | null;
+  const failure = job.failure ?? null;
+  const executionSummary = job.execution_summary ?? null;
   const pendingQuestion = job.pending_question ?? null;
   const toolPermissionQuestion = pendingQuestion?.raw_question && typeof pendingQuestion.raw_question === 'object' && pendingQuestion.raw_question !== null && 'type' in pendingQuestion.raw_question && pendingQuestion.raw_question.type === 'tool_permission'
     ? pendingQuestion.raw_question as { type: 'tool_permission'; tool_name?: string; tool_use_id?: string; tool_input?: unknown; prompt?: string; input_preview?: string }
     : null;
+  const toolState = job.tool_state ?? null;
   const summary = deriveJobSummary(job);
-  const processEntries = deriveProcessEntriesFromEvents(job.recent_events);
+  const processEntries = deriveProcessEntriesFromJob(job);
   const decisionSummary = deriveAgentDecisionSummary(processEntries);
   const orchestration = job.orchestration ?? null;
   const subtaskJobs = useMemo(
@@ -105,7 +83,7 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
               <span className="detail-label">总子任务</span><span>{orchestration.total_subtasks}</span>
               <span className="detail-label">已完成</span><span>{orchestration.completed_subtasks}</span>
               <span className="detail-label">失败</span><span>{orchestration.failed_subtasks}</span>
-              <span className="detail-label">活跃子任务</span><span>{orchestration.active_subtask_name ?? '-'}</span>
+              <span className="detail-label">活跃子任务</span><span>{formatActiveSubtask(orchestration.active_subtask_name, orchestration.active_subtask_type) ?? '-'}</span>
             </div>
             <div className="job-process-list">
               {subtaskJobs.length === 0 ? (
@@ -215,6 +193,20 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
             主 agent 判断当前结果还没完全满足原始需求，正在自动继续补充处理；此时不需要用户回答问题。
           </div>
         )}
+        {job.status !== 'waiting_user_input' && toolState && (
+          <div className="job-detail-section">
+            <div className="section-title">工具执行状态</div>
+            <div className="job-detail-grid summary-grid">
+              <span className="detail-label">tool</span><span>{toolState.tool_name ?? '-'}</span>
+              <span className="detail-label">tool_use_id</span><span>{toolState.tool_use_id ?? '-'}</span>
+              <span className="detail-label">invocation</span><span>{toolState.invocation_id ?? '-'}</span>
+              <span className="detail-label">phase</span><span>{toolState.phase}</span>
+              <span className="detail-label">permission</span><span>{toolState.permission_state ?? '-'}</span>
+              <span className="detail-label">input</span><span className="job-prewrap">{toolState.input_preview ?? '-'}</span>
+              <span className="detail-label">result</span><span className="job-prewrap">{toolState.result_preview ?? toolState.error ?? '-'}</span>
+            </div>
+          </div>
+        )}
         {summary.isStalledWithoutQuestion && (
           <div className="job-status-explanation">
             当前只是暂时停滞提示，没有结构化问题可提交回答。可以稍后刷新，或查看事件判断是否需要人工介入。
@@ -272,6 +264,7 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
             <span className="detail-label">updated</span><span>{formatTimestamp(job.updated_at_ms)}</span>
             <span className="detail-label">worker</span><span>{job.worker?.worker_id ?? '-'}</span>
             <span className="detail-label">task</span><span>{job.worker?.task_type ?? '-'}</span>
+            <span className="detail-label">phase</span><span>{job.worker?.phase ?? '-'}</span>
             <span className="detail-label">review</span><span>{job.review?.verdict ?? '-'}</span>
           </div>
         </div>
@@ -315,6 +308,7 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
                 <span className="detail-label">worker</span><span>{job.worker.worker_id}</span>
                 <span className="detail-label">status</span><span>{job.worker.status}</span>
                 <span className="detail-label">task</span><span>{job.worker.task_type}</span>
+                <span className="detail-label">phase</span><span>{job.worker.phase ?? '-'}</span>
                 <span className="detail-label">preview</span><span className="job-prewrap">{job.worker.content_preview || '-'}</span>
               </div>
             ) : (

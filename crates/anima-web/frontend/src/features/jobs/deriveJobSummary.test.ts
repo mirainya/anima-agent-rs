@@ -26,6 +26,7 @@ function makeJob(partial: Partial<JobView>): JobView {
     execution_summary: null,
     failure: null,
     review: null,
+    tool_state: null,
     ...partial,
   };
 }
@@ -51,6 +52,56 @@ describe('deriveJobSummary', () => {
 
     expect(summary.needsUserAction).toBe(true);
     expect(summary.headline).toContain('请补充部署环境');
+  });
+
+  it('derives tool permission waiting summary', () => {
+    const summary = deriveJobSummary(makeJob({
+      status: 'waiting_user_input',
+      current_step: '等待用户确认工具调用权限',
+      pending_question: {
+        question_id: 'q-tool',
+        question_kind: 'confirm',
+        prompt: '允许工具 bash_exec 使用当前参数执行吗？',
+        options: ['allow', 'deny'],
+        raw_question: {
+          type: 'tool_permission',
+          tool_name: 'bash_exec',
+          tool_use_id: 'toolu_123',
+          input_preview: '{"command":"ls"}',
+        },
+        decision_mode: 'user_required',
+        risk_level: 'high',
+        requires_user_confirmation: true,
+        answer_summary: null,
+        opencode_session_id: null,
+        resolution_source: null,
+      },
+    }));
+
+    expect(summary.needsUserAction).toBe(true);
+    expect(summary.headline).toContain('等待确认工具权限');
+    expect(summary.detail).toContain('toolu_123');
+  });
+
+  it('derives tool execution summary from tool_state', () => {
+    const summary = deriveJobSummary(makeJob({
+      status: 'executing',
+      current_step: '工具结果已记录，等待后续推进',
+      tool_state: {
+        invocation_id: 'invoke-1',
+        tool_name: 'read_file',
+        tool_use_id: 'toolu_456',
+        phase: 'result_recorded',
+        permission_state: 'allowed',
+        input_preview: '/tmp/demo.txt',
+        result_preview: 'line 1\nline 2',
+        error: null,
+        awaits_user_confirmation: false,
+      },
+    }));
+
+    expect(summary.headline).toContain('工具结果已记录');
+    expect(summary.detail).toContain('line 1');
   });
 
   it('derives executing follow-up as auto continuing', () => {

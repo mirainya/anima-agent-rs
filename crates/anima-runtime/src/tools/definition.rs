@@ -34,7 +34,11 @@ pub trait Tool: Send + Sync + Debug {
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String>;
 
     /// 执行工具
-    fn call(&self, input: Value, context: &ToolContext) -> std::result::Result<ToolResult, ToolError>;
+    fn call(
+        &self,
+        input: Value,
+        context: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError>;
 
     /// 工具描述（给模型看），默认返回 name
     fn description(&self) -> &str {

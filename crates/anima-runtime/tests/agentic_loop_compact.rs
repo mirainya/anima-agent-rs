@@ -1,9 +1,9 @@
 //! 集成测试：Agentic Loop 上下文压缩
 
+use anima_runtime::agent::executor::TaskExecutor;
 use anima_runtime::execution::agentic_loop::{
     run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome,
 };
-use anima_runtime::agent::executor::TaskExecutor;
 use anima_runtime::messages::compact::CompactConfig;
 use anima_runtime::messages::types::{InternalMsg, MessageRole};
 use anima_runtime::tools::definition::{Tool, ToolContext};
@@ -112,8 +112,8 @@ fn test_loop_compact_enabled_no_trigger() {
     };
     let initial = vec![make_user_msg("hello")];
 
-    let result = run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
-        .unwrap();
+    let result =
+        run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
 
     let AgenticLoopOutcome::Completed(result) = result else {
         panic!("loop should complete");
@@ -158,8 +158,8 @@ fn test_loop_compact_triggered() {
     };
     let initial = vec![make_user_msg("run big echo 5 times")];
 
-    let result = run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
-        .unwrap();
+    let result =
+        run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
 
     let AgenticLoopOutcome::Completed(result) = result else {
         panic!("loop should complete");
@@ -209,8 +209,8 @@ fn test_loop_compact_preserves_latest_turn() {
     };
     let initial = vec![make_user_msg("test")];
 
-    let result = run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
-        .unwrap();
+    let result =
+        run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
 
     let AgenticLoopOutcome::Completed(result) = result else {
         panic!("loop should complete");
@@ -224,5 +224,8 @@ fn test_loop_compact_preserves_latest_turn() {
         .rev()
         .find(|m| m.tool_use_id.is_some())
         .expect("should have a tool_result");
-    assert!(!last_tool_result.filtered, "latest tool_result should not be filtered");
+    assert!(
+        !last_tool_result.filtered,
+        "latest tool_result should not be filtered"
+    );
 }

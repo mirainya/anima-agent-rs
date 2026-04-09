@@ -52,7 +52,10 @@ fn parallel_pool_executes_and_aggregates_results() {
     ]);
 
     assert_eq!(result.status, "success");
-    assert_eq!(result.result.unwrap()["results"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        result.result.unwrap()["results"].as_array().unwrap().len(),
+        2
+    );
     worker_pool.stop();
 }
 

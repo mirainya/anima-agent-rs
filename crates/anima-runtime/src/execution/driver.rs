@@ -33,7 +33,10 @@ pub fn build_api_call_task(request: &ApiCallExecutionRequest) -> Task {
     })
 }
 
-pub fn execute_api_call(worker_pool: &Arc<WorkerPool>, request: ApiCallExecutionRequest) -> Result<TaskResult, String> {
+pub fn execute_api_call(
+    worker_pool: &Arc<WorkerPool>,
+    request: ApiCallExecutionRequest,
+) -> Result<TaskResult, String> {
     let task = build_api_call_task(&request);
     worker_pool
         .submit_task(task)

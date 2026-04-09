@@ -181,8 +181,7 @@ fn stats_track_rejections() {
 
 #[test]
 fn status_returns_full_info() {
-    let cb = CircuitBreaker::new(CircuitBreakerConfig::default())
-        .with_id("test-cb");
+    let cb = CircuitBreaker::new(CircuitBreakerConfig::default()).with_id("test-cb");
     let status = cb.status();
     assert_eq!(status.id, "test-cb");
     assert_eq!(status.state, CircuitState::Closed);

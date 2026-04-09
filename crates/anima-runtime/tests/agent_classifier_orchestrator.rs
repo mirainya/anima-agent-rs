@@ -35,9 +35,15 @@ fn agent_classifier_preserves_direct_single_and_sequential_decisions() {
         metadata: Some(json!({"system-command": true})),
         ..Default::default()
     });
-    assert_eq!(AgentClassifier::classify(&direct).kind, ClassificationKind::Direct);
+    assert_eq!(
+        AgentClassifier::classify(&direct).kind,
+        ClassificationKind::Direct
+    );
     assert_eq!(AgentClassifier::build_plan(&direct).plan_type, "direct");
-    assert_eq!(AgentClassifier::build_plan(&direct).kind, ExecutionPlanKind::Direct);
+    assert_eq!(
+        AgentClassifier::build_plan(&direct).kind,
+        ExecutionPlanKind::Direct
+    );
 
     let sequential = make_inbound(MakeInbound {
         channel: "cli".into(),
@@ -45,9 +51,18 @@ fn agent_classifier_preserves_direct_single_and_sequential_decisions() {
         metadata: Some(json!({"multi-step": true})),
         ..Default::default()
     });
-    assert_eq!(AgentClassifier::classify(&sequential).kind, ClassificationKind::Sequential);
-    assert_eq!(AgentClassifier::build_plan(&sequential).plan_type, "sequential");
-    assert_eq!(AgentClassifier::build_plan(&sequential).kind, ExecutionPlanKind::Sequential);
+    assert_eq!(
+        AgentClassifier::classify(&sequential).kind,
+        ClassificationKind::Sequential
+    );
+    assert_eq!(
+        AgentClassifier::build_plan(&sequential).plan_type,
+        "sequential"
+    );
+    assert_eq!(
+        AgentClassifier::build_plan(&sequential).kind,
+        ExecutionPlanKind::Sequential
+    );
     assert_eq!(AgentClassifier::build_plan(&sequential).tasks.len(), 2);
 
     let single = make_inbound(MakeInbound {
@@ -55,9 +70,15 @@ fn agent_classifier_preserves_direct_single_and_sequential_decisions() {
         content: "hello".into(),
         ..Default::default()
     });
-    assert_eq!(AgentClassifier::classify(&single).kind, ClassificationKind::Single);
+    assert_eq!(
+        AgentClassifier::classify(&single).kind,
+        ClassificationKind::Single
+    );
     assert_eq!(AgentClassifier::build_plan(&single).plan_type, "single");
-    assert_eq!(AgentClassifier::build_plan(&single).kind, ExecutionPlanKind::Single);
+    assert_eq!(
+        AgentClassifier::build_plan(&single).kind,
+        ExecutionPlanKind::Single
+    );
     assert_eq!(AgentClassifier::build_plan(&single).tasks.len(), 1);
 }
 
@@ -70,7 +91,10 @@ fn agent_classifier_builds_parallel_and_specialist_route_skeletons() {
         ..Default::default()
     });
     let parallel_plan = AgentClassifier::build_plan(&parallel);
-    assert_eq!(AgentClassifier::classify(&parallel).kind, ClassificationKind::Parallel);
+    assert_eq!(
+        AgentClassifier::classify(&parallel).kind,
+        ClassificationKind::Parallel
+    );
     assert_eq!(parallel_plan.kind, ExecutionPlanKind::Parallel);
     assert_eq!(parallel_plan.tasks.len(), 2);
 
@@ -81,7 +105,10 @@ fn agent_classifier_builds_parallel_and_specialist_route_skeletons() {
         ..Default::default()
     });
     let specialist_plan = AgentClassifier::build_plan(&specialist);
-    assert_eq!(AgentClassifier::classify(&specialist).kind, ClassificationKind::SpecialistRoute);
+    assert_eq!(
+        AgentClassifier::classify(&specialist).kind,
+        ClassificationKind::SpecialistRoute
+    );
     assert_eq!(specialist_plan.kind, ExecutionPlanKind::SpecialistRoute);
     assert_eq!(specialist_plan.specialist.as_deref(), Some("math"));
 }
@@ -104,7 +131,10 @@ fn agent_orchestrator_executes_single_and_sequential_plans() {
     }));
     let single_result = AgentOrchestrator::execute_plan(&worker_pool, &single, "session-1");
     assert_eq!(single_result.status, "success");
-    assert_eq!(single_result.result.unwrap()["content"], "reply[session-1]: hello");
+    assert_eq!(
+        single_result.result.unwrap()["content"],
+        "reply[session-1]: hello"
+    );
 
     let sequential = AgentClassifier::build_plan(&make_inbound(MakeInbound {
         channel: "cli".into(),
@@ -125,14 +155,18 @@ fn agent_classifier_detects_web_orchestration_v1_upgrade_conservatively() {
         content: "build a web app with frontend and backend".into(),
         ..Default::default()
     });
-    assert!(AgentClassifier::should_upgrade_to_orchestration_v1(&web_complex));
+    assert!(AgentClassifier::should_upgrade_to_orchestration_v1(
+        &web_complex
+    ));
 
     let cli_same_text = make_inbound(MakeInbound {
         channel: "cli".into(),
         content: "build a web app with frontend and backend".into(),
         ..Default::default()
     });
-    assert!(!AgentClassifier::should_upgrade_to_orchestration_v1(&cli_same_text));
+    assert!(!AgentClassifier::should_upgrade_to_orchestration_v1(
+        &cli_same_text
+    ));
 
     let forced = make_inbound(MakeInbound {
         channel: "cli".into(),
@@ -162,7 +196,13 @@ fn agent_orchestrator_executes_parallel_and_specialist_route_skeletons() {
     }));
     let parallel_result = AgentOrchestrator::execute_plan(&worker_pool, &parallel, "session-3");
     assert_eq!(parallel_result.status, "success");
-    assert_eq!(parallel_result.result.as_ref().unwrap()["results"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        parallel_result.result.as_ref().unwrap()["results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     let specialist = AgentClassifier::build_plan(&make_inbound(MakeInbound {
         channel: "cli".into(),

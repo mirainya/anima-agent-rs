@@ -176,7 +176,10 @@ fn task_type_as_str() {
 
 #[test]
 fn detects_rust() {
-    assert_eq!(detect_language("fn main() { let mut x = 5; }"), Some("rust"));
+    assert_eq!(
+        detect_language("fn main() { let mut x = 5; }"),
+        Some("rust")
+    );
 }
 
 #[test]

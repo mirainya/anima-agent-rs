@@ -68,7 +68,12 @@ fn make_summary(status: &str) -> ExecutionSummary {
 #[test]
 fn plan_turn_outcome_routes_all_three_main_paths() {
     let complete = plan_turn_outcome(RequirementJudgement::Satisfied, true);
-    assert_eq!(complete, TurnOutcomePlan::Complete { should_resolve_question: true });
+    assert_eq!(
+        complete,
+        TurnOutcomePlan::Complete {
+            should_resolve_question: true
+        }
+    );
 
     let ask = plan_turn_outcome(
         RequirementJudgement::NeedsUserInput(Box::new(UserInputRequirement {
@@ -79,7 +84,10 @@ fn plan_turn_outcome_routes_all_three_main_paths() {
         false,
     );
     match ask {
-        TurnOutcomePlan::AskUserInput { should_resolve_question, requirement } => {
+        TurnOutcomePlan::AskUserInput {
+            should_resolve_question,
+            requirement,
+        } => {
             assert!(!should_resolve_question);
             assert_eq!(requirement.reason, "缺少用户输入");
         }
@@ -132,7 +140,10 @@ fn prepare_requirement_evaluation_preserves_source_label_and_snapshot_fields() {
     assert_eq!(prepared.source_label, "question_continuation");
     assert_eq!(prepared.judge_context.attempted_rounds, 2);
     assert_eq!(prepared.judge_context.max_rounds, 3);
-    assert_eq!(prepared.judge_context.previous_fingerprint.as_deref(), Some("fp-prev"));
+    assert_eq!(
+        prepared.judge_context.previous_fingerprint.as_deref(),
+        Some("fp-prev")
+    );
     assert_eq!(prepared.judge_context.opencode_session_id, "session-1");
 }
 
@@ -147,7 +158,16 @@ fn prepare_standardized_payloads_and_summaries_match_expected_shapes() {
     assert_eq!(completed_payload.status, "success");
     assert_eq!(completed_payload.response_text, "final answer");
 
-    let summary = prepare_summary_input("waiting_user_input".into(), Some("worker-1".into()), 55, 1, 2, 3, 4, 10);
+    let summary = prepare_summary_input(
+        "waiting_user_input".into(),
+        Some("worker-1".into()),
+        55,
+        1,
+        2,
+        3,
+        4,
+        10,
+    );
     assert_eq!(summary.status, "waiting_user_input");
     assert_eq!(summary.worker_id.as_deref(), Some("worker-1"));
     assert_eq!(summary.stages.total_ms, 10);

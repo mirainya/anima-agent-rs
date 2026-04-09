@@ -40,8 +40,14 @@ fn dispatch_message_from_outbound_preserves_bridge_fields() {
     assert_eq!(dispatch.reply_target.as_deref(), Some("user-1"));
     assert_eq!(dispatch.sender_id.as_deref(), Some("sender-1"));
     assert_eq!(dispatch.priority, 5);
-    assert_eq!(dispatch.routing_key.as_deref(), Some("anima.session.chat-1"));
-    assert_eq!(dispatch.session_key.as_deref(), Some("anima.session.chat-1"));
+    assert_eq!(
+        dispatch.routing_key.as_deref(),
+        Some("anima.session.chat-1")
+    );
+    assert_eq!(
+        dispatch.session_key.as_deref(),
+        Some("anima.session.chat-1")
+    );
     assert_eq!(dispatch.target(), "user-1");
     assert_eq!(dispatch.metadata, json!({}));
     assert!(dispatch.created_at > 0);
@@ -116,7 +122,10 @@ fn dispatcher_passthrough_matches_legacy_dispatch_behavior() {
 
     let diagnostic = dispatcher.last_dispatch_diagnostic().unwrap();
     assert_eq!(diagnostic.outcome, DispatchOutcomeReason::SelectedAndSent);
-    assert_eq!(diagnostic.channel_lookup_reason, Some(ChannelLookupReason::ExactMatch));
+    assert_eq!(
+        diagnostic.channel_lookup_reason,
+        Some(ChannelLookupReason::ExactMatch)
+    );
 }
 
 #[test]
@@ -165,7 +174,10 @@ fn dispatcher_balancer_bridges_target_id_to_account_lookup() {
 
     let diagnostic = dispatcher.last_dispatch_diagnostic().unwrap();
     assert_eq!(diagnostic.selected_target_id.as_deref(), Some("prod"));
-    assert_eq!(diagnostic.channel_lookup_reason, Some(ChannelLookupReason::ExactMatch));
+    assert_eq!(
+        diagnostic.channel_lookup_reason,
+        Some(ChannelLookupReason::ExactMatch)
+    );
 }
 
 #[test]
@@ -178,9 +190,15 @@ fn dispatcher_records_not_found_send_failure_and_balancer_miss() {
     assert!(!missing_result.success);
     assert_eq!(missing_result.error.as_deref(), Some("Channel not found"));
     let missing_diag = dispatcher.last_dispatch_diagnostic().unwrap();
-    assert_eq!(missing_diag.failure_stage, Some(DispatchFailureStage::ChannelLookup));
+    assert_eq!(
+        missing_diag.failure_stage,
+        Some(DispatchFailureStage::ChannelLookup)
+    );
     assert_eq!(missing_diag.outcome, DispatchOutcomeReason::ChannelNotFound);
-    assert_eq!(missing_diag.channel_lookup_reason, Some(ChannelLookupReason::ChannelMissing));
+    assert_eq!(
+        missing_diag.channel_lookup_reason,
+        Some(ChannelLookupReason::ChannelMissing)
+    );
 
     let failing_channel = Arc::new(TestChannel::failing("test"));
     registry.register(failing_channel.clone(), None);
@@ -210,7 +228,10 @@ fn dispatcher_records_not_found_send_failure_and_balancer_miss() {
     let miss_diag = dispatcher.last_dispatch_diagnostic().unwrap();
     assert_eq!(miss_diag.failure_stage, Some(DispatchFailureStage::Send));
     assert_eq!(miss_diag.outcome, DispatchOutcomeReason::SendFailed);
-    assert_eq!(miss_diag.balancer_miss_reason, Some(BalancerMissReason::HashingKeyMissing));
+    assert_eq!(
+        miss_diag.balancer_miss_reason,
+        Some(BalancerMissReason::HashingKeyMissing)
+    );
     assert_eq!(miss_diag.send_error.as_deref(), Some("Mock send failed"));
 
     let stats = dispatcher.stats().snapshot();
@@ -218,8 +239,14 @@ fn dispatcher_records_not_found_send_failure_and_balancer_miss() {
     assert_eq!(stats.errors, 2);
     assert_eq!(stats.dispatched, 0);
     assert_eq!(stats.balancer_misses, 1);
-    assert_eq!(stats.balancer_miss_reasons[&BalancerMissReason::HashingKeyMissing], 1);
-    assert_eq!(stats.channel_lookup_failures[&ChannelLookupReason::ChannelMissing], 1);
+    assert_eq!(
+        stats.balancer_miss_reasons[&BalancerMissReason::HashingKeyMissing],
+        1
+    );
+    assert_eq!(
+        stats.channel_lookup_failures[&ChannelLookupReason::ChannelMissing],
+        1
+    );
     assert!(dispatcher.status().last_error_at.is_some());
 }
 
@@ -281,7 +308,10 @@ fn dispatcher_records_selected_target_failure_when_account_is_missing() {
     assert!(stats.target_stats["prod"].last_failure_at.is_some());
 
     let diagnostic = dispatcher.last_dispatch_diagnostic().unwrap();
-    assert_eq!(diagnostic.failure_stage, Some(DispatchFailureStage::ChannelLookup));
+    assert_eq!(
+        diagnostic.failure_stage,
+        Some(DispatchFailureStage::ChannelLookup)
+    );
     assert_eq!(diagnostic.selected_target_id.as_deref(), Some("prod"));
 }
 
@@ -318,7 +348,10 @@ fn dispatcher_send_failure_opens_breaker_and_switches_to_healthy_target() {
     let first = DispatchMessage::from_outbound(&outbound_message());
     let first_result = dispatcher.dispatch(&first);
     assert!(!first_result.success);
-    assert_eq!(balancer.target_health("prod").unwrap().circuit_state, CircuitState::Open);
+    assert_eq!(
+        balancer.target_health("prod").unwrap().circuit_state,
+        CircuitState::Open
+    );
     let first_diag = dispatcher.last_dispatch_diagnostic().unwrap();
     assert_eq!(first_diag.failure_stage, Some(DispatchFailureStage::Send));
     assert_eq!(first_diag.selected_target_id.as_deref(), Some("prod"));
@@ -360,10 +393,16 @@ fn dispatcher_channel_not_found_does_not_open_breaker() {
     let result = dispatcher.dispatch(&DispatchMessage::from_outbound(&outbound_message()));
     assert!(!result.success);
     assert_eq!(result.error.as_deref(), Some("Channel not found"));
-    assert_eq!(balancer.target_health("prod").unwrap().circuit_state, CircuitState::Closed);
+    assert_eq!(
+        balancer.target_health("prod").unwrap().circuit_state,
+        CircuitState::Closed
+    );
 
     let diagnostic = dispatcher.last_dispatch_diagnostic().unwrap();
-    assert_eq!(diagnostic.failure_stage, Some(DispatchFailureStage::ChannelLookup));
+    assert_eq!(
+        diagnostic.failure_stage,
+        Some(DispatchFailureStage::ChannelLookup)
+    );
 }
 
 #[test]
@@ -392,14 +431,30 @@ fn dispatcher_returns_balancer_miss_when_all_targets_are_unhealthy() {
     let stats = dispatcher.stats().snapshot();
     assert_eq!(stats.balancer_misses, 1);
     assert_eq!(stats.balancer_selected, 0);
-    assert_eq!(stats.balancer_miss_reasons[&BalancerMissReason::NoHealthyTargets], 1);
+    assert_eq!(
+        stats.balancer_miss_reasons[&BalancerMissReason::NoHealthyTargets],
+        1
+    );
 
     let diagnostic = dispatcher.last_dispatch_diagnostic().unwrap();
-    assert_eq!(diagnostic.balancer_miss_reason, Some(BalancerMissReason::NoHealthyTargets));
-    assert_eq!(balancer.diagnostics_snapshot().last_selection.unwrap().miss_reason, Some(BalancerMissReason::NoHealthyTargets));
+    assert_eq!(
+        diagnostic.balancer_miss_reason,
+        Some(BalancerMissReason::NoHealthyTargets)
+    );
+    assert_eq!(
+        balancer
+            .diagnostics_snapshot()
+            .last_selection
+            .unwrap()
+            .miss_reason,
+        Some(BalancerMissReason::NoHealthyTargets)
+    );
 
     let status = dispatcher.status();
-    assert_eq!(status.routes["test"].last_miss_reason, Some(BalancerMissReason::NoHealthyTargets));
+    assert_eq!(
+        status.routes["test"].last_miss_reason,
+        Some(BalancerMissReason::NoHealthyTargets)
+    );
 }
 
 #[test]
@@ -420,5 +475,8 @@ fn dispatcher_channel_lookup_uses_default_fallback_reason() {
     assert!(result.success);
 
     let diagnostic = dispatcher.last_dispatch_diagnostic().unwrap();
-    assert_eq!(diagnostic.channel_lookup_reason, Some(ChannelLookupReason::DefaultFallback));
+    assert_eq!(
+        diagnostic.channel_lookup_reason,
+        Some(ChannelLookupReason::DefaultFallback)
+    );
 }

@@ -76,4 +76,3 @@ pub fn make_user_routing_key(user_id: &str) -> String {
 pub fn make_channel_routing_key(channel_name: &str) -> String {
     format!("anima.channel.{channel_name}")
 }
-

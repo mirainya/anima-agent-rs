@@ -1,6 +1,6 @@
 use anima_runtime::agent_executor::TaskExecutor;
-use anima_testkit::{fake_prompt_response, FakeExecutor};
 use anima_sdk::facade::Client as SdkClient;
+use anima_testkit::{fake_prompt_response, FakeExecutor};
 use serde_json::json;
 
 #[test]
@@ -32,7 +32,10 @@ fn fake_executor_can_simulate_prompt_and_session_failures() {
     );
 
     let session_fail = FakeExecutor::new().fail_session_create_with("session boom");
-    assert_eq!(session_fail.create_session(&client).unwrap_err(), "session boom");
+    assert_eq!(
+        session_fail.create_session(&client).unwrap_err(),
+        "session boom"
+    );
 }
 
 #[test]

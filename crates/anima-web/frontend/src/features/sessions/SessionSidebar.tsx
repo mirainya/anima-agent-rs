@@ -1,18 +1,17 @@
 import { useJobsQuery } from '@/shared/api/jobs';
-import { useStatusQuery } from '@/shared/api/status';
+import { useSessionsQuery } from '@/shared/api/sessions';
 import { useUiStore } from '@/shared/state/useUiStore';
 import { shortId } from '@/shared/utils/format';
 import { getWorkbenchContext } from '@/shared/utils/workbench';
 import './sessions.css';
 
 export function SessionSidebar() {
-  const { data: status, isLoading } = useStatusQuery();
+  const { data: sessions = [], isLoading } = useSessionsQuery();
   const { data: jobs = [] } = useJobsQuery();
   const selectedSessionId = useUiStore((state) => state.selectedSessionId);
   const selectedJobId = useUiStore((state) => state.selectedJobId);
   const setSelectedSessionId = useUiStore((state) => state.setSelectedSessionId);
-  const context = getWorkbenchContext(status, jobs, selectedSessionId, selectedJobId);
-  const sessions = status?.recent_sessions ?? [];
+  const context = getWorkbenchContext(sessions, jobs, selectedSessionId, selectedJobId);
 
   return (
     <div className="session-sidebar">
@@ -60,7 +59,7 @@ export function SessionSidebar() {
       <div className="sidebar-section-title session-sidebar-summary-title">当前视角</div>
       <div className="session-sidebar-summary">
         <div className="session-sidebar-line">scope={context.scope}</div>
-        <div className="session-sidebar-line">session={context.selectedSession ? shortId(context.selectedSession.chat_id) : '全部'}</div>
+        <div className="session-sidebar-line">session={context.selectedSession ? shortId(context.selectedSession.session_id) : '全部'}</div>
         <div className="session-sidebar-line">job={context.selectedJob ? shortId(context.selectedJob.job_id) : '未选中'}</div>
       </div>
     </div>

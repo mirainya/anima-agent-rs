@@ -1,16 +1,16 @@
-import type { JobView, StatusSnapshot } from './types';
+import type { JobView, SessionSummary } from './types';
 import type { WorkbenchScope } from '@/shared/state/useUiStore';
 
 export interface WorkbenchContext {
   scope: WorkbenchScope;
-  selectedSession: StatusSnapshot['recent_sessions'][number] | null;
+  selectedSession: SessionSummary | null;
   selectedJob: JobView | null;
   sessionJobs: JobView[];
 }
 
-export function getWorkbenchContext(status: StatusSnapshot | undefined, jobs: JobView[], selectedSessionId: string | null, selectedJobId: string | null): WorkbenchContext {
-  const sessions = status?.recent_sessions ?? [];
-  const selectedSession = sessions.find((session) => session.chat_id === selectedSessionId) ?? null;
+export function getWorkbenchContext(sessions: SessionSummary[] | undefined, jobs: JobView[], selectedSessionId: string | null, selectedJobId: string | null): WorkbenchContext {
+  const sessionList = sessions ?? [];
+  const selectedSession = sessionList.find((session) => session.chat_id === selectedSessionId) ?? null;
   const sessionJobs = selectedSession
     ? jobs.filter((job) => job.chat_id && job.chat_id === selectedSession.chat_id)
     : jobs;

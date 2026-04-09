@@ -138,7 +138,10 @@ pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement 
 
 pub fn fingerprint_result(result: Option<&Value>) -> String {
     let canonical = result.cloned().unwrap_or(Value::Null).to_string();
-    let compact = canonical.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    let compact = canonical
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
     if compact.len() > 240 {
         compact.chars().take(240).collect()
     } else {
@@ -146,7 +149,10 @@ pub fn fingerprint_result(result: Option<&Value>) -> String {
     }
 }
 
-fn build_question_followup_prompt(original_user_request: &str, question: &PendingQuestion) -> String {
+fn build_question_followup_prompt(
+    original_user_request: &str,
+    question: &PendingQuestion,
+) -> String {
     let options = if question.options.is_empty() {
         "(无 options)".to_string()
     } else {
@@ -159,14 +165,20 @@ fn build_question_followup_prompt(original_user_request: &str, question: &Pendin
     )
 }
 
-fn build_result_followup_prompt(original_user_request: &str, response_text: &str, instruction: &str) -> String {
+fn build_result_followup_prompt(
+    original_user_request: &str,
+    response_text: &str,
+    instruction: &str,
+) -> String {
     format!(
         "原始用户请求：\n{original_user_request}\n\n上一轮上游结果：\n{response_text}\n\n{instruction}"
     )
 }
 
 fn normalize_text(text: &str) -> String {
-    text.to_ascii_lowercase().replace('，', ",").replace('。', ".")
+    text.to_ascii_lowercase()
+        .replace('，', ",")
+        .replace('。', ".")
 }
 
 fn looks_unsatisfied(text: &str) -> bool {
@@ -208,7 +220,8 @@ fn infer_missing_requirements(response_text: &str) -> Vec<String> {
     if response_text.contains("选择") || response_text.to_ascii_lowercase().contains("choose") {
         items.push("缺少具体选择或继续执行所需分支判断".into());
     }
-    if response_text.contains("信息") || response_text.to_ascii_lowercase().contains("information") {
+    if response_text.contains("信息") || response_text.to_ascii_lowercase().contains("information")
+    {
         items.push("当前结果没有形成足够完整的最终答复".into());
     }
     if items.is_empty() {
@@ -217,7 +230,11 @@ fn infer_missing_requirements(response_text: &str) -> Vec<String> {
     items
 }
 
-pub fn requirement_unsatisfied_payload(reason: &str, missing_requirements: &[String], raw_result: Option<&Value>) -> Value {
+pub fn requirement_unsatisfied_payload(
+    reason: &str,
+    missing_requirements: &[String],
+    raw_result: Option<&Value>,
+) -> Value {
     json!({
         "reason": reason,
         "missing_requirements": missing_requirements,

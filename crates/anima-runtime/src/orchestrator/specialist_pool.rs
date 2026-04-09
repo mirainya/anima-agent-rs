@@ -28,8 +28,7 @@ pub enum SpecialistStatus {
 }
 
 /// 负载均衡策略
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LoadBalanceStrategy {
     /// 选择当前负载最低的专家
     #[default]
@@ -39,7 +38,6 @@ pub enum LoadBalanceStrategy {
     /// 基于计数器的伪随机分配
     Random,
 }
-
 
 // ---------------------------------------------------------------------------
 // Metrics structs
@@ -280,9 +278,7 @@ impl SpecialistPool {
         // Update capability index
         let mut caps = self.capabilities.lock().unwrap();
         for cap in &opts.capabilities {
-            caps.entry(cap.clone())
-                .or_default()
-                .push(opts.id.clone());
+            caps.entry(cap.clone()).or_default().push(opts.id.clone());
         }
     }
 
@@ -377,9 +373,7 @@ impl SpecialistPool {
         drop(registry);
 
         let mut caps = self.capabilities.lock().unwrap();
-        let ids = caps
-            .entry(capability.to_string())
-            .or_default();
+        let ids = caps.entry(capability.to_string()).or_default();
         if !ids.contains(&specialist_id.to_string()) {
             ids.push(specialist_id.to_string());
         }
@@ -504,11 +498,9 @@ impl SpecialistPool {
         }
 
         match self.config.load_balance_strategy {
-            LoadBalanceStrategy::LeastLoaded => {
-                candidates
-                    .into_iter()
-                    .min_by_key(|s| s.current_load.load(Ordering::SeqCst))
-            }
+            LoadBalanceStrategy::LeastLoaded => candidates
+                .into_iter()
+                .min_by_key(|s| s.current_load.load(Ordering::SeqCst)),
             LoadBalanceStrategy::RoundRobin => {
                 let idx = self.round_robin_counter.fetch_add(1, Ordering::SeqCst);
                 let i = (idx as usize) % candidates.len();

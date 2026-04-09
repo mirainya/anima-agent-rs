@@ -1,4 +1,5 @@
 import type { JobView, StatusSnapshot } from '@/shared/utils/types';
+import { formatActiveSubtask } from './formatOrchestration';
 
 export type TimelineEvent = StatusSnapshot['runtime_timeline'][number];
 export type ProcessSource = 'job' | 'runtime';
@@ -13,6 +14,10 @@ export interface ProcessEntry {
     | 'question_answer'
     | 'question_resolved'
     | 'followup'
+    | 'tool_detected'
+    | 'tool_permission'
+    | 'tool_execution'
+    | 'tool_result'
     | 'completed'
     | 'failed'
     | 'other';
@@ -83,6 +88,16 @@ function createEntry(
   const accumulatedTextPreview = getString(view.accumulated_text_preview);
   const contentBlockKind = getString(view.content_block_kind);
   const toolName = getString(view.tool_name);
+  const toolUseId = getString(view.tool_use_id);
+  const invocationId = getString(view.invocation_id);
+  const permissionState = getString(view.permission_state);
+  const resultSummary = getString(view.result_summary);
+  const errorSummary = getString(view.error_summary);
+  const details = isRecord(view.details) ? view.details : {};
+  const toolInput = details.tool_input ?? view.tool_input;
+  const inputPreview = getString(view.input_preview)
+    ?? (toolInput !== undefined ? JSON.stringify(toolInput) : undefined);
+  const decision = getString(details.decision);
   const partialJson = getString(view.partial_json);
   const stopReason = getString(view.stop_reason);
 
@@ -335,6 +350,90 @@ function createEntry(
         raw: view,
         source,
       };
+    case 'tool_invocation_detected':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'tool_detected',
+        event,
+        timestamp,
+        title: `检测到工具调用：${toolName ?? 'unknown'}`,
+        detail: [toolUseId, invocationId, permissionState, phase].filter(Boolean).join(' · ') || '主 agent 已识别到工具调用',
+        preview: inputPreview,
+        raw: view,
+        source,
+      };
+    case 'tool_permission_requested':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'tool_permission',
+        event,
+        timestamp,
+        title: `等待工具权限确认：${toolName ?? 'unknown'}`,
+        detail: [toolUseId, invocationId, permissionState ?? 'requested', phase].filter(Boolean).join(' · ') || '工具调用需要用户确认',
+        preview: prompt ?? inputPreview,
+        raw: view,
+        source,
+      };
+    case 'tool_permission_resolved':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'tool_permission',
+        event,
+        timestamp,
+        title: `工具权限已确认：${toolName ?? 'unknown'}`,
+        detail: [decision ? `decision=${decision}` : undefined, toolUseId, permissionState, phase].filter(Boolean).join(' · ') || '工具权限状态已更新',
+        preview: errorSummary ?? resultSummary ?? inputPreview,
+        raw: view,
+        source,
+      };
+    case 'tool_execution_started':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'tool_execution',
+        event,
+        timestamp,
+        title: `开始执行工具：${toolName ?? 'unknown'}`,
+        detail: [toolUseId, invocationId, permissionState, phase].filter(Boolean).join(' · ') || '工具开始执行',
+        preview: inputPreview,
+        raw: view,
+        source,
+      };
+    case 'tool_execution_finished':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'tool_execution',
+        event,
+        timestamp,
+        title: `工具执行完成：${toolName ?? 'unknown'}`,
+        detail: [toolUseId, invocationId, permissionState, phase].filter(Boolean).join(' · ') || '工具执行已完成',
+        preview: resultSummary,
+        raw: view,
+        source,
+      };
+    case 'tool_execution_failed':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'failed',
+        event,
+        timestamp,
+        title: `工具执行失败：${toolName ?? 'unknown'}`,
+        detail: [toolUseId, invocationId, permissionState, phase].filter(Boolean).join(' · ') || '工具执行失败',
+        preview: errorSummary ?? error,
+        raw: view,
+        source,
+      };
+    case 'tool_result_recorded':
+      return {
+        id: `${source}-${event}-${timestamp}-${index}`,
+        kind: 'tool_result',
+        event,
+        timestamp,
+        title: `工具结果已记录：${toolName ?? 'unknown'}`,
+        detail: [toolUseId, invocationId, permissionState, phase].filter(Boolean).join(' · ') || '工具结果已写回消息链路',
+        preview: resultSummary ?? errorSummary,
+        raw: view,
+        source,
+      };
     case 'message_completed':
       return {
         id: `${source}-${event}-${timestamp}-${index}`,
@@ -378,6 +477,128 @@ export function deriveProcessEntriesFromEvents(events: JobView['recent_events'],
   return events
     .map((event, index) => createEntry(source, event.event, event.recorded_at_ms, event.payload, index))
     .sort((left, right) => left.timestamp - right.timestamp);
+}
+
+function createProjectionEntry(
+  source: ProcessSource,
+  kind: ProcessEntry['kind'],
+  event: string,
+  timestamp: number,
+  title: string,
+  detail: string,
+  preview?: string,
+  raw?: unknown,
+): ProcessEntry {
+  return {
+    id: `${source}-${event}-${timestamp}-projection`,
+    kind,
+    event,
+    timestamp,
+    title,
+    detail,
+    preview,
+    raw,
+    source,
+  };
+}
+
+export function deriveProcessEntriesFromJob(job: JobView, source: ProcessSource = 'job'): ProcessEntry[] {
+  const entries = deriveProcessEntriesFromEvents(job.recent_events, source);
+  const hasKind = (kind: ProcessEntry['kind']) => entries.some((entry) => entry.kind === kind);
+  const pushProjectionEntry = (entry: ProcessEntry) => {
+    if (!entries.some((candidate) => candidate.kind === entry.kind && candidate.title === entry.title && candidate.timestamp === entry.timestamp)) {
+      entries.push(entry);
+    }
+  };
+
+  if (job.orchestration && job.orchestration.total_subtasks > 0 && !hasKind('assignment')) {
+    pushProjectionEntry(createProjectionEntry(
+      source,
+      'assignment',
+      'projection_orchestration_state',
+      job.updated_at_ms,
+      '当前存在 orchestration 计划',
+      `总子任务 ${job.orchestration.total_subtasks} · 运行中 ${job.orchestration.active_subtasks} · 已完成 ${job.orchestration.completed_subtasks} · 失败 ${job.orchestration.failed_subtasks}`,
+      formatActiveSubtask(job.orchestration.active_subtask_name, job.orchestration.active_subtask_type) ?? job.orchestration.plan_id ?? undefined,
+      job.orchestration,
+    ));
+  }
+
+  if (job.pending_question && !hasKind('question_asked')) {
+    const rawQuestion = job.pending_question.raw_question;
+    const toolPermissionQuestion = rawQuestion && typeof rawQuestion === 'object' && rawQuestion !== null && 'type' in rawQuestion && rawQuestion.type === 'tool_permission'
+      ? rawQuestion as { tool_name?: string; tool_use_id?: string; input_preview?: string; prompt?: string }
+      : null;
+    pushProjectionEntry(createProjectionEntry(
+      source,
+      toolPermissionQuestion ? 'tool_permission' : 'question_asked',
+      'projection_pending_question',
+      job.updated_at_ms,
+      toolPermissionQuestion ? `等待工具权限确认：${toolPermissionQuestion.tool_name ?? 'unknown'}` : '存在待回答问题',
+      toolPermissionQuestion
+        ? [toolPermissionQuestion.tool_use_id, job.pending_question.risk_level, job.pending_question.decision_mode].filter(Boolean).join(' · ') || '工具调用需要用户确认'
+        : [job.pending_question.question_kind, job.pending_question.decision_mode, job.pending_question.risk_level].filter(Boolean).join(' · ') || '等待用户补充信息',
+      toolPermissionQuestion?.input_preview ?? toolPermissionQuestion?.prompt ?? job.pending_question.prompt,
+      job.pending_question,
+    ));
+  }
+
+  if (job.tool_state) {
+    const toolState = job.tool_state;
+    const kind = toolState.phase === 'result_recorded'
+      ? 'tool_result'
+      : toolState.phase === 'execution_failed' || toolState.phase === 'failed'
+        ? 'failed'
+        : toolState.awaits_user_confirmation
+          ? 'tool_permission'
+          : 'tool_execution';
+    if (!hasKind(kind)) {
+      pushProjectionEntry(createProjectionEntry(
+        source,
+        kind,
+        'projection_tool_state',
+        job.updated_at_ms,
+        kind === 'tool_result'
+          ? `工具结果已记录：${toolState.tool_name ?? 'unknown'}`
+          : kind === 'failed'
+            ? `工具执行失败：${toolState.tool_name ?? 'unknown'}`
+            : kind === 'tool_permission'
+              ? `等待工具权限确认：${toolState.tool_name ?? 'unknown'}`
+              : `工具执行中：${toolState.tool_name ?? 'unknown'}`,
+        [toolState.tool_use_id, toolState.invocation_id, toolState.permission_state, toolState.phase].filter(Boolean).join(' · ') || '运行时工具状态',
+        toolState.result_preview ?? toolState.error ?? toolState.input_preview ?? undefined,
+        toolState,
+      ));
+    }
+  }
+
+  if (job.failure && !hasKind('failed')) {
+    pushProjectionEntry(createProjectionEntry(
+      source,
+      'failed',
+      'projection_failure',
+      job.failure.occurred_at_ms,
+      '任务失败',
+      [job.failure.error_stage, job.failure.error_code].filter(Boolean).join(' / ') || '执行失败',
+      job.failure.internal_message,
+      job.failure,
+    ));
+  }
+
+  if (job.status === 'completed' && !hasKind('completed')) {
+    pushProjectionEntry(createProjectionEntry(
+      source,
+      'completed',
+      'projection_completed',
+      job.updated_at_ms,
+      '任务完成',
+      job.execution_summary?.status ?? job.status,
+      undefined,
+      job.execution_summary ?? { status: job.status },
+    ));
+  }
+
+  return entries.sort((left, right) => left.timestamp - right.timestamp);
 }
 
 export function deriveProcessEntriesFromRuntimeTimeline(events: TimelineEvent[], source: ProcessSource = 'runtime'): ProcessEntry[] {

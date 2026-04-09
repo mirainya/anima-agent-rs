@@ -61,9 +61,10 @@ fn gauge_fn_evaluates_on_snapshot() {
 
     let counter = Arc::new(AtomicI64::new(42));
     let counter_clone = counter.clone();
-    metrics.register_gauge_fn("dynamic_gauge", Box::new(move || {
-        counter_clone.load(Ordering::SeqCst)
-    }));
+    metrics.register_gauge_fn(
+        "dynamic_gauge",
+        Box::new(move || counter_clone.load(Ordering::SeqCst)),
+    );
 
     let snapshot = metrics.snapshot();
     assert_eq!(snapshot.gauges.get("dynamic_gauge"), Some(&42));

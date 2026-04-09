@@ -212,11 +212,7 @@ pub fn prepare_requirement_evaluation(
         source_label: source_label(source),
         assembly_mode: assembly_mode_for_source(source),
         judge_context: build_requirement_judge_context(
-            &assembly,
-            job_id,
-            trace_id,
-            chat_id,
-            raw_result,
+            &assembly, job_id, trace_id, chat_id, raw_result,
         ),
         assembly,
     }
@@ -234,7 +230,9 @@ pub fn plan_turn_outcome(
             should_resolve_question: has_resolved_question,
             requirement,
         },
-        RequirementJudgement::NeedsAgentFollowup(plan) => TurnOutcomePlan::ScheduleFollowup { plan },
+        RequirementJudgement::NeedsAgentFollowup(plan) => {
+            TurnOutcomePlan::ScheduleFollowup { plan }
+        }
     }
 }
 
@@ -316,7 +314,9 @@ pub fn prepare_message_completed_payload(response_text: &str) -> MessageComplete
     }
 }
 
-pub fn prepare_user_input_required_payload(requirement: &UserInputRequirement) -> UserInputRequiredPayload {
+pub fn prepare_user_input_required_payload(
+    requirement: &UserInputRequirement,
+) -> UserInputRequiredPayload {
     UserInputRequiredPayload {
         reason: requirement.reason.clone(),
         missing_requirements: requirement.missing_requirements.clone(),
@@ -375,7 +375,9 @@ pub fn prepare_upstream_response_observed_payload(
     }
 }
 
-pub fn prepare_requirement_evaluation_started_payload(source: &'static str) -> RequirementEvaluationStartedPayload {
+pub fn prepare_requirement_evaluation_started_payload(
+    source: &'static str,
+) -> RequirementEvaluationStartedPayload {
     RequirementEvaluationStartedPayload { source }
 }
 
@@ -511,11 +513,8 @@ pub fn prepare_followup_branch_data(
     execute_ms: u64,
     total_ms: u64,
 ) -> FollowupBranchData {
-    let unsatisfied = prepare_requirement_unsatisfied_event_payload(
-        &reason,
-        &missing_requirements,
-        None,
-    );
+    let unsatisfied =
+        prepare_requirement_unsatisfied_event_payload(&reason, &missing_requirements, None);
     let pending_summary = prepare_summary_input(
         "followup_pending".into(),
         worker_id.clone(),

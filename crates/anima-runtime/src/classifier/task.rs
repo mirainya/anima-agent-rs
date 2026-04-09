@@ -94,109 +94,191 @@ fn compile(patterns: &[&str]) -> Vec<Regex> {
 
 fn build_definitions() -> IndexMap<TaskType, TaskTypeDef> {
     let mut d = IndexMap::new();
-    d.insert(TaskType::CodeGeneration, TaskTypeDef {
-        keywords: vec![
-            "write", "create", "implement", "build", "develop",
-            "编写", "创建", "实现", "生成", "代码",
-        ],
-        patterns: compile(&[
-            r"(?i)write\s+(a|an|the)?\s*(function|method|class|module|component)",
-            r"(?i)implement\s+(a|an|the)?\s*\w+",
-            r"(?i)create\s+(a|an|the)?\s*(function|class|api)",
-            r"(?i)build\s+(a|an|the)?\s*\w+",
-            "编写", "创建", "实现", "生成代码",
-        ]),
-        priority: 10,
-    });
-    d.insert(TaskType::CodeReview, TaskTypeDef {
-        keywords: vec!["review", "check", "analyze", "audit", "审查", "检查", "分析代码"],
-        patterns: compile(&[
-            r"(?i)review\s+(this|the|my)?\s*code",
-            r"(?i)check\s+(this|the|my)?\s*code",
-            r"(?i)analyze\s+(this|the|my)?\s*code",
-            r"(?i)code\s*review",
-            "审查代码", "检查代码", "代码审查",
-        ]),
-        priority: 8,
-    });
-    d.insert(TaskType::CodeDebug, TaskTypeDef {
-        keywords: vec![
-            "debug", "fix", "error", "bug", "issue", "problem",
-            "调试", "修复", "错误",
-        ],
-        patterns: compile(&[
-            r"(?i)debug\s+(this|the|my)?\s*(code|error|issue)",
-            r"(?i)fix\s+(this|the|my)?\s*(error|bug|issue)",
-            r"(?i)(error|exception|bug)\s+(in|with)",
-            "调试", "修复", "错误", "报错",
-        ]),
-        priority: 9,
-    });
-    d.insert(TaskType::CodeRefactor, TaskTypeDef {
-        keywords: vec!["refactor", "optimize", "improve", "clean", "重构", "优化", "改进"],
-        patterns: compile(&[
-            r"(?i)refactor\s+(this|the|my)?\s*code",
-            r"(?i)optimize\s+(this|the|my)?\s*(code|performance)",
-            r"(?i)improve\s+(this|the|my)?\s*code",
-            "重构", "优化", "改进代码",
-        ]),
-        priority: 7,
-    });
-    d.insert(TaskType::WebSearch, TaskTypeDef {
-        keywords: vec!["search", "find", "lookup", "google", "搜索", "查找"],
-        patterns: compile(&[
-            r"(?i)search\s+(for|about|on)",
-            r"(?i)find\s+(information|docs|documentation)",
-            r"(?i)look\s+up",
-            "搜索", "查找", "搜索一下",
-        ]),
-        priority: 6,
-    });
-    d.insert(TaskType::Documentation, TaskTypeDef {
-        keywords: vec!["document", "docs", "readme", "explain", "describe", "文档", "说明", "解释"],
-        patterns: compile(&[
-            r"(?i)(write|create|generate)\s+(documentation|docs|readme)",
-            r"(?i)document\s+(this|the|my)?\s*code",
-            r"(?i)explain\s+(how|what|why)",
-            "写文档", "生成文档", "说明文档",
-        ]),
-        priority: 5,
-    });
-    d.insert(TaskType::DataAnalysis, TaskTypeDef {
-        keywords: vec!["analyze", "data", "statistics", "chart", "graph", "分析", "数据", "统计", "图表"],
-        patterns: compile(&[
-            r"(?i)analyze\s+(this|the|my)?\s*(data|dataset)",
-            r"(?i)(show|create|generate)\s+(a|the)?\s*(chart|graph|plot)",
-            "分析数据", "数据分析", "统计",
-        ]),
-        priority: 6,
-    });
-    d.insert(TaskType::TestGeneration, TaskTypeDef {
-        keywords: vec!["test", "testing", "spec", "unit test", "测试", "单元测试"],
-        patterns: compile(&[
-            r"(?i)(write|create|generate)\s+(tests?|specs?|unit\s+tests?)",
-            r"(?i)test\s+(this|the|my)?\s*(function|method|class|code)",
-            "写测试", "生成测试", "单元测试",
-        ]),
-        priority: 7,
-    });
-    d.insert(TaskType::ApiCall, TaskTypeDef {
-        keywords: vec!["api", "endpoint", "request", "http", "rest", "接口", "请求"],
-        patterns: compile(&[
-            r"(?i)(call|invoke|hit)\s+(the|an?)?\s*(api|endpoint)",
-            r"(?i)(get|post|put|delete)\s+request",
-            "调用接口", "API请求",
-        ]),
-        priority: 8,
-    });
-    d.insert(TaskType::GeneralChat, TaskTypeDef {
-        keywords: vec!["hello", "hi", "hey", "thanks", "thank", "你好", "谢谢", "您好"],
-        patterns: compile(&[
-            r"(?i)^(hello|hi|hey|good\s+(morning|afternoon|evening))",
-            "你好", "您好", "谢谢",
-        ]),
-        priority: 1,
-    });
+    d.insert(
+        TaskType::CodeGeneration,
+        TaskTypeDef {
+            keywords: vec![
+                "write",
+                "create",
+                "implement",
+                "build",
+                "develop",
+                "编写",
+                "创建",
+                "实现",
+                "生成",
+                "代码",
+            ],
+            patterns: compile(&[
+                r"(?i)write\s+(a|an|the)?\s*(function|method|class|module|component)",
+                r"(?i)implement\s+(a|an|the)?\s*\w+",
+                r"(?i)create\s+(a|an|the)?\s*(function|class|api)",
+                r"(?i)build\s+(a|an|the)?\s*\w+",
+                "编写",
+                "创建",
+                "实现",
+                "生成代码",
+            ]),
+            priority: 10,
+        },
+    );
+    d.insert(
+        TaskType::CodeReview,
+        TaskTypeDef {
+            keywords: vec![
+                "review",
+                "check",
+                "analyze",
+                "audit",
+                "审查",
+                "检查",
+                "分析代码",
+            ],
+            patterns: compile(&[
+                r"(?i)review\s+(this|the|my)?\s*code",
+                r"(?i)check\s+(this|the|my)?\s*code",
+                r"(?i)analyze\s+(this|the|my)?\s*code",
+                r"(?i)code\s*review",
+                "审查代码",
+                "检查代码",
+                "代码审查",
+            ]),
+            priority: 8,
+        },
+    );
+    d.insert(
+        TaskType::CodeDebug,
+        TaskTypeDef {
+            keywords: vec![
+                "debug", "fix", "error", "bug", "issue", "problem", "调试", "修复", "错误",
+            ],
+            patterns: compile(&[
+                r"(?i)debug\s+(this|the|my)?\s*(code|error|issue)",
+                r"(?i)fix\s+(this|the|my)?\s*(error|bug|issue)",
+                r"(?i)(error|exception|bug)\s+(in|with)",
+                "调试",
+                "修复",
+                "错误",
+                "报错",
+            ]),
+            priority: 9,
+        },
+    );
+    d.insert(
+        TaskType::CodeRefactor,
+        TaskTypeDef {
+            keywords: vec![
+                "refactor", "optimize", "improve", "clean", "重构", "优化", "改进",
+            ],
+            patterns: compile(&[
+                r"(?i)refactor\s+(this|the|my)?\s*code",
+                r"(?i)optimize\s+(this|the|my)?\s*(code|performance)",
+                r"(?i)improve\s+(this|the|my)?\s*code",
+                "重构",
+                "优化",
+                "改进代码",
+            ]),
+            priority: 7,
+        },
+    );
+    d.insert(
+        TaskType::WebSearch,
+        TaskTypeDef {
+            keywords: vec!["search", "find", "lookup", "google", "搜索", "查找"],
+            patterns: compile(&[
+                r"(?i)search\s+(for|about|on)",
+                r"(?i)find\s+(information|docs|documentation)",
+                r"(?i)look\s+up",
+                "搜索",
+                "查找",
+                "搜索一下",
+            ]),
+            priority: 6,
+        },
+    );
+    d.insert(
+        TaskType::Documentation,
+        TaskTypeDef {
+            keywords: vec![
+                "document", "docs", "readme", "explain", "describe", "文档", "说明", "解释",
+            ],
+            patterns: compile(&[
+                r"(?i)(write|create|generate)\s+(documentation|docs|readme)",
+                r"(?i)document\s+(this|the|my)?\s*code",
+                r"(?i)explain\s+(how|what|why)",
+                "写文档",
+                "生成文档",
+                "说明文档",
+            ]),
+            priority: 5,
+        },
+    );
+    d.insert(
+        TaskType::DataAnalysis,
+        TaskTypeDef {
+            keywords: vec![
+                "analyze",
+                "data",
+                "statistics",
+                "chart",
+                "graph",
+                "分析",
+                "数据",
+                "统计",
+                "图表",
+            ],
+            patterns: compile(&[
+                r"(?i)analyze\s+(this|the|my)?\s*(data|dataset)",
+                r"(?i)(show|create|generate)\s+(a|the)?\s*(chart|graph|plot)",
+                "分析数据",
+                "数据分析",
+                "统计",
+            ]),
+            priority: 6,
+        },
+    );
+    d.insert(
+        TaskType::TestGeneration,
+        TaskTypeDef {
+            keywords: vec!["test", "testing", "spec", "unit test", "测试", "单元测试"],
+            patterns: compile(&[
+                r"(?i)(write|create|generate)\s+(tests?|specs?|unit\s+tests?)",
+                r"(?i)test\s+(this|the|my)?\s*(function|method|class|code)",
+                "写测试",
+                "生成测试",
+                "单元测试",
+            ]),
+            priority: 7,
+        },
+    );
+    d.insert(
+        TaskType::ApiCall,
+        TaskTypeDef {
+            keywords: vec!["api", "endpoint", "request", "http", "rest", "接口", "请求"],
+            patterns: compile(&[
+                r"(?i)(call|invoke|hit)\s+(the|an?)?\s*(api|endpoint)",
+                r"(?i)(get|post|put|delete)\s+request",
+                "调用接口",
+                "API请求",
+            ]),
+            priority: 8,
+        },
+    );
+    d.insert(
+        TaskType::GeneralChat,
+        TaskTypeDef {
+            keywords: vec![
+                "hello", "hi", "hey", "thanks", "thank", "你好", "谢谢", "您好",
+            ],
+            patterns: compile(&[
+                r"(?i)^(hello|hi|hey|good\s+(morning|afternoon|evening))",
+                "你好",
+                "您好",
+                "谢谢",
+            ]),
+            priority: 1,
+        },
+    );
     d
 }
 
@@ -222,7 +304,11 @@ fn check_patterns(text: &str, patterns: &[Regex]) -> bool {
 
 fn score_task_type(message: &str, def: &TaskTypeDef) -> u64 {
     let keyword_score = count_keyword_matches(message, &def.keywords) * 10;
-    let pattern_score = if check_patterns(message, &def.patterns) { 50 } else { 0 };
+    let pattern_score = if check_patterns(message, &def.patterns) {
+        50
+    } else {
+        0
+    };
     keyword_score + pattern_score + def.priority * 5
 }
 
@@ -281,10 +367,16 @@ fn lang_patterns() -> &'static Vec<(&'static str, Vec<Regex>)> {
     LANG_PATTERNS.get_or_init(|| {
         let raw: &[(&'static str, &[&str])] = &[
             ("rust", &[r"fn\s+\w+\s*\(", r"let\s+mut", r"impl\s+\w+"]),
-            ("python", &[r"def\s+\w+\s*\(", r"import\s+\w+", r"from\s+\w+\s+import"]),
+            (
+                "python",
+                &[r"def\s+\w+\s*\(", r"import\s+\w+", r"from\s+\w+\s+import"],
+            ),
             ("javascript", &[r"function\s+\w+\s*\(", r"const\s+\w+\s*="]),
             ("typescript", &[r"interface\s+\w+", r"type\s+\w+\s*="]),
-            ("java", &[r"public\s+class", r"private\s+void", r"import\s+java"]),
+            (
+                "java",
+                &[r"public\s+class", r"private\s+void", r"import\s+java"],
+            ),
             ("go", &[r"func\s+\w+\s*\(", r"package\s+\w+"]),
             ("clojure", &[r"\(defn", r"\(def\s", r"\(ns\s"]),
         ];
@@ -330,7 +422,11 @@ pub fn extract_code_blocks(message: &str) -> CodeBlocks {
         .collect();
 
     let has_code = !fenced.is_empty() || !inline.is_empty();
-    CodeBlocks { fenced, inline, has_code }
+    CodeBlocks {
+        fenced,
+        inline,
+        has_code,
+    }
 }
 
 // ── Task Context ─────────────────────────────────────────────────────
@@ -353,7 +449,12 @@ pub fn extract_task_context(message: &str) -> TaskContext {
         .iter()
         .any(|kw| lower.contains(kw));
 
-    TaskContext { classification, code_blocks, language_hint, is_urgent }
+    TaskContext {
+        classification,
+        code_blocks,
+        language_hint,
+        is_urgent,
+    }
 }
 
 // ── Multiple Task Detection ──────────────────────────────────────────
@@ -363,10 +464,7 @@ pub fn detect_multiple_tasks(message: &str) -> Vec<ClassificationResult> {
 
     let mut parts: Vec<&str> = vec![message];
     for sep in &separators {
-        let new_parts: Vec<&str> = parts
-            .iter()
-            .flat_map(|p| p.split(sep))
-            .collect();
+        let new_parts: Vec<&str> = parts.iter().flat_map(|p| p.split(sep)).collect();
         if new_parts.len() > parts.len() {
             parts = new_parts;
             break;

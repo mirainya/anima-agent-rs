@@ -142,9 +142,7 @@ impl CircuitBreaker {
         let state = self.state.lock();
         match *state {
             CircuitState::Closed => true,
-            CircuitState::HalfOpen => {
-                *self.success_count.lock() < self.config.half_open_max_calls
-            }
+            CircuitState::HalfOpen => *self.success_count.lock() < self.config.half_open_max_calls,
             CircuitState::Open => false,
         }
     }
@@ -206,10 +204,9 @@ impl CircuitBreaker {
         match state {
             CircuitState::Closed => {
                 let fc = *self.failure_count.lock();
-                if fc >= self.config.failure_threshold
-                    && self.transition_to(CircuitState::Open) {
-                        self.stats.lock().tripped_at_ms = Some(now_ms());
-                    }
+                if fc >= self.config.failure_threshold && self.transition_to(CircuitState::Open) {
+                    self.stats.lock().tripped_at_ms = Some(now_ms());
+                }
             }
             CircuitState::HalfOpen => {
                 // Any failure in half-open immediately re-opens
@@ -265,7 +262,9 @@ impl CircuitBreaker {
         if !self.allows_request() {
             self.stats.lock().total_rejections += 1;
             let retry_after = self.stats.lock().tripped_at_ms.map(|t| {
-                self.config.timeout_ms.saturating_sub(now_ms().saturating_sub(t))
+                self.config
+                    .timeout_ms
+                    .saturating_sub(now_ms().saturating_sub(t))
             });
             return CircuitBreakerResult::Rejected {
                 retry_after_ms: retry_after,
@@ -325,4 +324,3 @@ pub struct CircuitBreakerStatus {
     pub stats: CircuitBreakerStats,
     pub config: CircuitBreakerConfig,
 }
-

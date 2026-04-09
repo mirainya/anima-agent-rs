@@ -64,10 +64,7 @@ impl Tool for BashExecTool {
     }
 
     fn call(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let command = input["command"]
-            .as_str()
-            .expect("validated")
-            .to_string();
+        let command = input["command"].as_str().expect("validated").to_string();
         let timeout_ms = input
             .get("timeout_ms")
             .and_then(Value::as_u64)
@@ -101,21 +98,15 @@ impl Tool for BashExecTool {
                     Ok(ToolResult::text(combined))
                 } else {
                     let code = output.status.code().unwrap_or(-1);
-                    Ok(ToolResult::error(format!(
-                        "exit code {code}\n{combined}"
-                    )))
+                    Ok(ToolResult::error(format!("exit code {code}\n{combined}")))
                 }
             }
-            Ok(Err(e)) => Ok(ToolResult::error(format!(
-                "failed to execute command: {e}"
-            ))),
+            Ok(Err(e)) => Ok(ToolResult::error(format!("failed to execute command: {e}"))),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(ToolError::Timeout {
                 tool_name: "bash_exec".into(),
                 timeout_ms,
             }),
-            Err(e) => Err(ToolError::Internal(format!(
-                "channel error: {e}"
-            ))),
+            Err(e) => Err(ToolError::Internal(format!("channel error: {e}"))),
         }
     }
 }

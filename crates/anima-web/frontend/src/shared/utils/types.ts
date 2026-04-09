@@ -118,6 +118,19 @@ export const workerTaskSchema = z.object({
   task_type: z.string(),
   elapsed_ms: z.number(),
   content_preview: z.string(),
+  phase: z.string().nullable().optional(),
+});
+
+export const toolStateSchema = z.object({
+  invocation_id: z.string().nullable().optional(),
+  tool_name: z.string().nullable().optional(),
+  tool_use_id: z.string().nullable().optional(),
+  phase: z.string(),
+  permission_state: z.string().nullable().optional(),
+  input_preview: z.string().nullable().optional(),
+  result_preview: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+  awaits_user_confirmation: z.boolean(),
 });
 
 const toolPermissionRawQuestionSchema = z.object({
@@ -146,12 +159,34 @@ export const pendingQuestionSchema = z.object({
 const orchestrationSchema = z.object({
   plan_id: z.string().nullable().optional(),
   active_subtask_name: z.string().nullable().optional(),
+  active_subtask_type: z.string().nullable().optional(),
   active_subtask_id: z.string().nullable().optional(),
   total_subtasks: z.number(),
   active_subtasks: z.number(),
   completed_subtasks: z.number(),
   failed_subtasks: z.number(),
   child_job_ids: z.array(z.string()),
+});
+
+const executionSummarySchema = z.object({
+  plan_type: z.string(),
+  status: z.string(),
+  cache_hit: z.boolean(),
+  worker_id: z.string().nullable().optional(),
+  error_code: z.string().nullable().optional(),
+  error_stage: z.string().nullable().optional(),
+  task_duration_ms: z.number(),
+  stages: z.unknown(),
+});
+
+const failureSchema = z.object({
+  error_code: z.string(),
+  error_stage: z.string(),
+  message_id: z.string(),
+  channel: z.string(),
+  chat_id: z.string().nullable().optional(),
+  occurred_at_ms: z.number(),
+  internal_message: z.string(),
 });
 
 export const jobViewSchema = z.object({
@@ -174,8 +209,9 @@ export const jobViewSchema = z.object({
   pending_question: pendingQuestionSchema.nullable().optional(),
   recent_events: z.array(jobEventSchema),
   worker: workerTaskSchema.nullable().optional(),
-  execution_summary: z.unknown().nullable().optional(),
-  failure: z.unknown().nullable().optional(),
+  tool_state: toolStateSchema.nullable().optional(),
+  execution_summary: executionSummarySchema.nullable().optional(),
+  failure: failureSchema.nullable().optional(),
   review: jobReviewSchema.nullable().optional(),
   orchestration: orchestrationSchema.nullable().optional(),
 });
@@ -183,6 +219,54 @@ export const jobViewSchema = z.object({
 export const jobsResponseSchema = z.object({
   ok: z.boolean(),
   jobs: z.array(jobViewSchema),
+});
+
+export const sessionSummarySchema = z.object({
+  chat_id: z.string(),
+  channel: z.string(),
+  session_id: z.string(),
+  history_len: z.number(),
+  last_user_message_preview: z.string(),
+  last_active: z.number(),
+});
+
+export const sessionHistoryItemSchema = z.object({
+  role: z.string().nullable().optional(),
+  content: z.unknown(),
+  recorded_at: z.number().nullable().optional(),
+  raw: z.unknown(),
+});
+
+export const sessionsResponseSchema = z.object({
+  ok: z.boolean(),
+  sessions: z.array(sessionSummarySchema),
+});
+
+export const sessionHistoryResponseSchema = z.object({
+  ok: z.boolean(),
+  session_id: z.string(),
+  history: z.array(sessionHistoryItemSchema),
+});
+
+const unifiedRuntimeSchema = z.object({
+  runs: z.array(z.unknown()),
+  turns: z.array(z.unknown()),
+  tasks: z.array(z.unknown()),
+  suspensions: z.array(z.unknown()),
+  tool_invocations: z.array(z.unknown()),
+  requirements: z.array(z.unknown()),
+  transcript: z.array(z.unknown()),
+  execution_summaries: z.record(z.string(), z.unknown()),
+  failures: z.record(z.string(), z.unknown()),
+  orchestration: z.record(z.string(), z.unknown()),
+  pending_questions: z.record(z.string(), z.unknown()),
+  tool_states: z.record(z.string(), z.unknown()),
+  job_statuses: z.record(z.string(), z.unknown()),
+  recent_events: z.array(z.object({
+    sequence: z.number(),
+    recorded_at_ms: z.number(),
+    event_type: z.string(),
+  })),
 });
 
 export const statusSnapshotSchema = z.object({
@@ -217,13 +301,7 @@ export const statusSnapshotSchema = z.object({
     idle: z.number(),
     stopped: z.number(),
   }),
-  recent_sessions: z.array(z.object({
-    chat_id: z.string(),
-    channel: z.string(),
-    session_id: z.string().nullable().optional(),
-    history_len: z.number(),
-    last_user_message_preview: z.string(),
-  })),
+  recent_sessions: z.array(sessionSummarySchema.omit({ last_active: true })),
   failures: z.object({
     last_failure: z.object({
       error_code: z.string(),
@@ -271,6 +349,7 @@ export const statusSnapshotSchema = z.object({
     gauges: z.record(z.string(), z.number()),
     histograms: z.record(z.string(), z.unknown()),
   }),
+  unified_runtime: unifiedRuntimeSchema,
   jobs: z.array(jobViewSchema),
 });
 
@@ -313,5 +392,7 @@ export const sseEventSchema = z.union([
 
 export type JobStatus = z.infer<typeof jobStatusSchema>;
 export type JobView = z.infer<typeof jobViewSchema>;
+export type SessionSummary = z.infer<typeof sessionSummarySchema>;
+export type SessionHistoryItem = z.infer<typeof sessionHistoryItemSchema>;
 export type StatusSnapshot = z.infer<typeof statusSnapshotSchema>;
 export type SseEvent = z.infer<typeof sseEventSchema>;

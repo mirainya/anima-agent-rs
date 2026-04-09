@@ -142,7 +142,12 @@ pub fn get_request(
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    send(client.http_client.get(url).header("accept", "application/json"))
+    send(
+        client
+            .http_client
+            .get(url)
+            .header("accept", "application/json"),
+    )
 }
 
 pub fn post_request(

@@ -26,9 +26,7 @@ pub fn build_message_lookups(messages: &[InternalMsg]) -> MessageLookups {
                 lookups.tool_use_by_id.insert(tool_use_id.clone(), i);
             } else {
                 // 其他角色带 tool_use_id 的视为 tool_result
-                lookups
-                    .tool_result_by_use_id
-                    .insert(tool_use_id.clone(), i);
+                lookups.tool_result_by_use_id.insert(tool_use_id.clone(), i);
             }
         }
     }
@@ -38,8 +36,8 @@ pub fn build_message_lookups(messages: &[InternalMsg]) -> MessageLookups {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::{InternalMsg, MessageRole};
+    use super::*;
     use serde_json::json;
 
     #[test]

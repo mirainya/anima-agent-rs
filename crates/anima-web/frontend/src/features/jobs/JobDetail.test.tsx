@@ -37,6 +37,7 @@ function makeJob(partial: Partial<JobView>): JobView {
     execution_summary: null,
     failure: null,
     review: null,
+    tool_state: null,
     ...partial,
   };
 }
@@ -132,6 +133,29 @@ describe('JobDetail status interactions', () => {
     expect(screen.getAllByText(/权限确认/).length).toBeGreaterThan(0);
   });
 
+  it('shows read-only tool state summary outside waiting state', () => {
+    renderJob(makeJob({
+      status: 'executing',
+      status_label: 'executing',
+      tool_state: {
+        invocation_id: 'invoke-1',
+        tool_name: 'read_file',
+        tool_use_id: 'toolu_456',
+        phase: 'result_recorded',
+        permission_state: 'allowed',
+        input_preview: '/tmp/demo.txt',
+        result_preview: 'line 1\nline 2',
+        error: null,
+        awaits_user_confirmation: false,
+      },
+    }));
+
+    expect(screen.getByText('工具执行状态')).toBeTruthy();
+    expect(screen.getByText('read_file')).toBeTruthy();
+    expect(screen.getByText('result_recorded')).toBeTruthy();
+    expect(screen.getAllByText(/line 1/).length).toBeGreaterThan(0);
+  });
+
   it('shows auto follow-up hint without answer UI while executing', () => {
     renderJob(makeJob({
       status: 'executing',
@@ -189,6 +213,7 @@ describe('JobDetail status interactions', () => {
       orchestration: {
         plan_id: 'plan-1',
         active_subtask_name: 'design-api',
+        active_subtask_type: 'design',
         active_subtask_id: 'sub-1',
         total_subtasks: 3,
         active_subtasks: 1,
@@ -199,7 +224,7 @@ describe('JobDetail status interactions', () => {
     }));
 
     expect(screen.getByText('Orchestration 概览')).toBeTruthy();
-    expect(screen.getByText('design-api')).toBeTruthy();
+    expect(screen.getByText('design-api（design）')).toBeTruthy();
     expect(screen.getAllByText('3').length).toBeGreaterThan(0);
   });
 

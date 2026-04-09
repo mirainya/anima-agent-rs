@@ -11,9 +11,10 @@ fn main() {
     let mut runtime = builder.build();
 
     // 注册 WebChannel 到 ChannelRegistry
-    runtime
-        .registry
-        .register(web_channel.clone() as Arc<dyn anima_runtime::channel::Channel>, None);
+    runtime.registry.register(
+        web_channel.clone() as Arc<dyn anima_runtime::channel::Channel>,
+        None,
+    );
 
     let bus = runtime.bus.clone();
     runtime.start();

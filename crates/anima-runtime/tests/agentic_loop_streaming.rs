@@ -66,13 +66,16 @@ fn sse(data: &str) -> String {
     format!("data: {data}")
 }
 
-fn make_pool(executor: Arc<dyn TaskExecutor>, events: Arc<Mutex<Vec<(String, Value)>>>) -> WorkerPool {
+fn make_pool(
+    executor: Arc<dyn TaskExecutor>,
+    events: Arc<Mutex<Vec<(String, Value)>>>,
+) -> WorkerPool {
     let client = SdkClient::new("http://127.0.0.1:9711");
-    WorkerPool::new(client, executor, Some(1), None, Some(200)).with_runtime_event_publisher(Arc::new(
-        move |_trace_id, event, payload| {
+    WorkerPool::new(client, executor, Some(1), None, Some(200)).with_runtime_event_publisher(
+        Arc::new(move |_trace_id, event, payload| {
             events.lock().unwrap().push((event.to_string(), payload));
-        },
-    ))
+        }),
+    )
 }
 
 fn collect_event_names(events: &[(String, Value)]) -> Vec<String> {
@@ -84,9 +87,15 @@ fn worker_streams_orchestration_api_call_with_runtime_events() {
     let executor = Arc::new(StreamingApiCallExecutor::new(
         vec![vec![
             sse(r#"{"type":"message_start","message":{"id":"msg_ws_1"}}"#),
-            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
-            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}"#),
-            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"worker"}}"#),
+            sse(
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"worker"}}"#,
+            ),
             sse(r#"{"type":"content_block_stop","index":0}"#),
             sse(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#),
             sse(r#"{"type":"message_stop"}"#),
@@ -121,7 +130,10 @@ fn worker_streams_orchestration_api_call_with_runtime_events() {
     assert_eq!(executor.streaming_calls(), 1);
     assert_eq!(executor.sync_calls(), 0);
     assert_eq!(result.result.as_ref().unwrap()["id"], "msg_ws_1");
-    assert_eq!(result.result.as_ref().unwrap()["content"][0]["text"], "Hello worker");
+    assert_eq!(
+        result.result.as_ref().unwrap()["content"][0]["text"],
+        "Hello worker"
+    );
 
     let events = events.lock().unwrap().clone();
     let names = collect_event_names(&events);
@@ -141,14 +153,20 @@ fn worker_streams_orchestration_api_call_with_runtime_events() {
         .filter(|(event, _)| event == "sdk_stream_content_block_delta")
         .map(|(_, payload)| payload.clone())
         .collect();
-    assert!(delta_payloads.iter().any(|payload| payload["delta_kind"] == "text_delta"));
-    assert!(delta_payloads.iter().any(|payload| payload["text_delta"] == "Hello "));
+    assert!(delta_payloads
+        .iter()
+        .any(|payload| payload["delta_kind"] == "text_delta"));
+    assert!(delta_payloads
+        .iter()
+        .any(|payload| payload["text_delta"] == "Hello "));
 }
 
 #[test]
 fn worker_keeps_non_orchestration_api_call_on_blocking_path() {
     let executor = Arc::new(StreamingApiCallExecutor::new(
-        vec![vec![sse(r#"{"type":"message_start","message":{"id":"unused"}}"#)]],
+        vec![vec![sse(
+            r#"{"type":"message_start","message":{"id":"unused"}}"#,
+        )]],
         json!({"content": [{"type": "text", "text": "blocking response"}]}),
     ));
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -185,9 +203,15 @@ fn worker_reports_streaming_failures_and_tool_input_deltas() {
     let executor = Arc::new(StreamingApiCallExecutor::new(
         vec![vec![
             sse(r#"{"type":"message_start","message":{"id":"msg_ws_2"}}"#),
-            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"bash","input":{}}}"#),
-            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\""}}"#),
-            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"ls\"}"}}"#),
+            sse(
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"bash","input":{}}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\""}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"ls\"}"}}"#,
+            ),
             sse(r#"{"type":"error","error":{"type":"overloaded","message":"server busy"}}"#),
         ]],
         json!({"content": [{"type": "text", "text": "blocking response"}]}),
@@ -217,7 +241,11 @@ fn worker_reports_streaming_failures_and_tool_input_deltas() {
 
     let result = pool.submit_task(task).recv().unwrap();
     assert_eq!(result.status, "failure");
-    assert!(result.error.as_deref().unwrap_or("").contains("server busy"));
+    assert!(result
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("server busy"));
     assert_eq!(executor.streaming_calls(), 1);
     assert_eq!(executor.sync_calls(), 0);
 
@@ -232,8 +260,7 @@ fn worker_reports_streaming_failures_and_tool_input_deltas() {
     let tool_delta = events
         .iter()
         .find(|(event, payload)| {
-            event == "sdk_stream_content_block_delta"
-                && payload["delta_kind"] == "input_json_delta"
+            event == "sdk_stream_content_block_delta" && payload["delta_kind"] == "input_json_delta"
         })
         .map(|(_, payload)| payload.clone())
         .expect("expected tool input delta event");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveProcessEntriesFromEvents, deriveProcessEntriesFromRuntimeTimeline } from './deriveProcessEntries';
+import { deriveProcessEntriesFromEvents, deriveProcessEntriesFromJob, deriveProcessEntriesFromRuntimeTimeline } from './deriveProcessEntries';
 
 describe('deriveProcessEntries', () => {
   it('sorts and maps detailed job events into readable process entries', () => {
@@ -92,6 +92,86 @@ describe('deriveProcessEntries', () => {
     expect(runtimeEntries[2].title).toContain('已收到上游响应');
   });
 
+  it('maps tool lifecycle events into dedicated process entries', () => {
+    const entries = deriveProcessEntriesFromRuntimeTimeline([
+      {
+        event: 'tool_invocation_detected',
+        trace_id: 'trace-tool',
+        message_id: 'job-tool',
+        channel: 'web',
+        chat_id: 'chat-tool',
+        sender_id: 'user-1',
+        recorded_at_ms: 10,
+        payload: {
+          invocation_id: 'invoke-1',
+          tool_name: 'bash_exec',
+          tool_use_id: 'toolu_123',
+          permission_state: 'requested',
+          phase: 'detected',
+          details: { tool_input: { command: 'ls' } },
+        },
+      },
+      {
+        event: 'tool_permission_requested',
+        trace_id: 'trace-tool',
+        message_id: 'job-tool',
+        channel: 'web',
+        chat_id: 'chat-tool',
+        sender_id: 'user-1',
+        recorded_at_ms: 20,
+        payload: {
+          invocation_id: 'invoke-1',
+          tool_name: 'bash_exec',
+          tool_use_id: 'toolu_123',
+          permission_state: 'requested',
+          phase: 'permission_requested',
+          prompt: 'allow bash_exec?',
+        },
+      },
+      {
+        event: 'tool_execution_started',
+        trace_id: 'trace-tool',
+        message_id: 'job-tool',
+        channel: 'web',
+        chat_id: 'chat-tool',
+        sender_id: 'user-1',
+        recorded_at_ms: 30,
+        payload: {
+          invocation_id: 'invoke-1',
+          tool_name: 'bash_exec',
+          tool_use_id: 'toolu_123',
+          permission_state: 'allowed',
+          phase: 'executing',
+          details: { tool_input: { command: 'ls' } },
+        },
+      },
+      {
+        event: 'tool_result_recorded',
+        trace_id: 'trace-tool',
+        message_id: 'job-tool',
+        channel: 'web',
+        chat_id: 'chat-tool',
+        sender_id: 'user-1',
+        recorded_at_ms: 40,
+        payload: {
+          invocation_id: 'invoke-1',
+          tool_name: 'bash_exec',
+          tool_use_id: 'toolu_123',
+          permission_state: 'allowed',
+          phase: 'result_recorded',
+          result_summary: 'file-a\nfile-b',
+        },
+      },
+    ]);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['tool_detected', 'tool_permission', 'tool_execution', 'tool_result']);
+    expect(entries[0].title).toContain('检测到工具调用');
+    expect(entries[0].preview).toContain('command');
+    expect(entries[1].title).toContain('等待工具权限确认');
+    expect(entries[2].title).toContain('开始执行工具');
+    expect(entries[3].preview).toBe('file-a\nfile-b');
+  });
+
   it('renders orchestration lowering and whitelist parallel details', () => {
     const runtimeEntries = deriveProcessEntriesFromRuntimeTimeline([
       {
@@ -156,5 +236,84 @@ describe('deriveProcessEntries', () => {
     expect(runtimeEntries[1].preview).toBe('整理好的报告摘要');
     expect(runtimeEntries[2].title).toContain('analyze-data');
     expect(runtimeEntries[2].preview).toBe('upstream exploded');
+  });
+
+  it('derives projection-first entries from job state when recent events are missing', () => {
+    const entries = deriveProcessEntriesFromJob({
+      job_id: 'job-1',
+      trace_id: 'trace-1',
+      message_id: 'job-1',
+      kind: 'main',
+      parent_job_id: null,
+      channel: 'web',
+      chat_id: 'chat-1',
+      sender_id: 'user-1',
+      user_content: 'hello',
+      status: 'waiting_user_input',
+      status_label: 'waiting_user_input',
+      accepted: true,
+      started_at_ms: 1,
+      updated_at_ms: 200,
+      elapsed_ms: 199,
+      current_step: '等待权限确认',
+      recent_events: [],
+      worker: null,
+      review: null,
+      pending_question: {
+        question_id: 'q-tool-1',
+        question_kind: 'confirm',
+        prompt: '允许工具 bash_exec 使用当前参数执行吗？',
+        options: ['allow', 'deny'],
+        raw_question: {
+          type: 'tool_permission',
+          tool_name: 'bash_exec',
+          tool_use_id: 'toolu_123',
+          input_preview: '{"command":"ls"}',
+        },
+        decision_mode: 'user_required',
+        risk_level: 'high',
+        requires_user_confirmation: true,
+        opencode_session_id: 'sess-1',
+        answer_summary: null,
+        resolution_source: null,
+      },
+      tool_state: {
+        invocation_id: 'invoke-1',
+        tool_name: 'bash_exec',
+        tool_use_id: 'toolu_123',
+        phase: 'permission_requested',
+        permission_state: 'requested',
+        input_preview: '{"command":"ls"}',
+        result_preview: null,
+        error: null,
+        awaits_user_confirmation: true,
+      },
+      execution_summary: {
+        plan_type: 'single',
+        status: 'waiting_user_input',
+        cache_hit: false,
+        worker_id: null,
+        error_code: null,
+        error_stage: null,
+        task_duration_ms: 199,
+        stages: {},
+      },
+      failure: null,
+      orchestration: {
+        plan_id: 'plan-1',
+        active_subtask_name: 'run-check',
+        active_subtask_type: 'testing',
+        active_subtask_id: 'sub-1',
+        total_subtasks: 2,
+        active_subtasks: 1,
+        completed_subtasks: 0,
+        failed_subtasks: 0,
+        child_job_ids: [],
+      },
+    });
+
+    expect(entries.some((entry) => entry.title.includes('等待工具权限确认：bash_exec'))).toBe(true);
+    expect(entries.some((entry) => entry.title.includes('当前存在 orchestration 计划'))).toBe(true);
+    expect(entries.some((entry) => entry.preview === 'run-check（testing）')).toBe(true);
   });
 });

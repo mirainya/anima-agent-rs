@@ -19,7 +19,7 @@ use crate::streaming::types::StreamEvent;
 use crate::tools::definition::ToolContext;
 use crate::tools::execution::{
     execute_tool_after_permission, run_tool_use, AwaitingToolPermission, RunToolOptions,
-    RunToolUseOutcome,
+    RunToolUseOutcome, ToolInvocationPhase, ToolInvocationRecord, ToolLifecycleEventCallback,
 };
 use crate::tools::registry::ToolRegistry;
 use crate::tools::result::ToolResult;
@@ -49,6 +49,8 @@ pub struct AgenticLoopConfig {
     pub streaming: bool,
     /// 流式事件回调（可选），CLI/Web 可用于实时 UI 更新
     pub on_stream_event: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+    /// 工具生命周期事件回调（可选），供 runtime timeline / projection 订阅
+    pub on_tool_lifecycle_event: Option<ToolLifecycleEventCallback>,
 }
 
 impl std::fmt::Debug for AgenticLoopConfig {
@@ -62,6 +64,10 @@ impl std::fmt::Debug for AgenticLoopConfig {
             .field("tool_definitions", &self.tool_definitions)
             .field("streaming", &self.streaming)
             .field("on_stream_event", &self.on_stream_event.is_some())
+            .field(
+                "on_tool_lifecycle_event",
+                &self.on_tool_lifecycle_event.is_some(),
+            )
             .finish()
     }
 }
@@ -77,6 +83,7 @@ impl Default for AgenticLoopConfig {
             tool_definitions: None,
             streaming: false,
             on_stream_event: None,
+            on_tool_lifecycle_event: None,
         }
     }
 }
@@ -102,6 +109,7 @@ pub struct SuspendedToolInvocation {
     pub tool_name: String,
     pub tool_input: Value,
     pub permission_request: PermissionRequest,
+    pub invocation: ToolInvocationRecord,
 }
 
 #[derive(Debug, Clone)]
@@ -115,7 +123,7 @@ pub struct AgenticLoopSuspension {
 #[derive(Debug, Clone)]
 pub enum AgenticLoopOutcome {
     Completed(AgenticLoopResult),
-    Suspended(AgenticLoopSuspension),
+    Suspended(Box<AgenticLoopSuspension>),
 }
 
 /// Agentic loop 错误类型
@@ -202,7 +210,10 @@ pub fn parse_response(response: &Value) -> Result<ParsedResponse, AgenticLoopErr
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    let input = part.get("input").cloned().unwrap_or(Value::Object(Default::default()));
+                    let input = part
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(Value::Object(Default::default()));
                     tool_uses.push(ParsedToolUse { id, name, input });
                 }
                 _ => {}
@@ -250,7 +261,11 @@ pub fn build_assistant_msg(response: &Value) -> InternalMsg {
 }
 
 /// 构建 tool_result 消息
-pub fn build_tool_result_msg(tool_use_id: &str, result: &ToolResult) -> InternalMsg {
+pub fn build_tool_result_msg(
+    tool_use_id: &str,
+    result: &ToolResult,
+    invocation: Option<&ToolInvocationRecord>,
+) -> InternalMsg {
     let content_text = result
         .blocks
         .iter()
@@ -266,6 +281,21 @@ pub fn build_tool_result_msg(tool_use_id: &str, result: &ToolResult) -> Internal
         .collect::<Vec<_>>()
         .join("\n");
 
+    let mut metadata = json!({"auto_generated": true});
+    if let Some(invocation) = invocation {
+        metadata["tool_invocation"] = json!({
+            "invocation_id": invocation.invocation_id,
+            "tool_name": invocation.tool_name,
+            "tool_use_id": invocation.tool_use_id,
+            "phase": invocation.phase,
+            "permission_state": invocation.permission_state,
+            "started_at_ms": invocation.started_at_ms,
+            "finished_at_ms": invocation.finished_at_ms,
+            "result_summary": invocation.result_summary,
+            "error_summary": invocation.error_summary,
+        });
+    }
+
     InternalMsg {
         role: MessageRole::User,
         content: json!([{
@@ -277,7 +307,7 @@ pub fn build_tool_result_msg(tool_use_id: &str, result: &ToolResult) -> Internal
         message_id: Uuid::new_v4().to_string(),
         tool_use_id: Some(tool_use_id.to_string()),
         filtered: false,
-        metadata: json!({"auto_generated": true}),
+        metadata,
     }
 }
 
@@ -321,7 +351,10 @@ pub fn build_api_payload(
 
 #[derive(Debug, Clone)]
 enum SingleToolExecutionOutcome {
-    Completed(ToolResult),
+    Completed {
+        invocation: ToolInvocationRecord,
+        result: ToolResult,
+    },
     AwaitingPermission(Box<AwaitingToolPermission>),
 }
 
@@ -333,13 +366,67 @@ fn execute_single_tool(
     hook_registry: Option<&HookRegistry>,
     config: &AgenticLoopConfig,
 ) -> SingleToolExecutionOutcome {
+    let callback = config.on_tool_lifecycle_event.as_ref();
+    let base_invocation = ToolInvocationRecord::new(
+        format!("toolinv_{}", Uuid::new_v4()),
+        tool_use.name.clone(),
+        Some(tool_use.id.clone()),
+    );
+
+    if let Some(cb) = callback {
+        cb(
+            "tool_invocation_detected",
+            json!({
+                "invocation_id": base_invocation.invocation_id,
+                "tool_name": base_invocation.tool_name,
+                "tool_use_id": base_invocation.tool_use_id,
+                "phase": base_invocation.phase,
+                "permission_state": base_invocation.permission_state,
+                "started_at_ms": base_invocation.started_at_ms,
+                "finished_at_ms": base_invocation.finished_at_ms,
+                "result_summary": base_invocation.result_summary,
+                "error_summary": base_invocation.error_summary,
+                "details": {
+                    "tool_input": tool_use.input,
+                    "source": "agentic_loop",
+                }
+            }),
+        );
+    }
+
     let tool = match tool_registry.get(&tool_use.name) {
         Some(t) => t,
         None => {
-            return SingleToolExecutionOutcome::Completed(ToolResult::error(format!(
-                "tool '{}' not found in registry",
-                tool_use.name
-            )));
+            let mut invocation = base_invocation;
+            invocation.mark_phase(ToolInvocationPhase::Failed);
+            invocation.set_error(format!("tool '{}' not found in registry", tool_use.name));
+            if let Some(cb) = callback {
+                cb(
+                    "tool_execution_failed",
+                    json!({
+                        "invocation_id": invocation.invocation_id,
+                        "tool_name": invocation.tool_name,
+                        "tool_use_id": invocation.tool_use_id,
+                        "phase": invocation.phase,
+                        "permission_state": invocation.permission_state,
+                        "started_at_ms": invocation.started_at_ms,
+                        "finished_at_ms": invocation.finished_at_ms,
+                        "result_summary": invocation.result_summary,
+                        "error_summary": invocation.error_summary,
+                        "details": {
+                            "error": invocation.error_summary,
+                            "stage": "tool_lookup",
+                        }
+                    }),
+                );
+            }
+            return SingleToolExecutionOutcome::Completed {
+                invocation,
+                result: ToolResult::error(format!(
+                    "tool '{}' not found in registry",
+                    tool_use.name
+                )),
+            };
         }
     };
 
@@ -351,16 +438,36 @@ fn execute_single_tool(
             trace_id: config.trace_id.clone(),
             metadata: json!({}),
         },
+        invocation_id: Some(base_invocation.invocation_id.clone()),
     };
 
-    match run_tool_use(tool, options, permission_checker, hook_registry) {
-        Ok(RunToolUseOutcome::Completed(result)) => SingleToolExecutionOutcome::Completed(result),
-        Ok(RunToolUseOutcome::AwaitingPermission(awaiting)) => {
+    match run_tool_use(
+        tool,
+        options,
+        permission_checker,
+        hook_registry,
+        config.on_tool_lifecycle_event.as_ref(),
+    ) {
+        Ok(RunToolUseOutcome::Completed {
+            mut invocation,
+            result,
+        }) => {
+            invocation.tool_use_id = Some(tool_use.id.clone());
+            SingleToolExecutionOutcome::Completed { invocation, result }
+        }
+        Ok(RunToolUseOutcome::AwaitingPermission(mut awaiting)) => {
+            awaiting.invocation.tool_use_id = Some(tool_use.id.clone());
             SingleToolExecutionOutcome::AwaitingPermission(awaiting)
         }
-        Err(err) => SingleToolExecutionOutcome::Completed(ToolResult::error(format!(
-            "tool execution error: {err}"
-        ))),
+        Err(err) => {
+            let mut invocation = base_invocation;
+            invocation.mark_phase(ToolInvocationPhase::Failed);
+            invocation.set_error(err.to_string());
+            SingleToolExecutionOutcome::Completed {
+                invocation,
+                result: ToolResult::error(format!("tool execution error: {err}")),
+            }
+        }
     }
 }
 
@@ -372,13 +479,15 @@ pub fn resume_suspended_tool_invocation(
     config: &AgenticLoopConfig,
 ) -> Result<Vec<InternalMsg>, AgenticLoopError> {
     let mut messages = suspension.messages.clone();
-    let tool_result = if allowed {
+    let (mut invocation, tool_result) = if allowed {
         let tool = tool_registry
             .get(&suspension.suspended_tool.tool_name)
-            .ok_or_else(|| AgenticLoopError::AllToolsFailed(format!(
-                "tool '{}' not found in registry during resume",
-                suspension.suspended_tool.tool_name
-            )))?;
+            .ok_or_else(|| {
+                AgenticLoopError::AllToolsFailed(format!(
+                    "tool '{}' not found in registry during resume",
+                    suspension.suspended_tool.tool_name
+                ))
+            })?;
         let options = RunToolOptions {
             tool_name: suspension.suspended_tool.tool_name.clone(),
             input: suspension.suspended_tool.tool_input.clone(),
@@ -387,19 +496,78 @@ pub fn resume_suspended_tool_invocation(
                 trace_id: config.trace_id.clone(),
                 metadata: json!({}),
             },
+            invocation_id: Some(suspension.suspended_tool.invocation.invocation_id.clone()),
         };
-        execute_tool_after_permission(tool, options, hook_registry)
-            .map_err(|err| AgenticLoopError::AllToolsFailed(err.to_string()))?
+        execute_tool_after_permission(
+            tool,
+            options,
+            hook_registry,
+            suspension.suspended_tool.invocation.clone(),
+            config.on_tool_lifecycle_event.as_ref(),
+        )
+        .map_err(|err| AgenticLoopError::AllToolsFailed(err.to_string()))?
     } else {
-        ToolResult::error(format!(
+        let mut invocation = suspension.suspended_tool.invocation.clone();
+        invocation.set_permission_state(crate::tools::execution::ToolPermissionState::Denied);
+        invocation.mark_phase(ToolInvocationPhase::Failed);
+        invocation.set_error(format!(
             "tool execution denied by user: {}",
             suspension.suspended_tool.permission_request.prompt
-        ))
+        ));
+        if let Some(callback) = config.on_tool_lifecycle_event.as_ref() {
+            callback(
+                "tool_permission_resolved",
+                json!({
+                    "invocation_id": invocation.invocation_id,
+                    "tool_name": invocation.tool_name,
+                    "tool_use_id": invocation.tool_use_id,
+                    "phase": invocation.phase,
+                    "permission_state": invocation.permission_state,
+                    "started_at_ms": invocation.started_at_ms,
+                    "finished_at_ms": invocation.finished_at_ms,
+                    "result_summary": invocation.result_summary,
+                    "error_summary": invocation.error_summary,
+                    "details": {
+                        "decision": "deny",
+                        "source": "resume",
+                    }
+                }),
+            );
+        }
+        (
+            invocation,
+            ToolResult::error(format!(
+                "tool execution denied by user: {}",
+                suspension.suspended_tool.permission_request.prompt
+            )),
+        )
     };
+
+    invocation.mark_phase(ToolInvocationPhase::ResultRecorded);
+    if let Some(callback) = config.on_tool_lifecycle_event.as_ref() {
+        callback(
+            "tool_result_recorded",
+            json!({
+                "invocation_id": invocation.invocation_id,
+                "tool_name": invocation.tool_name,
+                "tool_use_id": invocation.tool_use_id,
+                "phase": invocation.phase,
+                "permission_state": invocation.permission_state,
+                "started_at_ms": invocation.started_at_ms,
+                "finished_at_ms": invocation.finished_at_ms,
+                "result_summary": invocation.result_summary,
+                "error_summary": invocation.error_summary,
+                "details": {
+                    "is_error": tool_result.is_error,
+                }
+            }),
+        );
+    }
 
     messages.push(build_tool_result_msg(
         &suspension.suspended_tool.tool_use_id,
         &tool_result,
+        Some(&invocation),
     ));
     Ok(messages)
 }
@@ -511,22 +679,49 @@ pub fn continue_agentic_loop(
                 hook_registry,
                 config,
             ) {
-                SingleToolExecutionOutcome::Completed(result) => {
-                    let tool_result_msg = build_tool_result_msg(&tool_use.id, &result);
+                SingleToolExecutionOutcome::Completed {
+                    mut invocation,
+                    result,
+                } => {
+                    invocation.mark_phase(ToolInvocationPhase::ResultRecorded);
+                    if let Some(callback) = config.on_tool_lifecycle_event.as_ref() {
+                        callback(
+                            "tool_result_recorded",
+                            json!({
+                                "invocation_id": invocation.invocation_id,
+                                "tool_name": invocation.tool_name,
+                                "tool_use_id": invocation.tool_use_id,
+                                "phase": invocation.phase,
+                                "permission_state": invocation.permission_state,
+                                "started_at_ms": invocation.started_at_ms,
+                                "finished_at_ms": invocation.finished_at_ms,
+                                "result_summary": invocation.result_summary,
+                                "error_summary": invocation.error_summary,
+                                "details": {
+                                    "is_error": result.is_error,
+                                }
+                            }),
+                        );
+                    }
+                    let tool_result_msg =
+                        build_tool_result_msg(&tool_use.id, &result, Some(&invocation));
                     messages.push(tool_result_msg);
                 }
                 SingleToolExecutionOutcome::AwaitingPermission(awaiting) => {
-                    return Ok(AgenticLoopOutcome::Suspended(AgenticLoopSuspension {
-                        suspended_tool: SuspendedToolInvocation {
-                            tool_use_id: tool_use.id.clone(),
-                            tool_name: awaiting.tool_name,
-                            tool_input: awaiting.input,
-                            permission_request: awaiting.permission_request,
+                    return Ok(AgenticLoopOutcome::Suspended(Box::new(
+                        AgenticLoopSuspension {
+                            suspended_tool: SuspendedToolInvocation {
+                                tool_use_id: tool_use.id.clone(),
+                                tool_name: awaiting.invocation.tool_name.clone(),
+                                tool_input: awaiting.input,
+                                permission_request: awaiting.permission_request,
+                                invocation: awaiting.invocation,
+                            },
+                            messages,
+                            iterations,
+                            compact_count,
                         },
-                        messages,
-                        iterations,
-                        compact_count,
-                    }));
+                    )));
                 }
             }
         }
@@ -626,10 +821,7 @@ mod tests {
         }
 
         fn call(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-            let text = input
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("echo");
+            let text = input.get("text").and_then(Value::as_str).unwrap_or("echo");
             Ok(ToolResult::text(format!("echoed: {text}")))
         }
     }
@@ -715,7 +907,7 @@ mod tests {
     #[test]
     fn test_build_tool_result_msg() {
         let result = ToolResult::text("hello result");
-        let msg = build_tool_result_msg("tu_1", &result);
+        let msg = build_tool_result_msg("tu_1", &result, None);
         assert_eq!(msg.role, MessageRole::User);
         assert_eq!(msg.tool_use_id.as_deref(), Some("tu_1"));
 
@@ -731,7 +923,7 @@ mod tests {
     #[test]
     fn test_build_tool_result_msg_error() {
         let result = ToolResult::error("something went wrong");
-        let msg = build_tool_result_msg("tu_2", &result);
+        let msg = build_tool_result_msg("tu_2", &result, None);
 
         let block = &msg.content.as_array().unwrap()[0];
         assert_eq!(block["is_error"], true);
@@ -753,8 +945,7 @@ mod tests {
         let initial = vec![make_user_msg("What is the answer?")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
-                .unwrap();
+            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -788,8 +979,7 @@ mod tests {
         let initial = vec![make_user_msg("Echo hello for me")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
-                .unwrap();
+            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -826,8 +1016,7 @@ mod tests {
         let initial = vec![make_user_msg("Keep looping")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
-                .unwrap();
+            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -903,9 +1092,15 @@ mod tests {
     fn test_streaming_loop_no_tools() {
         let sse_lines = vec![
             sse(r#"{"type":"message_start","message":{"id":"msg_s1"}}"#),
-            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
-            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Streaming "}}"#),
-            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer!"}}"#),
+            sse(
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Streaming "}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer!"}}"#,
+            ),
             sse(r#"{"type":"content_block_stop","index":0}"#),
             sse(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#),
             sse(r#"{"type":"message_stop"}"#),
@@ -924,8 +1119,7 @@ mod tests {
         let initial = vec![make_user_msg("Hello streaming")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
-                .unwrap();
+            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -940,12 +1134,22 @@ mod tests {
         // 第一次：流式返回 text + tool_use
         let sse_round1 = vec![
             sse(r#"{"type":"message_start","message":{"id":"msg_s2"}}"#),
-            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
-            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me echo"}}"#),
+            sse(
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me echo"}}"#,
+            ),
             sse(r#"{"type":"content_block_stop","index":0}"#),
-            sse(r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_s1","name":"echo","input":{}}}"#),
-            sse(r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"text\""}}"#),
-            sse(r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":":\"stream\"}"}}"#),
+            sse(
+                r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_s1","name":"echo","input":{}}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"text\""}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":":\"stream\"}"}}"#,
+            ),
             sse(r#"{"type":"content_block_stop","index":1}"#),
             sse(r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#),
             sse(r#"{"type":"message_stop"}"#),
@@ -954,8 +1158,12 @@ mod tests {
         // 第二次：流式返回最终文本
         let sse_round2 = vec![
             sse(r#"{"type":"message_start","message":{"id":"msg_s3"}}"#),
-            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
-            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Done streaming!"}}"#),
+            sse(
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Done streaming!"}}"#,
+            ),
             sse(r#"{"type":"content_block_stop","index":0}"#),
             sse(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#),
             sse(r#"{"type":"message_stop"}"#),
@@ -977,8 +1185,7 @@ mod tests {
         let initial = vec![make_user_msg("Echo stream for me")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
-                .unwrap();
+            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1005,8 +1212,12 @@ mod tests {
 
         let sse_lines = vec![
             sse(r#"{"type":"message_start","message":{"id":"msg_cb"}}"#),
-            sse(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
-            sse(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#),
+            sse(
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            sse(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+            ),
             sse(r#"{"type":"content_block_stop","index":0}"#),
             sse(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#),
             sse(r#"{"type":"message_stop"}"#),
@@ -1026,13 +1237,15 @@ mod tests {
         let initial = vec![make_user_msg("test callback")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config)
-                .unwrap();
+            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
         };
         assert_eq!(result.final_text, "hi");
-        assert!(event_count.load(Ordering::SeqCst) > 0, "callback should have fired");
+        assert!(
+            event_count.load(Ordering::SeqCst) > 0,
+            "callback should have fired"
+        );
     }
 }

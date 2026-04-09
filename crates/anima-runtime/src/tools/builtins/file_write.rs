@@ -68,9 +68,8 @@ impl Tool for FileWriteTool {
             }
         }
 
-        fs::write(file_path, content).map_err(|e| {
-            ToolError::Internal(format!("failed to write '{file_path}': {e}"))
-        })?;
+        fs::write(file_path, content)
+            .map_err(|e| ToolError::Internal(format!("failed to write '{file_path}': {e}")))?;
 
         Ok(ToolResult::text(format!(
             "wrote {} bytes to '{file_path}'",

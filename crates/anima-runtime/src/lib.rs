@@ -13,10 +13,16 @@
 pub mod agent;
 /// 分类与路由域：规则分类、AI 分类、任务分类、智能路由
 pub mod classifier;
-/// 编排与调度域：编排引擎、并行池、专家池
-pub mod orchestrator;
 /// 执行循环域：执行驱动、回合协调、上下文装配、需求判定
 pub mod execution;
+/// 编排与调度域：编排引擎、并行池、专家池
+pub mod orchestrator;
+/// 统一运行时状态核心：事件、reducer、snapshot、projection
+pub mod runtime;
+/// 任务领域核心：run/turn/task/suspension/query
+pub mod tasks;
+/// transcript 领域核心：消息记录、配对与追加
+pub mod transcript;
 
 /// 消息总线，入站/出站消息的发布订阅机制
 pub mod bus;
@@ -31,18 +37,18 @@ pub mod dispatcher;
 /// 处理管线，定义消息处理的流水线
 pub mod pipeline;
 
-/// 工具注册与执行闭环
-pub mod tools;
-/// 流式 API 解析与流式工具执行
-pub mod streaming;
-/// 权限判定系统
-pub mod permissions;
-/// 消息协议三层映射
-pub mod messages;
 /// Pre/Post 钩子机制
 pub mod hooks;
+/// 消息协议三层映射
+pub mod messages;
+/// 权限判定系统
+pub mod permissions;
 /// System Prompt 段落化组装
 pub mod prompt;
+/// 流式 API 解析与流式工具执行
+pub mod streaming;
+/// 工具注册与执行闭环
+pub mod tools;
 
 /// 启动引导，初始化运行时各组件
 pub mod bootstrap;
@@ -112,8 +118,12 @@ pub mod requirement_judge {
     pub use crate::execution::requirement_judge::*;
 }
 
-pub use agent::*;
+pub use agent::{
+    core::*, event_emitter::*, executor::*, requirement::*, suspension::*, types::*, worker::*,
+};
 pub use cache::*;
-pub use channel::*;
+pub use channel::{
+    adapter::*, dispatch::*, http::*, message::*, rabbitmq::*, registry::*, session::*,
+};
 pub use cli::*;
 pub use support::*;

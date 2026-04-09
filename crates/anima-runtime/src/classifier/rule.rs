@@ -141,13 +141,17 @@ impl AgentClassifier {
                     make_task(MakeTask {
                         trace_id: Some(inbound_msg.id.clone()),
                         task_type: "transform".into(),
-                        payload: Some(json!({"data": {"content": inbound_msg.content.clone(), "branch": 1}})),
+                        payload: Some(
+                            json!({"data": {"content": inbound_msg.content.clone(), "branch": 1}}),
+                        ),
                         ..Default::default()
                     }),
                     make_task(MakeTask {
                         trace_id: Some(inbound_msg.id.clone()),
                         task_type: "transform".into(),
-                        payload: Some(json!({"data": {"content": inbound_msg.content.clone(), "branch": 2}})),
+                        payload: Some(
+                            json!({"data": {"content": inbound_msg.content.clone(), "branch": 2}}),
+                        ),
                         ..Default::default()
                     }),
                 ]),

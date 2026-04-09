@@ -2,11 +2,11 @@
 //!
 //! 验证 agentic loop 与 ToolRegistry、MockExecutor、EchoTool 的端到端集成。
 
+use anima_runtime::agent::TaskExecutor;
 use anima_runtime::execution::agentic_loop::{
     continue_agentic_loop, resume_suspended_tool_invocation, run_agentic_loop, AgenticLoopConfig,
     AgenticLoopOutcome,
 };
-use anima_runtime::agent::TaskExecutor;
 use anima_runtime::messages::types::{InternalMsg, MessageRole};
 use anima_runtime::permissions::{PermissionChecker, PermissionMode};
 use anima_runtime::tools::definition::{Tool, ToolContext};
@@ -382,10 +382,18 @@ fn agentic_loop_suspends_when_permission_requires_confirmation() {
     let AgenticLoopOutcome::Suspended(suspension) = result else {
         panic!("loop should suspend on interactive permission");
     };
+    let suspension = *suspension;
     assert_eq!(suspension.suspended_tool.tool_use_id, "tu_perm_1");
     assert_eq!(suspension.suspended_tool.tool_name, "echo");
-    assert_eq!(suspension.suspended_tool.permission_request.options, vec!["allow", "deny"]);
-    assert_eq!(suspension.messages.len(), 2, "only user + assistant(tool_use) should exist before approval");
+    assert_eq!(
+        suspension.suspended_tool.permission_request.options,
+        vec!["allow", "deny"]
+    );
+    assert_eq!(
+        suspension.messages.len(),
+        2,
+        "only user + assistant(tool_use) should exist before approval"
+    );
 }
 
 #[test]
@@ -425,9 +433,11 @@ fn agentic_loop_allow_resumes_original_tool_invocation() {
     let AgenticLoopOutcome::Suspended(suspension) = initial else {
         panic!("loop should suspend first");
     };
+    let suspension = *suspension;
 
-    let resumed_messages = resume_suspended_tool_invocation(&suspension, true, &registry, None, &config)
-        .expect("approval should resume tool invocation");
+    let resumed_messages =
+        resume_suspended_tool_invocation(&suspension, true, &registry, None, &config)
+            .expect("approval should resume tool invocation");
     let resumed = continue_agentic_loop(
         &client,
         &executor,
@@ -446,10 +456,16 @@ fn agentic_loop_allow_resumes_original_tool_invocation() {
     };
     assert_eq!(result.final_text, "Approval finished.");
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("tool_result should be array");
+    let blocks = tool_result_msg
+        .content
+        .as_array()
+        .expect("tool_result should be array");
     assert_eq!(blocks[0]["tool_use_id"], "tu_perm_allow");
     assert_eq!(blocks[0]["is_error"], false);
-    assert!(blocks[0]["content"].as_str().unwrap_or_default().contains("echoed: approved"));
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("echoed: approved"));
 }
 
 #[test]
@@ -489,9 +505,11 @@ fn agentic_loop_deny_injects_error_tool_result_and_continues() {
     let AgenticLoopOutcome::Suspended(suspension) = initial else {
         panic!("loop should suspend first");
     };
+    let suspension = *suspension;
 
-    let resumed_messages = resume_suspended_tool_invocation(&suspension, false, &registry, None, &config)
-        .expect("denial should still produce a tool_result");
+    let resumed_messages =
+        resume_suspended_tool_invocation(&suspension, false, &registry, None, &config)
+            .expect("denial should still produce a tool_result");
     let resumed = continue_agentic_loop(
         &client,
         &executor,
@@ -510,10 +528,16 @@ fn agentic_loop_deny_injects_error_tool_result_and_continues() {
     };
     assert_eq!(result.final_text, "Denied path finished.");
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("tool_result should be array");
+    let blocks = tool_result_msg
+        .content
+        .as_array()
+        .expect("tool_result should be array");
     assert_eq!(blocks[0]["tool_use_id"], "tu_perm_deny");
     assert_eq!(blocks[0]["is_error"], true);
-    assert!(blocks[0]["content"].as_str().unwrap_or_default().contains("denied by user"));
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("denied by user"));
 }
 
 /// 验证 payload 中包含 tool definitions

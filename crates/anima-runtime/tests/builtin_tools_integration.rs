@@ -2,8 +2,10 @@
 //!
 //! 验证 register_all 注册、以及内置工具与 agentic loop 的端到端集成。
 
-use anima_runtime::execution::agentic_loop::{run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome};
 use anima_runtime::agent::TaskExecutor;
+use anima_runtime::execution::agentic_loop::{
+    run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome,
+};
 use anima_runtime::messages::types::{InternalMsg, MessageRole};
 use anima_runtime::tools::builtins::register_all;
 use anima_runtime::tools::registry::ToolRegistry;
@@ -69,10 +71,7 @@ fn test_register_all_populates_registry() {
         "glob_search",
         "grep_search",
     ] {
-        assert!(
-            names.contains(expected),
-            "missing tool: {expected}"
-        );
+        assert!(names.contains(expected), "missing tool: {expected}");
     }
 
     // 验证每个工具都能生成 tool_definitions
@@ -149,13 +148,9 @@ fn test_agentic_loop_with_bash_tool() {
     }];
 
     let result = run_agentic_loop(
-        &client,
-        &executor,
-        &registry,
-        None, // no permission checker
+        &client, &executor, &registry, None, // no permission checker
         None, // no hook registry
-        initial,
-        &config,
+        initial, &config,
     );
 
     assert!(result.is_ok(), "agentic loop failed: {:?}", result.err());
@@ -170,8 +165,5 @@ fn test_agentic_loop_with_bash_tool() {
         let content_str = msg.content.to_string();
         content_str.contains("integration_test_ok")
     });
-    assert!(
-        has_tool_result,
-        "tool result should be in message history"
-    );
+    assert!(has_tool_result, "tool result should be in message history");
 }

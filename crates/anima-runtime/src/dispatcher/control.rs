@@ -1,5 +1,5 @@
-use crate::dispatcher::diagnostics::{DispatcherState, DispatcherStatus};
 use crate::dispatcher::core::Dispatcher;
+use crate::dispatcher::diagnostics::{DispatcherState, DispatcherStatus};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

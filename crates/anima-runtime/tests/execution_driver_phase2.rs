@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use anima_runtime::agent::TaskExecutor;
-use anima_runtime::execution_driver::{execute_api_call, ApiCallExecutionRequest, ExecutionKind};
 use anima_runtime::agent_worker::WorkerPool;
+use anima_runtime::execution_driver::{execute_api_call, ApiCallExecutionRequest, ExecutionKind};
 use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 
@@ -56,7 +56,10 @@ fn execute_api_call_sends_expected_payload() {
 
     assert_eq!(result.status, "success");
     assert_eq!(result.result.as_ref().unwrap()["session_id"], "session-123");
-    assert_eq!(result.result.as_ref().unwrap()["echo"], "hello execution driver");
+    assert_eq!(
+        result.result.as_ref().unwrap()["echo"],
+        "hello execution driver"
+    );
 
     let recorded = executor.payloads.lock().unwrap();
     assert_eq!(recorded.len(), 1);

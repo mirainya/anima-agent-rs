@@ -197,22 +197,24 @@ impl ParallelPool {
                             result: None,
                         })
                     }
-                    Err(_) => {
-                        make_task_result(MakeTaskResult {
-                            task_id: task.id,
-                            trace_id: task.trace_id,
-                            status: "failure".into(),
-                            error: Some("Task result channel closed".into()),
-                            duration_ms: 0,
-                            worker_id: None,
-                            result: None,
-                        })
-                    }
+                    Err(_) => make_task_result(MakeTaskResult {
+                        task_id: task.id,
+                        trace_id: task.trace_id,
+                        status: "failure".into(),
+                        error: Some("Task result channel closed".into()),
+                        duration_ms: 0,
+                        worker_id: None,
+                        result: None,
+                    }),
                 };
 
                 if result.status == "success" {
                     successful += 1;
-                } else if !result.error.as_deref().is_some_and(|e| e.contains("timed out")) {
+                } else if !result
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("timed out"))
+                {
                     // 超时任务已在上面的 match 分支中计数，这里只统计非超时的失败
                     failed += 1;
                 }

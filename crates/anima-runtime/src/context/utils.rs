@@ -1,6 +1,8 @@
 /// Get the prefix of a context key (part before first ':')
 pub fn key_prefix(key: &str) -> Option<&str> {
-    key.split(':').next().filter(|p| !p.is_empty() && key.contains(':'))
+    key.split(':')
+        .next()
+        .filter(|p| !p.is_empty() && key.contains(':'))
 }
 
 /// Split a context key into parts by ':'

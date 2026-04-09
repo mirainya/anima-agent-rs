@@ -1,6 +1,4 @@
-use anima_runtime::channel::{
-    Channel, ChannelAdapter, RabbitMqChannel, RabbitMqChannelConfig,
-};
+use anima_runtime::channel::{Channel, ChannelAdapter, RabbitMqChannel, RabbitMqChannelConfig};
 
 #[test]
 fn rabbitmq_channel_exposes_capabilities_and_default_health() {
@@ -22,7 +20,10 @@ fn rabbitmq_channel_rejects_send_when_not_running() {
     let result = channel.send_message("target", "hello", Default::default());
 
     assert!(!result.success);
-    assert_eq!(result.error.as_deref(), Some("RabbitMQ channel is not running"));
+    assert_eq!(
+        result.error.as_deref(),
+        Some("RabbitMQ channel is not running")
+    );
 }
 
 #[test]

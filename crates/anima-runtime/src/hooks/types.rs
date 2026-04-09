@@ -1,25 +1,20 @@
 //! 钩子类型定义
 
-use serde_json::Value;
 use crate::tools::result::ToolResult;
+use serde_json::Value;
 
 /// 钩子事件
 #[derive(Debug, Clone)]
 pub enum HookEvent {
     /// 工具执行前
-    PreToolUse {
-        tool_name: String,
-        input: Value,
-    },
+    PreToolUse { tool_name: String, input: Value },
     /// 工具执行后
     PostToolUse {
         tool_name: String,
         result: ToolResult,
     },
     /// 消息发送前
-    PreSendMessage {
-        content: String,
-    },
+    PreSendMessage { content: String },
     /// 消息发送后
     PostSendMessage {
         content: String,

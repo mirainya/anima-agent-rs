@@ -124,7 +124,10 @@ impl DispatchQueue {
             })
             .collect();
 
-        let global_priority = route_min_priorities.iter().map(|(_, priority)| *priority).min()?;
+        let global_priority = route_min_priorities
+            .iter()
+            .map(|(_, priority)| *priority)
+            .min()?;
         let eligible_routes: Vec<String> = route_min_priorities
             .into_iter()
             .filter_map(|(route, priority)| (priority == global_priority).then_some(route))
@@ -201,4 +204,3 @@ fn select_next_route(eligible_routes: &[String], last_route_key: Option<&str>) -
     };
     eligible_routes.get(next_index).cloned()
 }
-

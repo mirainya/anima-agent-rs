@@ -331,7 +331,9 @@ fn session_store_helper_queries_match_account_and_routing_baseline() {
     assert_eq!(prod_sessions.len(), 1);
     assert_eq!(prod_sessions[0].id, cli_prod.id);
 
-    assert!(store.get_sessions_by_channel("cli", Some("staging")).is_empty());
+    assert!(store
+        .get_sessions_by_channel("cli", Some("staging"))
+        .is_empty());
 }
 
 #[test]

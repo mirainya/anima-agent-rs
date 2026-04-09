@@ -2,6 +2,7 @@ import { MessageComposer } from '@/features/chat/MessageComposer';
 import { JobWorkbenchDrawer } from '@/features/jobs/JobWorkbenchDrawer';
 import { JobsConversation } from '@/features/jobs/JobsConversation';
 import { useJobsQuery } from '@/shared/api/jobs';
+import { useSessionsQuery } from '@/shared/api/sessions';
 import { useStatusQuery } from '@/shared/api/status';
 import { useUiStore } from '@/shared/state/useUiStore';
 import { shortId } from '@/shared/utils/format';
@@ -9,6 +10,7 @@ import { getWorkbenchContext } from '@/shared/utils/workbench';
 
 export function JobsPage() {
   const { data: jobs = [] } = useJobsQuery();
+  const { data: sessions = [] } = useSessionsQuery();
   const { data: status } = useStatusQuery();
   const selectedSessionId = useUiStore((state) => state.selectedSessionId);
   const selectedJobId = useUiStore((state) => state.selectedJobId);
@@ -17,7 +19,7 @@ export function JobsPage() {
   const setSelectedJobId = useUiStore((state) => state.setSelectedJobId);
   const isJobsDrawerOpen = useUiStore((state) => state.isJobsDrawerOpen);
   const setIsJobsDrawerOpen = useUiStore((state) => state.setIsJobsDrawerOpen);
-  const context = getWorkbenchContext(status, jobs, selectedSessionId, selectedJobId);
+  const context = getWorkbenchContext(sessions, jobs, selectedSessionId, selectedJobId);
   const selectedScope = context.scope;
   const selectedSession = context.selectedSession;
   const selectedJob = context.selectedJob;

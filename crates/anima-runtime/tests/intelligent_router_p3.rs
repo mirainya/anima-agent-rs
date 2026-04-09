@@ -293,7 +293,10 @@ fn context_trims_message_history_to_max() {
 
     assert_eq!(ctx.message_history.len(), 5);
     // Should keep the last 5
-    assert!(ctx.message_history[0]["content"].as_str().unwrap().contains("msg-5"));
+    assert!(ctx.message_history[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("msg-5"));
 }
 
 // ── Status ──────────────────────────────────────────────────────────

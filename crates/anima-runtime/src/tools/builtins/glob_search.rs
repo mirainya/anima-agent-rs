@@ -165,6 +165,8 @@ mod tests {
     #[test]
     fn test_validate_invalid_pattern() {
         let tool = GlobSearchTool;
-        assert!(tool.validate_input(&json!({"pattern": "[invalid"})).is_err());
+        assert!(tool
+            .validate_input(&json!({"pattern": "[invalid"}))
+            .is_err());
     }
 }

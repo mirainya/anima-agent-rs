@@ -1,6 +1,6 @@
 import { JobDetail } from './JobDetail';
 import { JobsList } from './JobsList';
-import type { JobView, StatusSnapshot } from '@/shared/utils/types';
+import type { JobView, SessionSummary } from '@/shared/utils/types';
 import { shortId } from '@/shared/utils/format';
 import './jobs.css';
 
@@ -8,7 +8,7 @@ interface JobWorkbenchDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   jobs: JobView[];
-  selectedSession: StatusSnapshot['recent_sessions'][number] | null;
+  selectedSession: SessionSummary | null;
   scopeSummary: string;
 }
 

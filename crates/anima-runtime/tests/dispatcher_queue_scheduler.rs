@@ -25,9 +25,15 @@ fn make_message(channel: &str, content: &str, priority: u8) -> DispatchMessage {
 #[test]
 fn dispatch_queue_dequeues_higher_priority_first() {
     let queue = DispatchQueue::new();
-    queue.enqueue(DispatchEnvelope::from_message(make_message("cli", "low", 9)));
-    queue.enqueue(DispatchEnvelope::from_message(make_message("cli", "high", 1)));
-    queue.enqueue(DispatchEnvelope::from_message(make_message("cli", "mid", 5)));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "cli", "low", 9,
+    )));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "cli", "high", 1,
+    )));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "cli", "mid", 5,
+    )));
 
     let first = queue.dequeue().unwrap();
     let second = queue.dequeue().unwrap();
@@ -42,10 +48,18 @@ fn dispatch_queue_dequeues_higher_priority_first() {
 #[test]
 fn dispatch_queue_rotates_fairly_across_routes_with_same_priority() {
     let queue = DispatchQueue::new();
-    queue.enqueue(DispatchEnvelope::from_message(make_message("alpha", "a1", 1)));
-    queue.enqueue(DispatchEnvelope::from_message(make_message("beta", "b1", 1)));
-    queue.enqueue(DispatchEnvelope::from_message(make_message("alpha", "a2", 1)));
-    queue.enqueue(DispatchEnvelope::from_message(make_message("beta", "b2", 1)));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "alpha", "a1", 1,
+    )));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "beta", "b1", 1,
+    )));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "alpha", "a2", 1,
+    )));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "beta", "b2", 1,
+    )));
 
     let first = queue.dequeue().unwrap();
     let second = queue.dequeue().unwrap();
@@ -61,16 +75,28 @@ fn dispatch_queue_rotates_fairly_across_routes_with_same_priority() {
 #[test]
 fn dispatch_queue_keeps_priority_precedence_across_routes() {
     let queue = DispatchQueue::new();
-    queue.enqueue(DispatchEnvelope::from_message(make_message("alpha", "low-a", 9)));
-    queue.enqueue(DispatchEnvelope::from_message(make_message("beta", "high-b", 1)));
-    queue.enqueue(DispatchEnvelope::from_message(make_message("alpha", "high-a", 1)));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "alpha", "low-a", 9,
+    )));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "beta", "high-b", 1,
+    )));
+    queue.enqueue(DispatchEnvelope::from_message(make_message(
+        "alpha", "high-a", 1,
+    )));
 
     let first = queue.dequeue().unwrap();
     let second = queue.dequeue().unwrap();
     let third = queue.dequeue().unwrap();
 
-    assert!(matches!(first.message.content.as_str(), "high-b" | "high-a"));
-    assert!(matches!(second.message.content.as_str(), "high-b" | "high-a"));
+    assert!(matches!(
+        first.message.content.as_str(),
+        "high-b" | "high-a"
+    ));
+    assert!(matches!(
+        second.message.content.as_str(),
+        "high-b" | "high-a"
+    ));
     assert_ne!(first.message.content, second.message.content);
     assert_eq!(third.message.content, "low-a");
 }
@@ -235,8 +261,8 @@ fn dispatcher_retry_backoff_requeues_failed_message_until_due() {
     let failing = Arc::new(TestChannel::failing("cli"));
     registry.register(failing, Some("default"));
 
-    let envelope = DispatchEnvelope::from_message(make_message("cli", "retry-me", 1))
-        .with_retry_policy(1, 50);
+    let envelope =
+        DispatchEnvelope::from_message(make_message("cli", "retry-me", 1)).with_retry_policy(1, 50);
     dispatcher.enqueue_envelope(envelope);
 
     let first = dispatcher.drain_one().unwrap();

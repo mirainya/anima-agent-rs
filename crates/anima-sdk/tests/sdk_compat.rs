@@ -171,7 +171,8 @@ fn add_query_params_appends_to_existing_query_and_formats_values() {
     params.insert("empty".into(), Value::Null);
     params.insert("list".into(), json!([1, 2]));
 
-    let url = client::add_query_params("http://localhost:9711/api?existing=1".into(), Some(&params));
+    let url =
+        client::add_query_params("http://localhost:9711/api?existing=1".into(), Some(&params));
     assert!(url.starts_with("http://localhost:9711/api?existing=1&"));
     assert!(url.contains("flag=true"));
     assert!(url.contains("text=hello"));
@@ -242,13 +243,19 @@ fn files_additional_validation_matches_baseline() {
     let client = anima_sdk::Client::new("http://127.0.0.1:9711");
 
     let err = files::read_file(&client, &Map::new()).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: path"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: path"));
 
     let err = files::find_files(&client, Value::Null, None).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: query"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: query"));
 
     let err = files::find_symbols(&client, Value::Null, None).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: query"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: query"));
 }
 
 #[test]
@@ -262,7 +269,9 @@ fn config_and_session_summary_validation_matches_baseline() {
     let mut provider_only = Map::new();
     provider_only.insert("provider".into(), json!("anthropic"));
     let err = config::list_tools(&client, &provider_only).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: model"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: model"));
 }
 
 #[test]
@@ -272,21 +281,29 @@ fn messages_more_validation_edges_match_baseline() {
     let mut missing_command = Map::new();
     missing_command.insert("arguments".into(), json!(["arg1"]));
     let err = messages::execute_command(&client, "123", &missing_command).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: command"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: command"));
 
     let mut missing_arguments = Map::new();
     missing_arguments.insert("command".into(), json!("test-command"));
     let err = messages::execute_command(&client, "123", &missing_arguments).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: arguments"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: arguments"));
 
     let mut missing_agent = Map::new();
     missing_agent.insert("command".into(), json!("ls -la"));
     let err = messages::run_shell_command(&client, "123", &missing_agent).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: agent"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: agent"));
 
     let empty = Map::new();
     let err = messages::revert_message(&client, "123", &empty).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: message-id"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: message-id"));
 }
 
 #[test]
@@ -297,24 +314,35 @@ fn files_config_projects_and_sessions_more_matrix_edges() {
     missing_service.insert("level".into(), json!("info"));
     missing_service.insert("message".into(), json!("test message"));
     let err = config::write_log(&client, &missing_service).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: service"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: service"));
 
     let err = files::list_files(&client, &Map::new()).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: path"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: path"));
 
     let err = files::read_file(&client, &Map::new()).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: path"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: path"));
 
     let mut summary_missing_model = Map::new();
     summary_missing_model.insert("providerID".into(), json!("anthropic"));
-    let err = sessions::summarize_session(&client, "session-1", &summary_missing_model).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: modelID"));
+    let err =
+        sessions::summarize_session(&client, "session-1", &summary_missing_model).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: modelID"));
 
     let mut init_missing_message = Map::new();
     init_missing_message.insert("modelID".into(), json!("claude"));
     init_missing_message.insert("providerID".into(), json!("anthropic"));
     let err = sessions::init_session(&client, "session-1", &init_missing_message).unwrap_err();
-    assert!(err.to_string().contains("Missing required parameters: messageID"));
+    assert!(err
+        .to_string()
+        .contains("Missing required parameters: messageID"));
 
     assert_eq!(
         client::build_url("http://127.0.0.1:9711", "/project"),

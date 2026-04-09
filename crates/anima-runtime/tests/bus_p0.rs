@@ -1,8 +1,7 @@
 use anima_runtime::bus::{
-    bounded_channel, make_control, make_internal, make_inbound, make_outbound,
-    BufferStrategy, Bus, BusConfig,
-    ControlSignal, MakeControl, MakeInternal, MakeInbound, MakeOutbound,
-    InternalMessageType,
+    bounded_channel, make_control, make_inbound, make_internal, make_outbound, BufferStrategy, Bus,
+    BusConfig, ControlSignal, InternalMessageType, MakeControl, MakeInbound, MakeInternal,
+    MakeOutbound,
 };
 use serde_json::json;
 use std::sync::Arc;

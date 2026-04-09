@@ -1,10 +1,10 @@
 use anima_runtime::bus::{make_inbound, make_outbound, Bus, MakeInbound, MakeOutbound};
 use anima_runtime::channel::{ChannelLookupReason, ChannelRegistry, SessionStore, TestChannel};
-use anima_runtime::{ContextManager, MetricsCollector};
 use anima_runtime::dispatcher::{
     Balancer, BalancerMissReason, BalancerOptions, BalancerRuntimeConfig, BalancerStrategy,
     CircuitBreakerConfig, Dispatcher, HealthPolicy, Target, TargetStatus,
 };
+use anima_runtime::{ContextManager, MetricsCollector};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -48,15 +48,28 @@ fn channel_registry_prefers_exact_then_default_then_first_available() {
     assert_eq!(exact.matched_account_id.as_deref(), Some("tenant-a"));
 
     let (_, default_fallback) = registry.find_channel_with_lookup("cli", Some("tenant-b"));
-    assert_eq!(default_fallback.reason, ChannelLookupReason::DefaultFallback);
-    assert_eq!(default_fallback.matched_account_id.as_deref(), Some("default"));
+    assert_eq!(
+        default_fallback.reason,
+        ChannelLookupReason::DefaultFallback
+    );
+    assert_eq!(
+        default_fallback.matched_account_id.as_deref(),
+        Some("default")
+    );
 
     let first_available_registry = ChannelRegistry::new();
     first_available_registry.register(Arc::new(TestChannel::new("cli")), Some("tenant-a"));
     first_available_registry.register(Arc::new(TestChannel::new("cli")), Some("tenant-c"));
-    let (_, first_available) = first_available_registry.find_channel_with_lookup("cli", Some("tenant-b"));
-    assert_eq!(first_available.reason, ChannelLookupReason::FirstAvailableFallback);
-    assert_eq!(first_available.matched_account_id.as_deref(), Some("tenant-a"));
+    let (_, first_available) =
+        first_available_registry.find_channel_with_lookup("cli", Some("tenant-b"));
+    assert_eq!(
+        first_available.reason,
+        ChannelLookupReason::FirstAvailableFallback
+    );
+    assert_eq!(
+        first_available.matched_account_id.as_deref(),
+        Some("tenant-a")
+    );
 }
 
 #[test]
@@ -91,7 +104,9 @@ fn context_snapshot_restore_preserves_session_history_key_shape() {
 
     let snapshot = context.snapshot(key).expect("snapshot should exist");
     context.set_context(key, json!([]));
-    let restored = context.restore(&snapshot.id).expect("restore should succeed");
+    let restored = context
+        .restore(&snapshot.id)
+        .expect("restore should succeed");
 
     assert_eq!(restored.key, key);
     assert_eq!(context.get_session_history("session-42").len(), 1);

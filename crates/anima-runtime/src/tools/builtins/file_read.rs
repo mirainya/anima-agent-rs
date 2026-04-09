@@ -65,10 +65,7 @@ impl Tool for FileReadTool {
 
     fn call(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let file_path = input["file_path"].as_str().expect("validated");
-        let offset = input
-            .get("offset")
-            .and_then(Value::as_u64)
-            .unwrap_or(1) as usize;
+        let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(1) as usize;
         let limit = input
             .get("limit")
             .and_then(Value::as_u64)

@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { JobsConversation } from './JobsConversation';
-import type { JobView, StatusSnapshot } from '@/shared/utils/types';
+import type { JobView, SessionSummary } from '@/shared/utils/types';
 
 function makeJob(partial: Partial<JobView>): JobView {
   return {
@@ -27,16 +27,18 @@ function makeJob(partial: Partial<JobView>): JobView {
     execution_summary: null,
     failure: null,
     review: null,
+    tool_state: null,
     ...partial,
   };
 }
 
-const selectedSession: StatusSnapshot['recent_sessions'][number] = {
+const selectedSession: SessionSummary = {
   chat_id: 'chat-1',
   channel: 'web',
   session_id: 'sess-1',
   history_len: 3,
   last_user_message_preview: '请帮我检查部署状态',
+  last_active: 1710000005000,
 };
 
 describe('JobsConversation', () => {
@@ -55,6 +57,7 @@ describe('JobsConversation', () => {
               task_type: 'api-call',
               elapsed_ms: 3000,
               content_preview: 'running test',
+              phase: 'api_call_inflight',
             },
             recent_events: [
               { event: 'worker_task_assigned', recorded_at_ms: 1710000001000, payload: { task_type: 'api-call', task_summary: '主 agent 已将任务派发给 worker', task_preview: '检查部署状态' } },
@@ -76,6 +79,7 @@ describe('JobsConversation', () => {
     expect(screen.getByText('协作痕迹')).toBeTruthy();
     expect(screen.getByText(/子任务 · 属于/)).toBeTruthy();
     expect(screen.getByText('worker-7')).toBeTruthy();
+    expect(screen.getByText('api_call_inflight')).toBeTruthy();
     expect(screen.getAllByText('检查完成，服务可访问。').length).toBeGreaterThan(0);
     expect(screen.getByText('关键过程摘要')).toBeTruthy();
     expect(screen.getByText('主 agent 已派发任务给 worker')).toBeTruthy();
@@ -91,6 +95,7 @@ describe('JobsConversation', () => {
             orchestration: {
               plan_id: 'plan-1',
               active_subtask_name: 'implement-api',
+              active_subtask_type: 'backend',
               active_subtask_id: 'sub-2',
               total_subtasks: 3,
               active_subtasks: 1,
@@ -103,6 +108,7 @@ describe('JobsConversation', () => {
         selectedJob={makeJob({ job_id: 'job-1', trace_id: 'trace-1', orchestration: {
           plan_id: 'plan-1',
           active_subtask_name: 'implement-api',
+          active_subtask_type: 'backend',
           active_subtask_id: 'sub-2',
           total_subtasks: 3,
           active_subtasks: 1,
@@ -120,7 +126,7 @@ describe('JobsConversation', () => {
 
     expect(screen.getByText('Orchestration 概览')).toBeTruthy();
     expect(screen.getByText(/子任务 1\/3/)).toBeTruthy();
-    expect(screen.getByText(/当前 implement-api/)).toBeTruthy();
+    expect(screen.getByText(/当前 implement-api（backend）/)).toBeTruthy();
   });
 
   it('shows main agent decision summary for clarification flows', () => {
@@ -154,6 +160,40 @@ describe('JobsConversation', () => {
     expect(screen.getByText('先澄清需求再继续实现')).toBeTruthy();
     expect(screen.getByText(/原因：请选择前端技术栈/)).toBeTruthy();
     expect(screen.getByText(/下一步：等待用户补充信息或回答结构化问题/)).toBeTruthy();
+  });
+
+  it('shows read-only tool state summary without answer form', () => {
+    render(
+      <JobsConversation
+        jobs={[
+          makeJob({
+            status: 'executing',
+            tool_state: {
+              invocation_id: 'invoke-1',
+              tool_name: 'bash_exec',
+              tool_use_id: 'toolu_123',
+              phase: 'result_recorded',
+              permission_state: 'allowed',
+              input_preview: '{"command":"ls"}',
+              result_preview: 'file-a\nfile-b',
+              error: null,
+              awaits_user_confirmation: false,
+            },
+          }),
+        ]}
+        selectedJob={makeJob({ trace_id: 'trace-1' })}
+        selectedSession={selectedSession}
+        selectedSessionId="chat-1"
+        scopeSummary="当前会话"
+        runtimeTimeline={[]}
+        onOpenJobDetails={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('工具执行状态')).toBeTruthy();
+    expect(screen.getByText(/bash_exec · result_recorded/)).toBeTruthy();
+    expect(screen.getByText(/结果：file-a/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '提交回答' })).toBeNull();
   });
 
   it('shows pending question summary without rendering answer form', () => {

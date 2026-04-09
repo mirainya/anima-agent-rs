@@ -1,9 +1,9 @@
-use crate::classifier::rule::{AgentClassifier, ClassificationDecision, ClassificationKind};
-use crate::orchestrator::specialist_pool::SpecialistPool;
 use crate::agent::types::{make_task, MakeTask, TaskResult};
 use crate::bus::InboundMessage;
-use crate::support::now_ms;
+use crate::classifier::rule::{AgentClassifier, ClassificationDecision, ClassificationKind};
 use crate::classifier::task::{classify_task, ClassificationResult};
+use crate::orchestrator::specialist_pool::SpecialistPool;
+use crate::support::now_ms;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -181,8 +181,12 @@ pub const DEFAULT_SPECIALISTS: &[SpecialistDef] = &[
         id: "code-specialist",
         name: "Code Specialist",
         capabilities: &[
-            "code-generation", "code-review", "code-debug",
-            "code-refactor", "test-generation", "api-call",
+            "code-generation",
+            "code-review",
+            "code-debug",
+            "code-refactor",
+            "test-generation",
+            "api-call",
         ],
     },
     SpecialistDef {
@@ -219,10 +223,7 @@ pub struct IntelligentRouter {
 }
 
 impl IntelligentRouter {
-    pub fn new(
-        specialist_pool: Arc<SpecialistPool>,
-        config: IntelligentRouterConfig,
-    ) -> Self {
+    pub fn new(specialist_pool: Arc<SpecialistPool>, config: IntelligentRouterConfig) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             specialist_pool,
@@ -347,11 +348,14 @@ impl IntelligentRouter {
                 {
                     let mut contexts = self.contexts.lock();
                     if let Some(ctx) = contexts.get_mut(session_id) {
-                        ctx.record_task(json!({
-                            "classification": classification.task_type.as_str(),
-                            "status": &result.status,
-                            "timestamp_ms": now_ms(),
-                        }), self.config.max_task_history);
+                        ctx.record_task(
+                            json!({
+                                "classification": classification.task_type.as_str(),
+                                "status": &result.status,
+                                "timestamp_ms": now_ms(),
+                            }),
+                            self.config.max_task_history,
+                        );
                     }
                 }
 
@@ -422,10 +426,13 @@ impl IntelligentRouter {
             let ctx = contexts
                 .entry(session_id.to_string())
                 .or_insert_with(|| DialogContext::new(session_id, channel, sender));
-            ctx.record_message(json!({
-                "content": message.content,
-                "channel": message.channel,
-            }), self.config.max_message_history);
+            ctx.record_message(
+                json!({
+                    "content": message.content,
+                    "channel": message.channel,
+                }),
+                self.config.max_message_history,
+            );
         }
 
         let task = make_task(MakeTask {
@@ -491,7 +498,10 @@ pub fn format_response(result: &ProcessResult) -> FormattedResponse {
             success: false,
             message: format!("处理失败: {}", result.error.as_deref().unwrap_or("unknown")),
             error: result.error.clone(),
-            task_type: result.classification.as_ref().map(|c| c.task_type.as_str().to_string()),
+            task_type: result
+                .classification
+                .as_ref()
+                .map(|c| c.task_type.as_str().to_string()),
             confidence: result.classification.as_ref().map(|c| c.confidence),
             processing_time_ms: Some(result.processing_time_ms),
         },
@@ -499,7 +509,10 @@ pub fn format_response(result: &ProcessResult) -> FormattedResponse {
             success: false,
             message: "处理超时，请稍后重试".to_string(),
             error: Some("timeout".to_string()),
-            task_type: result.classification.as_ref().map(|c| c.task_type.as_str().to_string()),
+            task_type: result
+                .classification
+                .as_ref()
+                .map(|c| c.task_type.as_str().to_string()),
             confidence: result.classification.as_ref().map(|c| c.confidence),
             processing_time_ms: Some(result.processing_time_ms),
         },
@@ -507,7 +520,10 @@ pub fn format_response(result: &ProcessResult) -> FormattedResponse {
             success: true,
             message: "处理完成".to_string(),
             error: None,
-            task_type: result.classification.as_ref().map(|c| c.task_type.as_str().to_string()),
+            task_type: result
+                .classification
+                .as_ref()
+                .map(|c| c.task_type.as_str().to_string()),
             confidence: result.classification.as_ref().map(|c| c.confidence),
             processing_time_ms: Some(result.processing_time_ms),
         },

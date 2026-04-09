@@ -30,8 +30,7 @@ pub enum TargetStatus {
 }
 
 /// 目标节点的负载信息
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TargetLoad {
     /// 当前活跃请求数
     pub active: usize,
@@ -41,7 +40,6 @@ pub struct TargetLoad {
     pub errors: usize,
     pub last_error_at: Option<u64>,
 }
-
 
 /// 负载均衡目标节点
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -748,7 +746,10 @@ impl Balancer {
             })
             .collect();
 
-        let healthy_count = snapshot_targets.values().filter(|target| target.healthy).count();
+        let healthy_count = snapshot_targets
+            .values()
+            .filter(|target| target.healthy)
+            .count();
         let open_circuit_count = snapshot_targets
             .values()
             .filter(|target| target.circuit_state == CircuitState::Open)
@@ -779,7 +780,12 @@ impl Balancer {
         let runtime_health = self.target_health_snapshot();
         let healthy_targets = targets
             .keys()
-            .filter(|target_id| runtime_health.get(*target_id).map(|health| health.healthy).unwrap_or(true))
+            .filter(|target_id| {
+                runtime_health
+                    .get(*target_id)
+                    .map(|health| health.healthy)
+                    .unwrap_or(true)
+            })
             .count();
         let open_circuits = runtime_health
             .values()
@@ -872,8 +878,9 @@ impl Balancer {
         } else {
             half_open_candidate_ids.clone()
         };
-        let hashing_key_missing =
-            matches!(self.strategy, BalancerStrategy::Hashing) && key.is_none() && !candidate_ids.is_empty();
+        let hashing_key_missing = matches!(self.strategy, BalancerStrategy::Hashing)
+            && key.is_none()
+            && !candidate_ids.is_empty();
 
         let candidate_set: std::collections::HashSet<&str> =
             candidate_ids.iter().map(String::as_str).collect();
@@ -1021,7 +1028,10 @@ impl Balancer {
         if total_targets == 0 {
             return BalancerMissReason::NoTargetsConfigured;
         }
-        if matches!(self.strategy, BalancerStrategy::Hashing) && key.is_none() && !candidate_ids.is_empty() {
+        if matches!(self.strategy, BalancerStrategy::Hashing)
+            && key.is_none()
+            && !candidate_ids.is_empty()
+        {
             return BalancerMissReason::HashingKeyMissing;
         }
         if available_status_count == 0 {
@@ -1144,7 +1154,9 @@ impl Balancer {
     }
 
     fn health_policy(&self) -> Option<&HealthPolicy> {
-        self.runtime.as_ref().and_then(|config| config.health.as_ref())
+        self.runtime
+            .as_ref()
+            .and_then(|config| config.health.as_ref())
     }
 
     fn heartbeat_expired(&self, health: &TargetHealth, now_ms: u64) -> bool {
@@ -1189,4 +1201,3 @@ struct BalancerSelectionComputation {
     selected_target: Option<Target>,
     diagnostic: BalancerSelectionDiagnostic,
 }
-

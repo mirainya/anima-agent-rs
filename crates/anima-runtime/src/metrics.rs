@@ -181,10 +181,13 @@ impl MetricsCollector {
 
     /// 注册摘要指标，可指定保留的最大样本数
     pub fn register_summary(&self, name: &str, max_size: Option<usize>) {
-        self.summaries.lock().entry(name.into()).or_insert_with(|| SummaryValue {
-            max_size: max_size.unwrap_or(1000),
-            ..Default::default()
-        });
+        self.summaries
+            .lock()
+            .entry(name.into())
+            .or_insert_with(|| SummaryValue {
+                max_size: max_size.unwrap_or(1000),
+                ..Default::default()
+            });
     }
 
     /// 记录摘要观测值，超过 max_size 时以环形缓冲方式覆盖最旧的值
@@ -253,7 +256,10 @@ impl MetricsCollector {
             let mut cumulative = 0u64;
             for (idx, bucket) in histogram.buckets.iter().enumerate() {
                 cumulative += histogram.counts.get(idx).copied().unwrap_or(0);
-                lines.push(format!("{}_bucket{{le=\"{}\"}} {}", metric, bucket, cumulative));
+                lines.push(format!(
+                    "{}_bucket{{le=\"{}\"}} {}",
+                    metric, bucket, cumulative
+                ));
             }
             cumulative += histogram.counts.last().copied().unwrap_or(0);
             lines.push(format!("{}_bucket{{le=\"+Inf\"}} {}", metric, cumulative));

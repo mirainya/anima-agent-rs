@@ -1,7 +1,8 @@
-import type { JobView, StatusSnapshot } from '@/shared/utils/types';
+import type { JobView, SessionSummary } from '@/shared/utils/types';
 import { formatTimestamp, shortId } from '@/shared/utils/format';
 import { deriveJobSummary } from './deriveJobSummary';
-import { deriveAgentDecisionSummary, deriveProcessEntriesFromEvents, deriveProcessEntriesFromRuntimeTimeline } from './deriveProcessEntries';
+import { deriveAgentDecisionSummary, deriveProcessEntriesFromJob, deriveProcessEntriesFromRuntimeTimeline } from './deriveProcessEntries';
+import { formatActiveSubtask } from './formatOrchestration';
 import './jobs.css';
 
 interface RuntimeTimelineEvent {
@@ -18,7 +19,7 @@ interface RuntimeTimelineEvent {
 interface JobsConversationProps {
   jobs: JobView[];
   selectedJob: JobView | null;
-  selectedSession: StatusSnapshot['recent_sessions'][number] | null;
+  selectedSession: SessionSummary | null;
   selectedSessionId: string | null;
   scopeSummary: string;
   runtimeTimeline: RuntimeTimelineEvent[];
@@ -113,7 +114,7 @@ export function JobsConversation({ jobs, selectedJob, selectedSession, selectedS
         ) : (
           jobs.map((job) => {
             const summary = deriveJobSummary(job);
-            const fullProcessEntries = deriveProcessEntriesFromEvents(job.recent_events);
+            const fullProcessEntries = deriveProcessEntriesFromJob(job);
             const processEntries = fullProcessEntries.slice(-5).reverse();
             const decisionSummary = deriveAgentDecisionSummary(fullProcessEntries);
             const orchestration = job.orchestration ?? null;
@@ -150,6 +151,8 @@ export function JobsConversation({ jobs, selectedJob, selectedSession, selectedS
                       <span>{job.worker?.worker_id ?? '-'}</span>
                       <span className="detail-label">任务类型</span>
                       <span>{job.worker?.task_type ?? '-'}</span>
+                      <span className="detail-label">worker phase</span>
+                      <span>{job.worker?.phase ?? '-'}</span>
                       <span className="detail-label">状态摘要</span>
                       <span>{summary.detail}</span>
                     </div>
@@ -168,7 +171,9 @@ export function JobsConversation({ jobs, selectedJob, selectedSession, selectedS
                         <div className="job-trace-block-title">Orchestration 概览</div>
                         <div className="job-message-meta">
                           子任务 {orchestration.completed_subtasks}/{orchestration.total_subtasks}
-                          {orchestration.active_subtask_name ? ` · 当前 ${orchestration.active_subtask_name}` : ''}
+                          {formatActiveSubtask(orchestration.active_subtask_name, orchestration.active_subtask_type)
+                            ? ` · 当前 ${formatActiveSubtask(orchestration.active_subtask_name, orchestration.active_subtask_type)}`
+                            : ''}
                         </div>
                       </div>
                     )}
@@ -189,6 +194,18 @@ export function JobsConversation({ jobs, selectedJob, selectedSession, selectedS
                             ? `最近回答：${job.pending_question.answer_summary}`
                             : '尚未提交回答；唯一回答入口仍在任务详情区。'}
                         </div>
+                      </div>
+                    )}
+
+                    {!job.pending_question && job.tool_state && (
+                      <div className="job-trace-block">
+                        <div className="job-trace-block-title">工具执行状态</div>
+                        <div className="job-message-meta">
+                          {job.tool_state.tool_name ?? '工具'} · {job.tool_state.phase}
+                          {job.tool_state.permission_state ? ` · ${job.tool_state.permission_state}` : ''}
+                        </div>
+                        {job.tool_state.result_preview && <div className="job-message-meta">结果：{job.tool_state.result_preview}</div>}
+                        {!job.tool_state.result_preview && job.tool_state.error && <div className="job-message-meta">错误：{job.tool_state.error}</div>}
                       </div>
                     )}
 

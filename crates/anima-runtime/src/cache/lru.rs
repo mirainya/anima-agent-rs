@@ -8,10 +8,10 @@
 //!
 //! 内部使用 IndexMap 保持插入顺序，配合独立的 access_order 向量追踪访问顺序。
 
+use crate::support::now_ms;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use crate::support::now_ms;
 
 /// 缓存条目，存储值及其元数据（创建时间、访问次数、TTL 等）
 #[derive(Debug, Clone, PartialEq)]

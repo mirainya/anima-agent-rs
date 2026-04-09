@@ -89,9 +89,8 @@ impl Tool for FileEditTool {
             content.replacen(old_string, new_string, 1)
         };
 
-        fs::write(file_path, &new_content).map_err(|e| {
-            ToolError::Internal(format!("failed to write '{file_path}': {e}"))
-        })?;
+        fs::write(file_path, &new_content)
+            .map_err(|e| ToolError::Internal(format!("failed to write '{file_path}': {e}")))?;
 
         let count = if replace_all {
             content.matches(old_string).count()

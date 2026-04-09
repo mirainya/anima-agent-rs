@@ -7,10 +7,10 @@
 //!
 //! 所有条目支持 TTL 过期机制。
 
+use crate::support::now_ms;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use crate::support::now_ms;
 
 // ── Context Entry ───────────────────────────────────────────────────
 
@@ -218,11 +218,7 @@ impl FileStorage {
     }
 
     fn file_path(&self, key: &str) -> String {
-        format!(
-            "{}/{}.json",
-            self.base_path,
-            Self::key_to_filename(key)
-        )
+        format!("{}/{}.json", self.base_path, Self::key_to_filename(key))
     }
 }
 
@@ -341,7 +337,12 @@ impl ContextStorage for FileStorage {
     fn clear(&self) {
         if let Ok(entries) = std::fs::read_dir(&self.base_path) {
             for entry in entries.flatten() {
-                if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                if entry
+                    .path()
+                    .extension()
+                    .map(|e| e == "json")
+                    .unwrap_or(false)
+                {
                     let _ = std::fs::remove_file(entry.path());
                 }
             }
@@ -465,7 +466,11 @@ impl TieredStorage {
 
     pub fn delete(&self, key: &str) -> bool {
         let l1_deleted = self.l1.delete_entry(key);
-        let l2_deleted = self.l2.as_ref().map(|l2| l2.delete_entry(key)).unwrap_or(false);
+        let l2_deleted = self
+            .l2
+            .as_ref()
+            .map(|l2| l2.delete_entry(key))
+            .unwrap_or(false);
         l1_deleted || l2_deleted
     }
 
@@ -531,10 +536,14 @@ impl TieredStorageTrait for TieredStorage {
             Some(e) => e,
             None => return false,
         };
-        self.l1.set_entry(key, entry.value, EntryOpts {
-            ttl_ms: entry.ttl_ms,
-            ..Default::default()
-        });
+        self.l1.set_entry(
+            key,
+            entry.value,
+            EntryOpts {
+                ttl_ms: entry.ttl_ms,
+                ..Default::default()
+            },
+        );
         l2.delete_entry(key);
         *self.promotions.lock() += 1;
         true
@@ -549,10 +558,14 @@ impl TieredStorageTrait for TieredStorage {
             Some(e) => e,
             None => return false,
         };
-        l2.set_entry(key, entry.value, EntryOpts {
-            ttl_ms: entry.ttl_ms,
-            tier: Some(StorageTier::L2),
-        });
+        l2.set_entry(
+            key,
+            entry.value,
+            EntryOpts {
+                ttl_ms: entry.ttl_ms,
+                tier: Some(StorageTier::L2),
+            },
+        );
         self.l1.delete_entry(key);
         *self.demotions.lock() += 1;
         true

@@ -4,12 +4,12 @@
 //! `ContextManager` 是 Agent 运行时的核心组件之一，负责维护对话上下文状态，
 //! 并通过快照机制支持上下文的时间点回溯。内置 GC 自动清理过期快照。
 
+use crate::support::now_ms;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
-use crate::support::now_ms;
 
 /// 上下文快照，记录某个 key 在特定时间点的值
 #[derive(Debug, Clone, PartialEq)]

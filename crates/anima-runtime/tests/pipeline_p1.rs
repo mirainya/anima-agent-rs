@@ -5,10 +5,9 @@ use serde_json::json;
 
 #[test]
 fn pipeline_process_single_item_through_transform_and_sink() {
-    let pipeline = Pipeline::new()
-        .add_transform(Box::new(MapTransform::new(|v| {
-            json!(v.as_i64().unwrap_or(0) * 2)
-        })));
+    let pipeline = Pipeline::new().add_transform(Box::new(MapTransform::new(|v| {
+        json!(v.as_i64().unwrap_or(0) * 2)
+    })));
 
     let result = pipeline.process(json!(5)).unwrap();
     assert_eq!(result, Some(json!(10)));
@@ -102,10 +101,9 @@ fn batch_transform_groups_items() {
 
 #[test]
 fn pipeline_tracks_stats() {
-    let pipeline = Pipeline::new()
-        .add_filter(Box::new(PredicateFilter::new(|v| {
-            v.as_i64().unwrap_or(0) > 0
-        })));
+    let pipeline = Pipeline::new().add_filter(Box::new(PredicateFilter::new(|v| {
+        v.as_i64().unwrap_or(0) > 0
+    })));
 
     pipeline.process(json!(1)).unwrap();
     pipeline.process(json!(-1)).unwrap();

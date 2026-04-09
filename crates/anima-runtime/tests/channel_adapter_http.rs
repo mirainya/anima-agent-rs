@@ -42,6 +42,10 @@ fn registry_entries_include_registered_account_ids() {
 
     let entries = registry.entries();
     assert_eq!(entries.len(), 2);
-    assert!(entries.iter().any(|entry| entry.channel == "http" && entry.account_id == "default"));
-    assert!(entries.iter().any(|entry| entry.channel == "http" && entry.account_id == "secondary"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.channel == "http" && entry.account_id == "default"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.channel == "http" && entry.account_id == "secondary"));
 }

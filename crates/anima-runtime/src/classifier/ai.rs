@@ -1,6 +1,6 @@
-use crate::classifier::rule::{ClassificationDecision, ClassificationKind};
 use crate::bus::InboundMessage;
 use crate::cache::LruCache;
+use crate::classifier::rule::{ClassificationDecision, ClassificationKind};
 use regex::Regex;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -78,18 +78,19 @@ lazy_static::lazy_static! {
 pub fn quick_classify(message: &str) -> Option<AiClassificationResult> {
     let trimmed = message.trim();
 
-    let check = |patterns: &[Regex], kind: AiClassificationType| -> Option<AiClassificationResult> {
-        if patterns.iter().any(|p| p.is_match(trimmed)) {
-            Some(AiClassificationResult {
-                classification: kind,
-                confidence: 1.0,
-                reasoning: "Pattern match".into(),
-                quick: true,
-            })
-        } else {
-            None
-        }
-    };
+    let check =
+        |patterns: &[Regex], kind: AiClassificationType| -> Option<AiClassificationResult> {
+            if patterns.iter().any(|p| p.is_match(trimmed)) {
+                Some(AiClassificationResult {
+                    classification: kind,
+                    confidence: 1.0,
+                    reasoning: "Pattern match".into(),
+                    quick: true,
+                })
+            } else {
+                None
+            }
+        };
 
     check(&SIMPLE_CHAT_PATTERNS, AiClassificationType::SimpleChat)
         .or_else(|| check(&STATUS_PATTERNS, AiClassificationType::StatusQuery))

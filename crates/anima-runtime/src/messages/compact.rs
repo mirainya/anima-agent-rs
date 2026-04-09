@@ -88,10 +88,7 @@ fn find_recent_turn_boundary(messages: &[InternalMsg], preserve_turns: usize) ->
         i -= 1;
 
         // 跳过尾部的 tool_result（属于当前 turn）
-        while i > 0
-            && messages[i].role == MessageRole::User
-            && messages[i].tool_use_id.is_some()
-        {
+        while i > 0 && messages[i].role == MessageRole::User && messages[i].tool_use_id.is_some() {
             i -= 1;
         }
 
@@ -214,10 +211,7 @@ pub fn filter_oldest_messages(
 // ---------------------------------------------------------------------------
 
 /// 检查是否需要压缩，如需要则执行两阶段压缩
-pub fn compact_if_needed(
-    messages: &mut [InternalMsg],
-    config: &CompactConfig,
-) -> CompactResult {
+pub fn compact_if_needed(messages: &mut [InternalMsg], config: &CompactConfig) -> CompactResult {
     let total = estimate_total_tokens(messages);
     let threshold = (config.context_window as f64 * config.threshold_ratio) as usize;
 
@@ -406,7 +400,11 @@ mod tests {
 
         let len_before = msgs.len();
         ensure_tool_result_pairing(&mut msgs);
-        assert_eq!(msgs.len(), len_before, "pairing should not insert new messages");
+        assert_eq!(
+            msgs.len(),
+            len_before,
+            "pairing should not insert new messages"
+        );
     }
 
     // 6. 幂等性
@@ -429,11 +427,11 @@ mod tests {
     #[test]
     fn test_filter_oldest_messages() {
         let mut msgs = vec![
-            make_user_msg("start"),                          // 0: 永不过滤
-            make_assistant_with_tool_use("call1", "tu_1"),   // 1
-            make_tool_result("tu_1", "result1"),             // 2
-            make_assistant_with_tool_use("call2", "tu_2"),   // 3
-            make_tool_result("tu_2", "result2"),             // 4
+            make_user_msg("start"),                        // 0: 永不过滤
+            make_assistant_with_tool_use("call1", "tu_1"), // 1
+            make_tool_result("tu_1", "result1"),           // 2
+            make_assistant_with_tool_use("call2", "tu_2"), // 3
+            make_tool_result("tu_2", "result2"),           // 4
         ];
 
         let freed = filter_oldest_messages(&mut msgs, 5, usize::MAX);
@@ -489,11 +487,11 @@ mod tests {
     #[test]
     fn test_find_recent_turn_boundary() {
         let msgs = vec![
-            make_user_msg("start"),                          // 0
-            make_assistant_with_tool_use("call1", "tu_1"),   // 1
-            make_tool_result("tu_1", "r1"),                  // 2
-            make_assistant_with_tool_use("call2", "tu_2"),   // 3
-            make_tool_result("tu_2", "r2"),                  // 4
+            make_user_msg("start"),                        // 0
+            make_assistant_with_tool_use("call1", "tu_1"), // 1
+            make_tool_result("tu_1", "r1"),                // 2
+            make_assistant_with_tool_use("call2", "tu_2"), // 3
+            make_tool_result("tu_2", "r2"),                // 4
         ];
 
         // preserve 1 turn → 边界应在 idx 3（最后一个 assistant）

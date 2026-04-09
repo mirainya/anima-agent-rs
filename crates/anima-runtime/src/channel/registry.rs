@@ -152,10 +152,13 @@ impl ChannelRegistry {
             .unwrap()
             .iter()
             .flat_map(|(channel, accounts)| {
-                accounts.keys().cloned().map(|account_id| ChannelRegistryEntry {
-                    channel: channel.clone(),
-                    account_id,
-                })
+                accounts
+                    .keys()
+                    .cloned()
+                    .map(|account_id| ChannelRegistryEntry {
+                        channel: channel.clone(),
+                        account_id,
+                    })
             })
             .collect()
     }

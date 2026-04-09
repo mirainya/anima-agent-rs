@@ -46,8 +46,7 @@ pub struct PermissionRule {
 }
 
 /// 权限模式
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PermissionMode {
     /// 全部允许（无需确认）
     AllowAll,
@@ -57,4 +56,3 @@ pub enum PermissionMode {
     #[default]
     RuleBased,
 }
-

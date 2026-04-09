@@ -3,6 +3,7 @@ import type { JobView } from '@/shared/utils/types';
 import { useUiStore } from '@/shared/state/useUiStore';
 import { formatDurationShort, shortId } from '@/shared/utils/format';
 import { deriveJobSummary } from './deriveJobSummary';
+import { formatActiveSubtask } from './formatOrchestration';
 import './jobs.css';
 
 interface JobsListProps {
@@ -63,7 +64,9 @@ export function JobsList({ jobs, selectedSessionChatId }: JobsListProps) {
             {job.kind === 'main' && orchestration && orchestration.total_subtasks > 0 && (
               <div className="job-hierarchy-note">
                 子任务 {orchestration.completed_subtasks}/{orchestration.total_subtasks}
-                {orchestration.active_subtask_name ? ` · 当前 ${orchestration.active_subtask_name}` : ''}
+                {formatActiveSubtask(orchestration.active_subtask_name, orchestration.active_subtask_type)
+                  ? ` · 当前 ${formatActiveSubtask(orchestration.active_subtask_name, orchestration.active_subtask_type)}`
+                  : ''}
               </div>
             )}
             <div className="job-list-bottom">

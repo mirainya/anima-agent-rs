@@ -133,9 +133,7 @@ fn render_dispatcher_status() -> String {
     let status = make_runtime_status();
     format!(
         "Dispatcher Status\n  state: {}\n  queue_depth: {}\n  routes: {}",
-        status.dispatcher.state,
-        status.dispatcher.queue_depth,
-        status.dispatcher.route_count
+        status.dispatcher.state, status.dispatcher.queue_depth, status.dispatcher.route_count
     )
 }
 
@@ -177,10 +175,7 @@ fn render_health() -> String {
     let report = runtime.registry.health_report();
     format!(
         "Health Report\n  total: {}\n  healthy: {}\n  unhealthy: {}\n  all_healthy: {}",
-        report.total,
-        report.healthy,
-        report.unhealthy,
-        report.all_healthy
+        report.total, report.healthy, report.unhealthy, report.all_healthy
     )
 }
 

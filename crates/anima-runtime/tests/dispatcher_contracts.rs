@@ -50,7 +50,10 @@ fn dispatcher_exact_lookup_success_records_running_status_and_timestamps() {
     assert!(result.success);
 
     let status = dispatcher.status();
-    assert_eq!(status.state, anima_runtime::dispatcher::DispatcherState::Running);
+    assert_eq!(
+        status.state,
+        anima_runtime::dispatcher::DispatcherState::Running
+    );
     assert!(status.last_dispatch_at.is_some());
     assert_eq!(status.last_error_at, None);
     assert_eq!(status.queue_depth, 0);
@@ -58,7 +61,10 @@ fn dispatcher_exact_lookup_success_records_running_status_and_timestamps() {
     let diagnostic = dispatcher.last_dispatch_diagnostic().unwrap();
     assert_eq!(diagnostic.outcome, DispatchOutcomeReason::SelectedAndSent);
     assert_eq!(diagnostic.failure_stage, None);
-    assert_eq!(diagnostic.channel_lookup_reason, Some(ChannelLookupReason::ExactMatch));
+    assert_eq!(
+        diagnostic.channel_lookup_reason,
+        Some(ChannelLookupReason::ExactMatch)
+    );
 }
 
 #[test]
@@ -73,9 +79,15 @@ fn dispatcher_channel_lookup_failure_attributes_error_to_lookup_stage() {
     assert!(status.last_error_at.is_some());
 
     let diagnostic = dispatcher.last_dispatch_diagnostic().unwrap();
-    assert_eq!(diagnostic.failure_stage, Some(DispatchFailureStage::ChannelLookup));
+    assert_eq!(
+        diagnostic.failure_stage,
+        Some(DispatchFailureStage::ChannelLookup)
+    );
     assert_eq!(diagnostic.outcome, DispatchOutcomeReason::ChannelNotFound);
-    assert_eq!(diagnostic.channel_lookup_reason, Some(ChannelLookupReason::ChannelMissing));
+    assert_eq!(
+        diagnostic.channel_lookup_reason,
+        Some(ChannelLookupReason::ChannelMissing)
+    );
 }
 
 #[test]
@@ -102,7 +114,13 @@ fn dispatcher_balancer_miss_keeps_selected_target_empty_and_reports_reason() {
 
     let diagnostic = dispatcher.last_dispatch_diagnostic().unwrap();
     assert_eq!(diagnostic.selected_target_id, None);
-    assert_eq!(diagnostic.balancer_miss_reason, Some(BalancerMissReason::HashingKeyMissing));
+    assert_eq!(
+        diagnostic.balancer_miss_reason,
+        Some(BalancerMissReason::HashingKeyMissing)
+    );
     assert_eq!(diagnostic.outcome, DispatchOutcomeReason::SelectedAndSent);
-    assert_eq!(diagnostic.channel_lookup_reason, Some(ChannelLookupReason::ExactMatch));
+    assert_eq!(
+        diagnostic.channel_lookup_reason,
+        Some(ChannelLookupReason::ExactMatch)
+    );
 }

@@ -26,7 +26,11 @@ impl HookHandler for LoggingHook {
                 eprintln!("[{}] post-tool-use: {}", self.prefix, tool_name);
             }
             HookEvent::PreSendMessage { content } => {
-                eprintln!("[{}] pre-send: {}...", self.prefix, &content[..content.len().min(50)]);
+                eprintln!(
+                    "[{}] pre-send: {}...",
+                    self.prefix,
+                    &content[..content.len().min(50)]
+                );
             }
             HookEvent::PostSendMessage { .. } => {
                 eprintln!("[{}] post-send", self.prefix);

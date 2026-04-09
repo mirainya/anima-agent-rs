@@ -99,7 +99,10 @@ impl HttpChannel {
                         details: json!({"status_code": status.as_u16()}),
                     };
                     *self.last_health.lock().unwrap() = Some(snapshot.clone());
-                    err(format!("HTTP send failed with status {}", status.as_u16()), Some(snapshot.details))
+                    err(
+                        format!("HTTP send failed with status {}", status.as_u16()),
+                        Some(snapshot.details),
+                    )
                 }
             }
             Err(error) => {

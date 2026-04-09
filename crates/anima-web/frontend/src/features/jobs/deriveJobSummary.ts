@@ -1,30 +1,6 @@
 import type { JobView } from '@/shared/utils/types';
 import { statusLabel, statusTone } from '@/shared/utils/jobStatus';
 
-interface FailureView {
-  error_code?: string;
-  error_stage?: string;
-  internal_message?: string;
-  occurred_at_ms?: number;
-}
-
-interface ExecutionSummaryView {
-  plan_type?: string;
-  status?: string;
-  cache_hit?: boolean;
-  worker_id?: string | null;
-  error_code?: string | null;
-  error_stage?: string | null;
-  task_duration_ms?: number;
-  stages?: {
-    context_ms?: number;
-    session_ms?: number;
-    classify_ms?: number;
-    execute_ms?: number;
-    total_ms?: number;
-  };
-}
-
 interface JobEventPayloadView {
   response_preview?: string;
   response_text?: string;
@@ -58,10 +34,11 @@ export function getLatestMessage(job: JobView): JobEventPayloadView | null {
 
 export function explainJobStatus(job: {
   status: string;
-  worker?: { task_type?: string; worker_id?: string } | null;
+  worker?: { task_type?: string; worker_id?: string; phase?: string | null } | null;
+  tool_state?: { phase?: string; tool_name?: string | null; result_preview?: string | null; error?: string | null } | null;
   review?: { verdict?: string } | null;
-  failure?: FailureView | null;
-  execution_summary?: ExecutionSummaryView | null;
+  failure?: JobView['failure'] | null;
+  execution_summary?: JobView['execution_summary'] | null;
   recent_events: Array<{ event: string }>;
 }): string {
   const lastEvent = job.recent_events[job.recent_events.length - 1]?.event;
@@ -90,8 +67,29 @@ export function explainJobStatus(job: {
       if (lastEvent === 'requirement_followup_scheduled') {
         return '主 agent 判断上一轮结果还未满足原始需求，正在自动继续补充处理。';
       }
+      if (job.tool_state?.phase) {
+        const toolName = job.tool_state.tool_name ?? '当前工具';
+        if (job.tool_state.phase === 'permission_resolved') {
+          return `工具 ${toolName} 的权限已经确认，系统正准备继续执行。`;
+        }
+        if (job.tool_state.phase === 'executing' || job.tool_state.phase === 'execution_started') {
+          return `当前正在执行工具 ${toolName}，因此该 Job 仍处于执行中。`;
+        }
+        if (job.tool_state.phase === 'result_recorded') {
+          return job.tool_state.result_preview
+            ? `工具 ${toolName} 的结果已记录：${job.tool_state.result_preview}`
+            : `工具 ${toolName} 的结果已记录，等待后续步骤继续推进。`;
+        }
+        if (job.tool_state.phase === 'execution_failed' || job.tool_state.phase === 'failed') {
+          return job.tool_state.error
+            ? `工具 ${toolName} 执行失败：${job.tool_state.error}`
+            : `工具 ${toolName} 执行失败，系统正在处理失败结果。`;
+        }
+      }
       if (job.worker?.task_type) {
-        return `因为 worker 正在执行 ${job.worker.task_type}，所以该 Job 仍处于执行中。`;
+        return job.worker.phase
+          ? `因为 worker 正在执行 ${job.worker.task_type}（${job.worker.phase}），所以该 Job 仍处于执行中。`
+          : `因为 worker 正在执行 ${job.worker.task_type}，所以该 Job 仍处于执行中。`;
       }
       if (lastEvent === 'cache_hit' || lastEvent === 'cache_miss') {
         return `因为最近事件是 ${lastEvent}，说明任务已经进入执行阶段，所以当前仍显示为执行中。`;
@@ -127,6 +125,9 @@ export function deriveJobSummary(job: JobView): DerivedJobSummary {
   const latestResponseText = latestMessage?.response_text ?? latestMessage?.response_preview ?? '';
   const hasResponse = Boolean(latestResponseText);
   const isAutoContinuing = job.status === 'executing' && job.recent_events.some((event) => event.event === 'requirement_followup_scheduled');
+  const toolPermissionQuestion = job.pending_question?.raw_question && typeof job.pending_question.raw_question === 'object' && job.pending_question.raw_question !== null && 'type' in job.pending_question.raw_question && job.pending_question.raw_question.type === 'tool_permission'
+    ? job.pending_question.raw_question as { type: 'tool_permission'; tool_name?: string; tool_use_id?: string; input_preview?: string }
+    : null;
   const needsUserAction = job.status === 'waiting_user_input' && Boolean(job.pending_question);
   const isStalledWithoutQuestion = job.status === 'stalled' && !job.pending_question;
   const hierarchyText = job.parent_job_id
@@ -139,6 +140,7 @@ export function deriveJobSummary(job: JobView): DerivedJobSummary {
   let detail = explainJobStatus({
     status: job.status,
     worker: job.worker,
+    tool_state: job.tool_state,
     review: job.review,
     failure,
     execution_summary: executionSummary,
@@ -157,10 +159,23 @@ export function deriveJobSummary(job: JobView): DerivedJobSummary {
         ? '结果已被拒绝'
         : '任务已完成，等待反馈';
   } else if (needsUserAction) {
-    headline = job.pending_question?.prompt || '等待用户提供补充信息';
+    headline = toolPermissionQuestion
+      ? `等待确认工具权限：${toolPermissionQuestion.tool_name ?? 'unknown'}`
+      : job.pending_question?.prompt || '等待用户提供补充信息';
     detail = job.pending_question?.answer_summary
       ? `最近已提交回答：${job.pending_question.answer_summary}`
-      : '存在真实结构化问题，等待用户提供外部输入。';
+      : toolPermissionQuestion
+        ? `工具调用 ${toolPermissionQuestion.tool_use_id ?? '-'} 需要用户确认后才能继续执行。`
+        : '存在真实结构化问题，等待用户提供外部输入。';
+  } else if (job.tool_state?.phase) {
+    headline = job.current_step || `工具阶段：${job.tool_state.phase}`;
+    detail = job.tool_state.error
+      ? job.tool_state.error
+      : job.tool_state.result_preview
+        ? job.tool_state.result_preview
+        : job.tool_state.input_preview
+          ? `工具输入摘要：${job.tool_state.input_preview}`
+          : detail;
   } else if (isAutoContinuing) {
     headline = job.current_step || '系统正在自动继续';
     detail = '主 agent 正在自动继续补充处理，当前不需要用户回答。';

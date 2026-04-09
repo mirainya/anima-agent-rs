@@ -6,10 +6,10 @@
 //! - 支持批量清理过期条目（purge_expired）
 //! - 容量满时优先淘汰剩余 TTL 最短的条目
 
+use crate::support::now_ms;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::Value;
-use crate::support::now_ms;
 
 // ── TTL 缓存条目 ─────────────────────────────────────────────────
 
@@ -166,10 +166,7 @@ impl TtlCache {
     /// 检查 key 是否存在且未过期
     pub fn has(&self, key: &str) -> bool {
         let entries = self.entries.lock();
-        entries
-            .get(key)
-            .map(|e| !e.is_expired())
-            .unwrap_or(false)
+        entries.get(key).map(|e| !e.is_expired()).unwrap_or(false)
     }
 
     /// 缓存穿透保护：命中则返回缓存值，未命中则计算并以默认 TTL 写入

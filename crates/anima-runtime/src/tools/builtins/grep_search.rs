@@ -67,10 +67,7 @@ impl Tool for GrepSearchTool {
 
     fn call(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let pattern = input["pattern"].as_str().expect("validated");
-        let search_path = input
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or(".");
+        let search_path = input.get("path").and_then(Value::as_str).unwrap_or(".");
         let glob_filter = input.get("glob").and_then(Value::as_str);
         let context_lines = input
             .get("include_context")
@@ -149,10 +146,7 @@ fn walk_dir(
         } else if path.is_file() {
             // 检查 glob 过滤
             if let Some(glob_re) = glob_re {
-                let file_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if !glob_re.is_match(file_name) {
                     continue;
                 }
@@ -185,11 +179,7 @@ fn search_file(re: &Regex, path: &Path, context_lines: usize, results: &mut Vec<
                 block.push('\n');
                 for (j, line_content) in lines.iter().enumerate().take(end).skip(start) {
                     let marker = if j == i { ">" } else { " " };
-                    block.push_str(&format!(
-                        "{marker} {:>4} | {}\n",
-                        j + 1,
-                        line_content
-                    ));
+                    block.push_str(&format!("{marker} {:>4} | {}\n", j + 1, line_content));
                 }
             } else {
                 block.push_str(line);
@@ -311,6 +301,8 @@ mod tests {
     #[test]
     fn test_validate_invalid_regex() {
         let tool = GrepSearchTool;
-        assert!(tool.validate_input(&json!({"pattern": "[invalid"})).is_err());
+        assert!(tool
+            .validate_input(&json!({"pattern": "[invalid"}))
+            .is_err());
     }
 }

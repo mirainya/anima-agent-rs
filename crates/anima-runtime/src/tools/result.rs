@@ -66,7 +66,10 @@ impl std::fmt::Display for ToolError {
         match self {
             Self::ValidationFailed(msg) => write!(f, "validation failed: {msg}"),
             Self::PermissionDenied(msg) => write!(f, "permission denied: {msg}"),
-            Self::Timeout { tool_name, timeout_ms } => {
+            Self::Timeout {
+                tool_name,
+                timeout_ms,
+            } => {
                 write!(f, "tool '{tool_name}' timed out after {timeout_ms}ms")
             }
             Self::Internal(msg) => write!(f, "internal error: {msg}"),

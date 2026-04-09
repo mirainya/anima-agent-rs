@@ -55,9 +55,7 @@ fn session_store_lookup_by_routing_key() {
 #[test]
 fn session_store_routing_key_returns_none_for_missing() {
     let store = SessionStore::new();
-    assert!(store
-        .get_session_by_routing_key("nonexistent")
-        .is_none());
+    assert!(store.get_session_by_routing_key("nonexistent").is_none());
 }
 
 // ── Update ──────────────────────────────────────────────────────────

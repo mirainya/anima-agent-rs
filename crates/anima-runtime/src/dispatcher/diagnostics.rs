@@ -1,20 +1,18 @@
 use crate::channel::ChannelLookupReason;
-use crate::dispatcher::balancer::{BalancerMissReason, Balancer};
+use crate::dispatcher::balancer::{Balancer, BalancerMissReason};
 use crate::support::now_ms;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RouteTargetStats {
     pub selected: usize,
     pub success: usize,
     pub failures: usize,
     pub last_failure_at: Option<u64>,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatcherStatsSnapshot {
@@ -92,7 +90,11 @@ impl DispatcherStats {
         }
     }
 
-    pub(crate) fn record_channel_not_found(&self, target_id: Option<&str>, lookup_reason: ChannelLookupReason) {
+    pub(crate) fn record_channel_not_found(
+        &self,
+        target_id: Option<&str>,
+        lookup_reason: ChannelLookupReason,
+    ) {
         self.channel_not_found.fetch_add(1, Ordering::SeqCst);
         {
             let mut lookup_failures = self.channel_lookup_failures.lock().unwrap();
@@ -236,7 +238,12 @@ impl DispatcherRuntimeState {
         self.last_dispatch_diagnostic.lock().unwrap().clone()
     }
 
-    pub(crate) fn status(&self, balancers: &Mutex<IndexMap<String, Arc<Balancer>>>, queue_depth: usize, queue_by_route: &IndexMap<String, usize>) -> DispatcherStatus {
+    pub(crate) fn status(
+        &self,
+        balancers: &Mutex<IndexMap<String, Arc<Balancer>>>,
+        queue_depth: usize,
+        queue_by_route: &IndexMap<String, usize>,
+    ) -> DispatcherStatus {
         let routes = balancers
             .lock()
             .unwrap()
@@ -255,7 +262,9 @@ impl DispatcherRuntimeState {
                         open_circuit_count: balancer_status.open_circuit_count,
                         half_open_target_count: balancer_status.half_open_count,
                         pending_queue_depth: queue_by_route.get(channel).copied().unwrap_or(0),
-                        last_miss_reason: diagnostics.last_selection.and_then(|selection| selection.miss_reason),
+                        last_miss_reason: diagnostics
+                            .last_selection
+                            .and_then(|selection| selection.miss_reason),
                     },
                 )
             })
@@ -271,7 +280,10 @@ impl DispatcherRuntimeState {
     }
 }
 
-
 fn non_zero(value: u64) -> Option<u64> {
-    if value == 0 { None } else { Some(value) }
+    if value == 0 {
+        None
+    } else {
+        Some(value)
+    }
 }

@@ -22,8 +22,8 @@ use uuid::Uuid;
 
 use super::executor::TaskExecutor;
 use super::types::{make_task_result, MakeTaskResult, Task, TaskResult};
-use crate::streaming::executor::consume_sse_stream;
-use crate::streaming::types::{ContentBlock, ContentDelta, StreamEvent};
+use crate::streaming::executor::{consume_runtime_stream, RuntimeStreamEvent};
+use crate::streaming::types::{ContentBlock, ContentDelta};
 use crate::support::now_ms;
 
 /// Worker 当前正在执行的任务信息
@@ -209,46 +209,51 @@ impl WorkerAgent {
         self.publish_runtime_event(&task.trace_id, event, payload);
     }
 
-    fn stream_event_phase(event: &StreamEvent) -> &'static str {
+    fn stream_event_phase(event: &RuntimeStreamEvent) -> &'static str {
         match event {
-            StreamEvent::MessageStart { .. } => "api_call_stream_message_started",
-            StreamEvent::ContentBlockStart {
+            RuntimeStreamEvent::MessageStarted { .. } => "api_call_stream_message_started",
+            RuntimeStreamEvent::ContentBlockStarted {
                 content_block: ContentBlock::Text { .. },
                 ..
             }
-            | StreamEvent::ContentBlockDelta {
+            | RuntimeStreamEvent::ContentBlockDelta {
                 delta: ContentDelta::TextDelta { .. },
                 ..
             } => "api_call_stream_texting",
-            StreamEvent::ContentBlockStart {
+            RuntimeStreamEvent::ContentBlockStarted {
                 content_block: ContentBlock::ToolUse { .. },
                 ..
             }
-            | StreamEvent::ContentBlockDelta {
+            | RuntimeStreamEvent::ContentBlockDelta {
                 delta: ContentDelta::InputJsonDelta { .. },
                 ..
             } => "api_call_stream_tool_input",
-            StreamEvent::ContentBlockStop { .. } => "api_call_stream_block_completed",
-            StreamEvent::MessageDelta { .. } => "api_call_stream_message_delta",
-            StreamEvent::MessageStop => "api_call_stream_completed",
-            StreamEvent::Ping => "api_call_stream_open",
-            StreamEvent::Error { .. } => "api_call_failed",
+            RuntimeStreamEvent::ContentBlockStopped { .. } => "api_call_stream_block_completed",
+            RuntimeStreamEvent::MessageDelta { .. } => "api_call_stream_message_delta",
+            RuntimeStreamEvent::MessageStopped => "api_call_stream_completed",
+            RuntimeStreamEvent::Ping => "api_call_stream_open",
+            RuntimeStreamEvent::Error { .. } => "api_call_failed",
         }
     }
 
-    fn publish_stream_runtime_event(&self, task: &Task, session_id: &str, event: &StreamEvent) {
+    fn publish_stream_runtime_event(
+        &self,
+        task: &Task,
+        session_id: &str,
+        event: &RuntimeStreamEvent,
+    ) {
         let occurred_at_ms = now_ms();
         let phase = Self::stream_event_phase(event);
         self.update_current_task_phase(phase);
 
         let mut payload = self.api_call_event_payload(task, session_id, phase, occurred_at_ms);
         let event_name = match event {
-            StreamEvent::MessageStart { message_id } => {
+            RuntimeStreamEvent::MessageStarted { message_id } => {
                 payload["message_id"] = Value::String(message_id.clone());
                 payload["raw_event_type"] = Value::String("message_start".into());
                 "sdk_stream_message_started"
             }
-            StreamEvent::ContentBlockStart {
+            RuntimeStreamEvent::ContentBlockStarted {
                 index,
                 content_block,
             } => {
@@ -275,7 +280,7 @@ impl WorkerAgent {
                 }
                 "sdk_stream_content_block_started"
             }
-            StreamEvent::ContentBlockDelta { index, delta } => {
+            RuntimeStreamEvent::ContentBlockDelta { index, delta } => {
                 payload["content_block_index"] = json!(index);
                 payload["raw_event_type"] = Value::String("content_block_delta".into());
                 match delta {
@@ -294,25 +299,25 @@ impl WorkerAgent {
                 }
                 "sdk_stream_content_block_delta"
             }
-            StreamEvent::ContentBlockStop { index } => {
+            RuntimeStreamEvent::ContentBlockStopped { index } => {
                 payload["content_block_index"] = json!(index);
                 payload["part_id"] = Value::String(format!("block-{index}"));
                 payload["raw_event_type"] = Value::String("content_block_stop".into());
                 "sdk_stream_content_block_stopped"
             }
-            StreamEvent::MessageDelta { stop_reason } => {
+            RuntimeStreamEvent::MessageDelta { stop_reason } => {
                 payload["raw_event_type"] = Value::String("message_delta".into());
                 if let Some(stop_reason) = stop_reason {
                     payload["stop_reason"] = Value::String(stop_reason.clone());
                 }
                 "sdk_stream_message_delta"
             }
-            StreamEvent::MessageStop => {
+            RuntimeStreamEvent::MessageStopped => {
                 payload["raw_event_type"] = Value::String("message_stop".into());
                 "sdk_stream_message_stopped"
             }
-            StreamEvent::Ping => "worker_api_call_streaming_started",
-            StreamEvent::Error {
+            RuntimeStreamEvent::Ping => "worker_api_call_streaming_started",
+            RuntimeStreamEvent::Error {
                 error_type,
                 message,
             } => {
@@ -325,7 +330,12 @@ impl WorkerAgent {
         self.publish_runtime_event(&task.trace_id, event_name, payload);
     }
 
-    fn execute_api_call_blocking(&self, task: &Task, session_id: String, content: Value) -> ExecuteResult {
+    fn execute_api_call_blocking(
+        &self,
+        task: &Task,
+        session_id: String,
+        content: Value,
+    ) -> ExecuteResult {
         let started_at_ms = now_ms();
         self.update_current_task_phase("api_call_inflight");
         let mut started_payload =
@@ -334,18 +344,21 @@ impl WorkerAgent {
         self.publish_runtime_event(&task.trace_id, "worker_api_call_started", started_payload);
 
         let sdk_started_at_ms = now_ms();
-        let mut sdk_started_payload = self.api_call_event_payload(
-            task,
-            &session_id,
-            "api_call_inflight",
-            sdk_started_at_ms,
-        );
+        let mut sdk_started_payload =
+            self.api_call_event_payload(task, &session_id, "api_call_inflight", sdk_started_at_ms);
         sdk_started_payload["sdk_operation"] = Value::String("send_prompt".into());
         sdk_started_payload["sdk_base_url"] = Value::String(self.client.base_url.clone());
         sdk_started_payload["started_at_ms"] = json!(sdk_started_at_ms);
-        self.publish_runtime_event(&task.trace_id, "sdk_send_prompt_started", sdk_started_payload);
+        self.publish_runtime_event(
+            &task.trace_id,
+            "sdk_send_prompt_started",
+            sdk_started_payload,
+        );
 
-        match self.executor.send_prompt(&self.client, &session_id, content) {
+        match self
+            .executor
+            .send_prompt(&self.client, &session_id, content)
+        {
             Ok(result) => {
                 let sdk_finished_at_ms = now_ms();
                 let mut sdk_finished_payload = self.api_call_event_payload(
@@ -361,18 +374,30 @@ impl WorkerAgent {
                 sdk_finished_payload["sdk_duration_ms"] =
                     json!(sdk_finished_at_ms.saturating_sub(sdk_started_at_ms));
                 sdk_finished_payload["result_status"] = Value::String("success".into());
-                self.publish_runtime_event(&task.trace_id, "sdk_send_prompt_finished", sdk_finished_payload);
+                self.publish_runtime_event(
+                    &task.trace_id,
+                    "sdk_send_prompt_finished",
+                    sdk_finished_payload,
+                );
 
                 let finished_at_ms = now_ms();
                 self.update_current_task_phase("api_call_finished");
-                let mut finished_payload =
-                    self.api_call_event_payload(task, &session_id, "api_call_finished", finished_at_ms);
+                let mut finished_payload = self.api_call_event_payload(
+                    task,
+                    &session_id,
+                    "api_call_finished",
+                    finished_at_ms,
+                );
                 finished_payload["started_at_ms"] = json!(started_at_ms);
                 finished_payload["finished_at_ms"] = json!(finished_at_ms);
                 finished_payload["api_call_duration_ms"] =
                     json!(finished_at_ms.saturating_sub(started_at_ms));
                 finished_payload["result_status"] = Value::String("success".into());
-                self.publish_runtime_event(&task.trace_id, "worker_api_call_finished", finished_payload);
+                self.publish_runtime_event(
+                    &task.trace_id,
+                    "worker_api_call_finished",
+                    finished_payload,
+                );
                 ExecuteResult::success(result)
             }
             Err(error) => {
@@ -393,12 +418,20 @@ impl WorkerAgent {
                 sdk_failed_payload["result_status"] = Value::String("failure".into());
                 sdk_failed_payload["error"] = Value::String(error.clone());
                 sdk_failed_payload["error_kind"] = Value::String(error_kind.into());
-                self.publish_runtime_event(&task.trace_id, "sdk_send_prompt_failed", sdk_failed_payload);
+                self.publish_runtime_event(
+                    &task.trace_id,
+                    "sdk_send_prompt_failed",
+                    sdk_failed_payload,
+                );
 
                 let finished_at_ms = now_ms();
                 self.update_current_task_phase("api_call_failed");
-                let mut failed_payload =
-                    self.api_call_event_payload(task, &session_id, "api_call_failed", finished_at_ms);
+                let mut failed_payload = self.api_call_event_payload(
+                    task,
+                    &session_id,
+                    "api_call_failed",
+                    finished_at_ms,
+                );
                 failed_payload["started_at_ms"] = json!(started_at_ms);
                 failed_payload["finished_at_ms"] = json!(finished_at_ms);
                 failed_payload["api_call_duration_ms"] =
@@ -406,13 +439,22 @@ impl WorkerAgent {
                 failed_payload["result_status"] = Value::String("failure".into());
                 failed_payload["error"] = Value::String(error.clone());
                 failed_payload["error_kind"] = Value::String(error_kind.into());
-                self.publish_runtime_event(&task.trace_id, "worker_api_call_failed", failed_payload);
+                self.publish_runtime_event(
+                    &task.trace_id,
+                    "worker_api_call_failed",
+                    failed_payload,
+                );
                 ExecuteResult::failure(error)
             }
         }
     }
 
-    fn execute_api_call_streaming(&self, task: &Task, session_id: String, content: Value) -> ExecuteResult {
+    fn execute_api_call_streaming(
+        &self,
+        task: &Task,
+        session_id: String,
+        content: Value,
+    ) -> ExecuteResult {
         let started_at_ms = now_ms();
         self.update_current_task_phase("api_call_inflight");
         let mut started_payload =
@@ -445,7 +487,11 @@ impl WorkerAgent {
         sdk_started_payload["sdk_operation"] = Value::String("send_prompt_streaming".into());
         sdk_started_payload["sdk_base_url"] = Value::String(self.client.base_url.clone());
         sdk_started_payload["started_at_ms"] = json!(sdk_started_at_ms);
-        self.publish_runtime_event(&task.trace_id, "sdk_send_prompt_started", sdk_started_payload);
+        self.publish_runtime_event(
+            &task.trace_id,
+            "sdk_send_prompt_started",
+            sdk_started_payload,
+        );
         self.publish_streaming_diagnostic_event(
             task,
             &session_id,
@@ -487,7 +533,7 @@ impl WorkerAgent {
                 );
                 let saw_first_event = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let saw_first_event_flag = Arc::clone(&saw_first_event);
-                let on_event = |event: StreamEvent| {
+                let on_event = |event: RuntimeStreamEvent| {
                     if !saw_first_event_flag.swap(true, Ordering::SeqCst) {
                         self.publish_streaming_diagnostic_event(
                             task,
@@ -499,22 +545,23 @@ impl WorkerAgent {
                                 "sdk_operation": "send_prompt_streaming",
                                 "sdk_base_url": self.client.base_url.clone(),
                                 "stream_event_kind": match &event {
-                                    StreamEvent::MessageStart { .. } => "message_start",
-                                    StreamEvent::ContentBlockStart { .. } => "content_block_start",
-                                    StreamEvent::ContentBlockDelta { .. } => "content_block_delta",
-                                    StreamEvent::ContentBlockStop { .. } => "content_block_stop",
-                                    StreamEvent::MessageDelta { .. } => "message_delta",
-                                    StreamEvent::MessageStop => "message_stop",
-                                    StreamEvent::Ping => "ping",
-                                    StreamEvent::Error { .. } => "error",
+                                    RuntimeStreamEvent::MessageStarted { .. } => "message_start",
+                                    RuntimeStreamEvent::ContentBlockStarted { .. } => "content_block_start",
+                                    RuntimeStreamEvent::ContentBlockDelta { .. } => "content_block_delta",
+                                    RuntimeStreamEvent::ContentBlockStopped { .. } => "content_block_stop",
+                                    RuntimeStreamEvent::MessageDelta { .. } => "message_delta",
+                                    RuntimeStreamEvent::MessageStopped => "message_stop",
+                                    RuntimeStreamEvent::Ping => "ping",
+                                    RuntimeStreamEvent::Error { .. } => "error",
                                 },
                             })),
                         );
                     }
                     self.publish_stream_runtime_event(task, &session_id, &event);
                 };
-                match consume_sse_stream(lines, Some(&on_event)) {
-                    Ok((_parsed, response_value)) => {
+                match consume_runtime_stream(lines, Some(&on_event)) {
+                    Ok(final_result) => {
+                        let response_value = final_result.response_value;
                         let sdk_finished_at_ms = now_ms();
                         let mut sdk_finished_payload = self.api_call_event_payload(
                             task,
@@ -522,14 +569,20 @@ impl WorkerAgent {
                             "api_call_stream_completed",
                             sdk_finished_at_ms,
                         );
-                        sdk_finished_payload["sdk_operation"] = Value::String("send_prompt_streaming".into());
-                        sdk_finished_payload["sdk_base_url"] = Value::String(self.client.base_url.clone());
+                        sdk_finished_payload["sdk_operation"] =
+                            Value::String("send_prompt_streaming".into());
+                        sdk_finished_payload["sdk_base_url"] =
+                            Value::String(self.client.base_url.clone());
                         sdk_finished_payload["started_at_ms"] = json!(sdk_started_at_ms);
                         sdk_finished_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                         sdk_finished_payload["sdk_duration_ms"] =
                             json!(sdk_finished_at_ms.saturating_sub(sdk_started_at_ms));
                         sdk_finished_payload["result_status"] = Value::String("success".into());
-                        self.publish_runtime_event(&task.trace_id, "sdk_send_prompt_finished", sdk_finished_payload);
+                        self.publish_runtime_event(
+                            &task.trace_id,
+                            "sdk_send_prompt_finished",
+                            sdk_finished_payload,
+                        );
 
                         let streaming_finished_at_ms = now_ms();
                         self.update_current_task_phase("api_call_stream_completed");
@@ -540,10 +593,12 @@ impl WorkerAgent {
                             streaming_finished_at_ms,
                         );
                         streaming_finished_payload["started_at_ms"] = json!(stream_open_at_ms);
-                        streaming_finished_payload["finished_at_ms"] = json!(streaming_finished_at_ms);
+                        streaming_finished_payload["finished_at_ms"] =
+                            json!(streaming_finished_at_ms);
                         streaming_finished_payload["streaming_duration_ms"] =
                             json!(streaming_finished_at_ms.saturating_sub(stream_open_at_ms));
-                        streaming_finished_payload["result_status"] = Value::String("success".into());
+                        streaming_finished_payload["result_status"] =
+                            Value::String("success".into());
                         self.publish_runtime_event(
                             &task.trace_id,
                             "worker_api_call_streaming_finished",
@@ -552,14 +607,22 @@ impl WorkerAgent {
 
                         let finished_at_ms = now_ms();
                         self.update_current_task_phase("api_call_finished");
-                        let mut finished_payload =
-                            self.api_call_event_payload(task, &session_id, "api_call_finished", finished_at_ms);
+                        let mut finished_payload = self.api_call_event_payload(
+                            task,
+                            &session_id,
+                            "api_call_finished",
+                            finished_at_ms,
+                        );
                         finished_payload["started_at_ms"] = json!(started_at_ms);
                         finished_payload["finished_at_ms"] = json!(finished_at_ms);
                         finished_payload["api_call_duration_ms"] =
                             json!(finished_at_ms.saturating_sub(started_at_ms));
                         finished_payload["result_status"] = Value::String("success".into());
-                        self.publish_runtime_event(&task.trace_id, "worker_api_call_finished", finished_payload);
+                        self.publish_runtime_event(
+                            &task.trace_id,
+                            "worker_api_call_finished",
+                            finished_payload,
+                        );
                         ExecuteResult::success(response_value)
                     }
                     Err(error) => {
@@ -571,8 +634,10 @@ impl WorkerAgent {
                             "api_call_failed",
                             sdk_finished_at_ms,
                         );
-                        sdk_failed_payload["sdk_operation"] = Value::String("send_prompt_streaming".into());
-                        sdk_failed_payload["sdk_base_url"] = Value::String(self.client.base_url.clone());
+                        sdk_failed_payload["sdk_operation"] =
+                            Value::String("send_prompt_streaming".into());
+                        sdk_failed_payload["sdk_base_url"] =
+                            Value::String(self.client.base_url.clone());
                         sdk_failed_payload["started_at_ms"] = json!(sdk_started_at_ms);
                         sdk_failed_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                         sdk_failed_payload["sdk_duration_ms"] =
@@ -580,7 +645,11 @@ impl WorkerAgent {
                         sdk_failed_payload["result_status"] = Value::String("failure".into());
                         sdk_failed_payload["error"] = Value::String(error.clone());
                         sdk_failed_payload["error_kind"] = Value::String(error_kind.into());
-                        self.publish_runtime_event(&task.trace_id, "sdk_send_prompt_failed", sdk_failed_payload);
+                        self.publish_runtime_event(
+                            &task.trace_id,
+                            "sdk_send_prompt_failed",
+                            sdk_failed_payload,
+                        );
 
                         let streaming_failed_at_ms = now_ms();
                         self.update_current_task_phase("api_call_failed");
@@ -604,8 +673,12 @@ impl WorkerAgent {
                         );
 
                         let finished_at_ms = now_ms();
-                        let mut failed_payload =
-                            self.api_call_event_payload(task, &session_id, "api_call_failed", finished_at_ms);
+                        let mut failed_payload = self.api_call_event_payload(
+                            task,
+                            &session_id,
+                            "api_call_failed",
+                            finished_at_ms,
+                        );
                         failed_payload["started_at_ms"] = json!(started_at_ms);
                         failed_payload["finished_at_ms"] = json!(finished_at_ms);
                         failed_payload["api_call_duration_ms"] =
@@ -613,7 +686,11 @@ impl WorkerAgent {
                         failed_payload["result_status"] = Value::String("failure".into());
                         failed_payload["error"] = Value::String(error.clone());
                         failed_payload["error_kind"] = Value::String(error_kind.into());
-                        self.publish_runtime_event(&task.trace_id, "worker_api_call_failed", failed_payload);
+                        self.publish_runtime_event(
+                            &task.trace_id,
+                            "worker_api_call_failed",
+                            failed_payload,
+                        );
                         ExecuteResult::failure(error)
                     }
                 }
@@ -641,7 +718,11 @@ impl WorkerAgent {
                 sdk_failed_payload["result_status"] = Value::String("failure".into());
                 sdk_failed_payload["error"] = Value::String(error.clone());
                 sdk_failed_payload["error_kind"] = Value::String(error_kind.into());
-                self.publish_runtime_event(&task.trace_id, "sdk_send_prompt_failed", sdk_failed_payload);
+                self.publish_runtime_event(
+                    &task.trace_id,
+                    "sdk_send_prompt_failed",
+                    sdk_failed_payload,
+                );
 
                 let streaming_failed_at_ms = now_ms();
                 self.update_current_task_phase("api_call_failed");
@@ -665,8 +746,12 @@ impl WorkerAgent {
                 );
 
                 let finished_at_ms = now_ms();
-                let mut failed_payload =
-                    self.api_call_event_payload(task, &session_id, "api_call_failed", finished_at_ms);
+                let mut failed_payload = self.api_call_event_payload(
+                    task,
+                    &session_id,
+                    "api_call_failed",
+                    finished_at_ms,
+                );
                 failed_payload["started_at_ms"] = json!(started_at_ms);
                 failed_payload["finished_at_ms"] = json!(finished_at_ms);
                 failed_payload["api_call_duration_ms"] =
@@ -674,7 +759,11 @@ impl WorkerAgent {
                 failed_payload["result_status"] = Value::String("failure".into());
                 failed_payload["error"] = Value::String(error.clone());
                 failed_payload["error_kind"] = Value::String(error_kind.into());
-                self.publish_runtime_event(&task.trace_id, "worker_api_call_failed", failed_payload);
+                self.publish_runtime_event(
+                    &task.trace_id,
+                    "worker_api_call_failed",
+                    failed_payload,
+                );
                 ExecuteResult::failure(error)
             }
         }
@@ -926,7 +1015,9 @@ fn classify_error_kind(error: &str) -> &'static str {
 }
 
 fn is_streaming_unsupported(error: &str) -> bool {
-    error.to_ascii_lowercase().contains("streaming not supported")
+    error
+        .to_ascii_lowercase()
+        .contains("streaming not supported")
 }
 
 /// 工作者池，管理一组 WorkerAgent 的生命周期。

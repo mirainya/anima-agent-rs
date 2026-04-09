@@ -99,10 +99,19 @@ fn balancer_tracks_load_and_status_transitions() {
     assert_eq!(after_reset.active, 0);
     assert_eq!(balancer.get_active_count("alpha"), Some(0));
 
-    assert_eq!(balancer.set_target_status("alpha", TargetStatus::Busy), Some(TargetStatus::Busy));
+    assert_eq!(
+        balancer.set_target_status("alpha", TargetStatus::Busy),
+        Some(TargetStatus::Busy)
+    );
     assert!(balancer.list_available_targets().is_empty());
-    assert_eq!(balancer.mark_target_offline("alpha"), Some(TargetStatus::Offline));
-    assert_eq!(balancer.mark_target_available("alpha"), Some(TargetStatus::Available));
+    assert_eq!(
+        balancer.mark_target_offline("alpha"),
+        Some(TargetStatus::Offline)
+    );
+    assert_eq!(
+        balancer.mark_target_available("alpha"),
+        Some(TargetStatus::Available)
+    );
     assert_eq!(balancer.list_available_targets().len(), 1);
 }
 
@@ -153,9 +162,16 @@ fn balancer_weighted_selection_uses_deterministic_expansion_order() {
         .map(|_| balancer.select_target(None).unwrap().id)
         .collect::<Vec<_>>();
 
-    assert_eq!(selected, vec!["alpha", "alpha", "beta", "alpha", "alpha", "beta"]);
     assert_eq!(
-        balancer.diagnostics_snapshot().last_selection.unwrap().selected_reason,
+        selected,
+        vec!["alpha", "alpha", "beta", "alpha", "alpha", "beta"]
+    );
+    assert_eq!(
+        balancer
+            .diagnostics_snapshot()
+            .last_selection
+            .unwrap()
+            .selected_reason,
         Some(SelectionReason::WeightedRoundRobin)
     );
 }
@@ -174,7 +190,11 @@ fn balancer_least_connections_breaks_ties_by_insertion_order() {
     balancer.update_load("alpha", LoadUpdate::Inc).unwrap();
     assert_eq!(balancer.select_target(None).unwrap().id, "beta");
     assert_eq!(
-        balancer.diagnostics_snapshot().last_selection.unwrap().selected_reason,
+        balancer
+            .diagnostics_snapshot()
+            .last_selection
+            .unwrap()
+            .selected_reason,
         Some(SelectionReason::LeastConnections)
     );
 }
@@ -249,9 +269,18 @@ fn balancer_status_and_metrics_expose_read_only_snapshots() {
 
     let diagnostics = balancer.diagnostics_snapshot();
     let last = diagnostics.last_selection.unwrap();
-    assert_eq!(last.miss_reason, Some(BalancerMissReason::NoAvailableTargets));
-    assert_eq!(diagnostics.exclude_reason_counts[&TargetExcludeReason::StatusBusy], 1);
-    assert_eq!(diagnostics.exclude_reason_counts[&TargetExcludeReason::StatusOffline], 1);
+    assert_eq!(
+        last.miss_reason,
+        Some(BalancerMissReason::NoAvailableTargets)
+    );
+    assert_eq!(
+        diagnostics.exclude_reason_counts[&TargetExcludeReason::StatusBusy],
+        1
+    );
+    assert_eq!(
+        diagnostics.exclude_reason_counts[&TargetExcludeReason::StatusOffline],
+        1
+    );
 }
 
 #[test]
@@ -271,7 +300,10 @@ fn balancer_circuit_breaker_transitions_closed_open_half_open_closed() {
     balancer.add_target(Target::new("alpha"));
 
     balancer.record_target_failure("alpha");
-    assert_eq!(balancer.target_health("alpha").unwrap().circuit_state, CircuitState::Closed);
+    assert_eq!(
+        balancer.target_health("alpha").unwrap().circuit_state,
+        CircuitState::Closed
+    );
 
     balancer.record_target_failure("alpha");
     let opened = balancer.target_health("alpha").unwrap();
@@ -279,13 +311,22 @@ fn balancer_circuit_breaker_transitions_closed_open_half_open_closed() {
     assert!(!balancer.is_target_routable("alpha", opened.circuit_opened_at.unwrap()));
 
     balancer.refresh_target_health("alpha", opened.circuit_opened_at.unwrap() + 50);
-    assert_eq!(balancer.target_health("alpha").unwrap().circuit_state, CircuitState::Open);
+    assert_eq!(
+        balancer.target_health("alpha").unwrap().circuit_state,
+        CircuitState::Open
+    );
 
     balancer.refresh_target_health("alpha", opened.circuit_opened_at.unwrap() + 100);
-    assert_eq!(balancer.target_health("alpha").unwrap().circuit_state, CircuitState::HalfOpen);
+    assert_eq!(
+        balancer.target_health("alpha").unwrap().circuit_state,
+        CircuitState::HalfOpen
+    );
 
     balancer.record_target_success("alpha");
-    assert_eq!(balancer.target_health("alpha").unwrap().circuit_state, CircuitState::HalfOpen);
+    assert_eq!(
+        balancer.target_health("alpha").unwrap().circuit_state,
+        CircuitState::HalfOpen
+    );
 
     balancer.record_target_success("alpha");
     let closed = balancer.target_health("alpha").unwrap();
@@ -312,10 +353,16 @@ fn balancer_half_open_failure_reopens_circuit() {
     balancer.record_target_failure("alpha");
     let opened = balancer.target_health("alpha").unwrap();
     balancer.refresh_target_health("alpha", opened.circuit_opened_at.unwrap() + 10);
-    assert_eq!(balancer.target_health("alpha").unwrap().circuit_state, CircuitState::HalfOpen);
+    assert_eq!(
+        balancer.target_health("alpha").unwrap().circuit_state,
+        CircuitState::HalfOpen
+    );
 
     balancer.record_target_failure("alpha");
-    assert_eq!(balancer.target_health("alpha").unwrap().circuit_state, CircuitState::Open);
+    assert_eq!(
+        balancer.target_health("alpha").unwrap().circuit_state,
+        CircuitState::Open
+    );
 }
 
 #[test]
@@ -380,9 +427,16 @@ fn balancer_prefers_closed_healthy_targets_over_half_open_targets() {
     let alpha_beat = balancer.record_target_heartbeat("alpha", true).unwrap();
     balancer.record_target_heartbeat("beta", true);
     balancer.record_target_failure("beta");
-    let beta_opened = balancer.target_health("beta").unwrap().circuit_opened_at.unwrap();
+    let beta_opened = balancer
+        .target_health("beta")
+        .unwrap()
+        .circuit_opened_at
+        .unwrap();
     balancer.refresh_target_health("beta", beta_opened + 10);
-    assert_eq!(balancer.target_health("beta").unwrap().circuit_state, CircuitState::HalfOpen);
+    assert_eq!(
+        balancer.target_health("beta").unwrap().circuit_state,
+        CircuitState::HalfOpen
+    );
 
     let selected = balancer.select_target(None).unwrap();
     assert_eq!(selected.id, "alpha");
@@ -407,11 +461,17 @@ fn balancer_records_hashing_key_miss_diagnostics() {
     assert!(balancer.select_target(None).is_none());
     let diagnostics = balancer.diagnostics_snapshot();
     let last = diagnostics.last_selection.unwrap();
-    assert_eq!(last.miss_reason, Some(BalancerMissReason::HashingKeyMissing));
+    assert_eq!(
+        last.miss_reason,
+        Some(BalancerMissReason::HashingKeyMissing)
+    );
     assert!(last.target_diagnostics["alpha"]
         .excluded_reasons
         .contains(&TargetExcludeReason::HashingKeyMissing));
-    assert_eq!(diagnostics.miss_reason_counts[&BalancerMissReason::HashingKeyMissing], 1);
+    assert_eq!(
+        diagnostics.miss_reason_counts[&BalancerMissReason::HashingKeyMissing],
+        1
+    );
 }
 
 #[test]
@@ -460,6 +520,9 @@ fn balancer_without_runtime_config_preserves_phase7_behavior() {
         .map(|_| balancer.select_target(None).unwrap().id)
         .collect::<Vec<_>>();
     assert_eq!(selected, vec!["alpha", "beta", "alpha", "beta"]);
-    assert_eq!(balancer.target_health("alpha").unwrap().circuit_state, CircuitState::Closed);
+    assert_eq!(
+        balancer.target_health("alpha").unwrap().circuit_state,
+        CircuitState::Closed
+    );
     assert!(balancer.target_health("alpha").unwrap().healthy);
 }

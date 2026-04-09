@@ -2,9 +2,9 @@
 //!
 //! 消息数据结构已下沉到 `anima-types::message`，此处 re-export 并提供 Builder 函数。
 
+use crate::support::now_ms;
 use serde_json::json;
 use uuid::Uuid;
-use crate::support::now_ms;
 
 // Re-export 所有消息数据结构
 pub use anima_types::message::*;
@@ -88,9 +88,7 @@ pub fn make_outbound(input: MakeOutbound) -> OutboundMessage {
 pub fn make_internal(input: MakeInternal) -> InternalMessage {
     InternalMessage {
         id: Uuid::new_v4().to_string(),
-        trace_id: input
-            .trace_id
-            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        trace_id: input.trace_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         source: input.source,
         target: input.target,
         msg_type: input.msg_type.unwrap_or_default(),

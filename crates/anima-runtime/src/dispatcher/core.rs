@@ -8,16 +8,16 @@
 //!
 //! 支持 Running / Paused / Draining / Stopped 四种运行状态。
 
-use crate::support::now_ms;
 use crate::bus::Bus;
 use crate::channel::{err, ChannelRegistry, SendOptions, SendResult};
 use crate::dispatcher::balancer::{Balancer, BalancerMissReason, LoadUpdate, Target};
 use crate::dispatcher::diagnostics::{
-    DispatchDiagnosticSnapshot, DispatchFailureStage, DispatchOutcomeReason, DispatcherRuntimeState,
-    DispatcherState, DispatcherStats,
+    DispatchDiagnosticSnapshot, DispatchFailureStage, DispatchOutcomeReason,
+    DispatcherRuntimeState, DispatcherState, DispatcherStats,
 };
 use crate::dispatcher::message::{DispatchMessage, DispatcherConfig};
 use crate::dispatcher::queue::{DispatchEnvelope, DispatchQueue, DispatchQueueSnapshot};
+use crate::support::now_ms;
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -58,7 +58,10 @@ impl Dispatcher {
 
     /// 为指定通道绑定负载均衡器
     pub fn add_balancer(&self, channel: impl Into<String>, balancer: Arc<Balancer>) {
-        self.balancers.lock().unwrap().insert(channel.into(), balancer);
+        self.balancers
+            .lock()
+            .unwrap()
+            .insert(channel.into(), balancer);
     }
 
     pub fn remove_balancer(&self, channel: &str) -> Option<Arc<Balancer>> {
@@ -82,7 +85,11 @@ impl Dispatcher {
     }
 
     pub fn route_queue_depth(&self, channel: &str) -> usize {
-        self.queue_snapshot().by_route.get(channel).copied().unwrap_or(0)
+        self.queue_snapshot()
+            .by_route
+            .get(channel)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn start(&self) {
@@ -141,10 +148,14 @@ impl Dispatcher {
 
     pub fn status(&self) -> crate::dispatcher::diagnostics::DispatcherStatus {
         let snapshot = self.queue.snapshot();
-        self.runtime.status(&self.balancers, snapshot.total_len, &snapshot.by_route)
+        self.runtime
+            .status(&self.balancers, snapshot.total_len, &snapshot.by_route)
     }
 
-    pub fn route_report(&self, channel: &str) -> Option<crate::dispatcher::diagnostics::DispatcherRouteReport> {
+    pub fn route_report(
+        &self,
+        channel: &str,
+    ) -> Option<crate::dispatcher::diagnostics::DispatcherRouteReport> {
         let status = self.status();
         let route = status.routes.get(channel)?;
         Some(crate::dispatcher::diagnostics::DispatcherRouteReport {
@@ -166,18 +177,20 @@ impl Dispatcher {
         status
             .routes
             .iter()
-            .map(|(channel, route)| crate::dispatcher::diagnostics::DispatcherRouteReport {
-                channel: channel.clone(),
-                pending_queue_depth: route.pending_queue_depth,
-                balancer_id: route.balancer_id.clone(),
-                strategy: route.strategy.clone(),
-                target_count: route.target_count,
-                available_target_count: route.available_target_count,
-                healthy_target_count: route.healthy_target_count,
-                open_circuit_count: route.open_circuit_count,
-                half_open_target_count: route.half_open_target_count,
-                last_miss_reason: route.last_miss_reason,
-            })
+            .map(
+                |(channel, route)| crate::dispatcher::diagnostics::DispatcherRouteReport {
+                    channel: channel.clone(),
+                    pending_queue_depth: route.pending_queue_depth,
+                    balancer_id: route.balancer_id.clone(),
+                    strategy: route.strategy.clone(),
+                    target_count: route.target_count,
+                    available_target_count: route.available_target_count,
+                    healthy_target_count: route.healthy_target_count,
+                    open_circuit_count: route.open_circuit_count,
+                    half_open_target_count: route.half_open_target_count,
+                    last_miss_reason: route.last_miss_reason,
+                },
+            )
             .collect()
     }
 
@@ -188,19 +201,20 @@ impl Dispatcher {
 
         let selection = self.select_target(message);
         if selection.selected_target.is_none() && selection.balancer.is_some() {
-            self.runtime.record_dispatch_diagnostic(DispatchDiagnosticSnapshot {
-                message_id: message.id.clone(),
-                channel: message.channel.clone(),
-                account_id: message.account_id.clone(),
-                selection_key: message.selection_key().map(ToString::to_string),
-                selected_target_id: None,
-                balancer_miss_reason: selection.balancer_miss_reason,
-                channel_lookup_reason: None,
-                failure_stage: Some(DispatchFailureStage::BalancerSelection),
-                send_error: None,
-                outcome: DispatchOutcomeReason::BalancerMiss,
-                timestamp_ms: now_ms(),
-            });
+            self.runtime
+                .record_dispatch_diagnostic(DispatchDiagnosticSnapshot {
+                    message_id: message.id.clone(),
+                    channel: message.channel.clone(),
+                    account_id: message.account_id.clone(),
+                    selection_key: message.selection_key().map(ToString::to_string),
+                    selected_target_id: None,
+                    balancer_miss_reason: selection.balancer_miss_reason,
+                    channel_lookup_reason: None,
+                    failure_stage: Some(DispatchFailureStage::BalancerSelection),
+                    send_error: None,
+                    outcome: DispatchOutcomeReason::BalancerMiss,
+                    timestamp_ms: now_ms(),
+                });
         }
 
         let selected_account_id = selection
@@ -214,23 +228,30 @@ impl Dispatcher {
             .find_channel_with_lookup(&message.channel, Some(selected_account_id.as_str()));
         let Some(channel) = channel else {
             self.stats.record_channel_not_found(
-                selection.selected_target.as_ref().map(|target| target.id.as_str()),
+                selection
+                    .selected_target
+                    .as_ref()
+                    .map(|target| target.id.as_str()),
                 lookup_snapshot.reason,
             );
             self.runtime.record_error();
-            self.runtime.record_dispatch_diagnostic(DispatchDiagnosticSnapshot {
-                message_id: message.id.clone(),
-                channel: message.channel.clone(),
-                account_id: message.account_id.clone(),
-                selection_key: message.selection_key().map(ToString::to_string),
-                selected_target_id: selection.selected_target.as_ref().map(|target| target.id.clone()),
-                balancer_miss_reason: selection.balancer_miss_reason,
-                channel_lookup_reason: Some(lookup_snapshot.reason),
-                failure_stage: Some(DispatchFailureStage::ChannelLookup),
-                send_error: None,
-                outcome: DispatchOutcomeReason::ChannelNotFound,
-                timestamp_ms: now_ms(),
-            });
+            self.runtime
+                .record_dispatch_diagnostic(DispatchDiagnosticSnapshot {
+                    message_id: message.id.clone(),
+                    channel: message.channel.clone(),
+                    account_id: message.account_id.clone(),
+                    selection_key: message.selection_key().map(ToString::to_string),
+                    selected_target_id: selection
+                        .selected_target
+                        .as_ref()
+                        .map(|target| target.id.clone()),
+                    balancer_miss_reason: selection.balancer_miss_reason,
+                    channel_lookup_reason: Some(lookup_snapshot.reason),
+                    failure_stage: Some(DispatchFailureStage::ChannelLookup),
+                    send_error: None,
+                    outcome: DispatchOutcomeReason::ChannelNotFound,
+                    timestamp_ms: now_ms(),
+                });
             self.after_dispatch(
                 selection.balancer.as_deref(),
                 selection.selected_target.as_ref(),
@@ -251,40 +272,54 @@ impl Dispatcher {
 
         if result.success {
             self.stats.record_dispatch_success(
-                selection.selected_target.as_ref().map(|target| target.id.as_str()),
+                selection
+                    .selected_target
+                    .as_ref()
+                    .map(|target| target.id.as_str()),
             );
             self.runtime.record_dispatch_success_timestamp();
-            self.runtime.record_dispatch_diagnostic(DispatchDiagnosticSnapshot {
-                message_id: message.id.clone(),
-                channel: message.channel.clone(),
-                account_id: message.account_id.clone(),
-                selection_key: message.selection_key().map(ToString::to_string),
-                selected_target_id: selection.selected_target.as_ref().map(|target| target.id.clone()),
-                balancer_miss_reason: selection.balancer_miss_reason,
-                channel_lookup_reason: Some(lookup_snapshot.reason),
-                failure_stage: None,
-                send_error: None,
-                outcome: DispatchOutcomeReason::SelectedAndSent,
-                timestamp_ms: now_ms(),
-            });
+            self.runtime
+                .record_dispatch_diagnostic(DispatchDiagnosticSnapshot {
+                    message_id: message.id.clone(),
+                    channel: message.channel.clone(),
+                    account_id: message.account_id.clone(),
+                    selection_key: message.selection_key().map(ToString::to_string),
+                    selected_target_id: selection
+                        .selected_target
+                        .as_ref()
+                        .map(|target| target.id.clone()),
+                    balancer_miss_reason: selection.balancer_miss_reason,
+                    channel_lookup_reason: Some(lookup_snapshot.reason),
+                    failure_stage: None,
+                    send_error: None,
+                    outcome: DispatchOutcomeReason::SelectedAndSent,
+                    timestamp_ms: now_ms(),
+                });
         } else {
             self.stats.record_dispatch_error(
-                selection.selected_target.as_ref().map(|target| target.id.as_str()),
+                selection
+                    .selected_target
+                    .as_ref()
+                    .map(|target| target.id.as_str()),
             );
             self.runtime.record_error();
-            self.runtime.record_dispatch_diagnostic(DispatchDiagnosticSnapshot {
-                message_id: message.id.clone(),
-                channel: message.channel.clone(),
-                account_id: message.account_id.clone(),
-                selection_key: message.selection_key().map(ToString::to_string),
-                selected_target_id: selection.selected_target.as_ref().map(|target| target.id.clone()),
-                balancer_miss_reason: selection.balancer_miss_reason,
-                channel_lookup_reason: Some(lookup_snapshot.reason),
-                failure_stage: Some(DispatchFailureStage::Send),
-                send_error: result.error.clone(),
-                outcome: DispatchOutcomeReason::SendFailed,
-                timestamp_ms: now_ms(),
-            });
+            self.runtime
+                .record_dispatch_diagnostic(DispatchDiagnosticSnapshot {
+                    message_id: message.id.clone(),
+                    channel: message.channel.clone(),
+                    account_id: message.account_id.clone(),
+                    selection_key: message.selection_key().map(ToString::to_string),
+                    selected_target_id: selection
+                        .selected_target
+                        .as_ref()
+                        .map(|target| target.id.clone()),
+                    balancer_miss_reason: selection.balancer_miss_reason,
+                    channel_lookup_reason: Some(lookup_snapshot.reason),
+                    failure_stage: Some(DispatchFailureStage::Send),
+                    send_error: result.error.clone(),
+                    outcome: DispatchOutcomeReason::SendFailed,
+                    timestamp_ms: now_ms(),
+                });
         }
 
         self.after_dispatch(
@@ -421,4 +456,3 @@ pub fn start_dispatcher_outbound_loop(
         }
     })
 }
-

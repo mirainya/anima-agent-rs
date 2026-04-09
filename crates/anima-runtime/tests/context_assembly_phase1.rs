@@ -1,4 +1,7 @@
-use anima_runtime::agent::{ExecutionStageDurations, ExecutionSummary, PendingQuestion, PendingQuestionSourceKind, QuestionDecisionMode, QuestionKind, QuestionRiskLevel};
+use anima_runtime::agent::{
+    ExecutionStageDurations, ExecutionSummary, PendingQuestion, PendingQuestionSourceKind,
+    QuestionDecisionMode, QuestionKind, QuestionRiskLevel,
+};
 use anima_runtime::context_assembly::{
     assemble_context, ContextAssemblyMode, ContextAssemblyRequest,
 };
@@ -73,7 +76,13 @@ fn initial_context_assembly_uses_chat_id_for_memory_and_history_keys() {
     assert_eq!(assembled.metadata.history_session_id, "chat-1");
     assert_eq!(assembled.metadata.opencode_session_id, "session-1");
     assert_eq!(assembled.prompt_text, "请继续处理部署任务");
-    assert_eq!(assembled.requirement_snapshot.latest_summary_status.as_deref(), Some("followup_pending"));
+    assert_eq!(
+        assembled
+            .requirement_snapshot
+            .latest_summary_status
+            .as_deref(),
+        Some("followup_pending")
+    );
 }
 
 #[test]
@@ -94,8 +103,20 @@ fn question_continuation_context_assembly_keeps_legacy_answer_summary_prompt() {
     });
 
     assert_eq!(assembled.prompt_text, "继续执行");
-    assert_eq!(assembled.requirement_snapshot.pending_question_prompt.as_deref(), Some("请选择继续方式"));
-    assert_eq!(assembled.requirement_snapshot.pending_question_answer_summary.as_deref(), Some("继续执行"));
+    assert_eq!(
+        assembled
+            .requirement_snapshot
+            .pending_question_prompt
+            .as_deref(),
+        Some("请选择继续方式")
+    );
+    assert_eq!(
+        assembled
+            .requirement_snapshot
+            .pending_question_answer_summary
+            .as_deref(),
+        Some("继续执行")
+    );
 }
 
 #[test]
@@ -119,5 +140,11 @@ fn followup_context_assembly_prefers_explicit_followup_prompt() {
     assert_eq!(assembled.metadata.history_session_id, "job-2");
     assert_eq!(assembled.prompt_text, "请继续推进并给出真正完成结果");
     assert_eq!(assembled.requirement_snapshot.attempted_rounds, 2);
-    assert_eq!(assembled.requirement_snapshot.previous_fingerprint.as_deref(), Some("fp-repeat"));
+    assert_eq!(
+        assembled
+            .requirement_snapshot
+            .previous_fingerprint
+            .as_deref(),
+        Some("fp-repeat")
+    );
 }

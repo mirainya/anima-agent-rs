@@ -59,12 +59,18 @@ pub fn assemble_context(request: ContextAssemblyRequest) -> ContextAssemblyResul
         .clone()
         .unwrap_or_else(|| request.inbound_id.clone());
     let memory_key = format!("{}:{}", request.channel, history_session_id);
-    let pending_question_prompt = request.pending_question.as_ref().map(|question| question.prompt.clone());
+    let pending_question_prompt = request
+        .pending_question
+        .as_ref()
+        .map(|question| question.prompt.clone());
     let pending_question_answer_summary = request
         .pending_question
         .as_ref()
         .and_then(|question| question.answer_summary.clone());
-    let latest_summary_status = request.latest_summary.as_ref().map(|summary| summary.status.clone());
+    let latest_summary_status = request
+        .latest_summary
+        .as_ref()
+        .map(|summary| summary.status.clone());
 
     ContextAssemblyResult {
         prompt_text: build_prompt_text(&request),

@@ -13,6 +13,68 @@ use super::types::{ContentBlock, ContentDelta, StreamEvent, TrackedToolState};
 use crate::execution::agentic_loop::{ParsedResponse, ParsedToolUse};
 use crate::tools::registry::ToolRegistry;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeStreamEvent {
+    MessageStarted {
+        message_id: String,
+    },
+    ContentBlockStarted {
+        index: usize,
+        content_block: ContentBlock,
+    },
+    ContentBlockDelta {
+        index: usize,
+        delta: ContentDelta,
+    },
+    ContentBlockStopped {
+        index: usize,
+    },
+    MessageDelta {
+        stop_reason: Option<String>,
+    },
+    MessageStopped,
+    Ping,
+    Error {
+        error_type: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamingFinalResult {
+    pub parsed: ParsedResponse,
+    pub response_value: Value,
+}
+
+impl RuntimeStreamEvent {
+    fn from_stream_event(event: StreamEvent) -> Self {
+        match event {
+            StreamEvent::MessageStart { message_id } => Self::MessageStarted { message_id },
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block,
+            } => Self::ContentBlockStarted {
+                index,
+                content_block,
+            },
+            StreamEvent::ContentBlockDelta { index, delta } => {
+                Self::ContentBlockDelta { index, delta }
+            }
+            StreamEvent::ContentBlockStop { index } => Self::ContentBlockStopped { index },
+            StreamEvent::MessageDelta { stop_reason } => Self::MessageDelta { stop_reason },
+            StreamEvent::MessageStop => Self::MessageStopped,
+            StreamEvent::Ping => Self::Ping,
+            StreamEvent::Error {
+                error_type,
+                message,
+            } => Self::Error {
+                error_type,
+                message,
+            },
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // StreamingToolExecutor（原有）
 // ---------------------------------------------------------------------------
@@ -198,6 +260,22 @@ pub fn consume_sse_stream(
     lines: Box<dyn Iterator<Item = Result<String, String>>>,
     on_event: Option<&(dyn Fn(StreamEvent) + Send + Sync)>,
 ) -> Result<(ParsedResponse, Value), String> {
+    let runtime_callback = |event: RuntimeStreamEvent| {
+        if let Some(cb) = on_event {
+            cb(runtime_stream_event_to_stream_event(&event));
+        }
+    };
+    let final_result = consume_runtime_stream(lines, Some(&runtime_callback))?;
+    Ok((final_result.parsed, final_result.response_value))
+}
+
+pub fn consume_runtime_stream<F>(
+    lines: Box<dyn Iterator<Item = Result<String, String>>>,
+    on_event: Option<&F>,
+) -> Result<StreamingFinalResult, String>
+where
+    F: Fn(RuntimeStreamEvent) + Send + Sync + ?Sized,
+{
     let mut text_buf = String::new();
     let mut acc = StreamAccumulator::new();
     let mut message_id = String::new();
@@ -227,8 +305,8 @@ pub fn consume_sse_stream(
         };
 
         // 触发回调
-        if let Some(cb) = on_event {
-            cb(event.clone());
+        if let Some(cb) = on_event.as_ref() {
+            cb(RuntimeStreamEvent::from_stream_event(event.clone()));
         }
 
         // 处理事件
@@ -311,7 +389,44 @@ pub fn consume_sse_stream(
         "stop_reason": stop_reason,
     });
 
-    Ok((parsed, response_value))
+    Ok(StreamingFinalResult {
+        parsed,
+        response_value,
+    })
+}
+
+fn runtime_stream_event_to_stream_event(event: &RuntimeStreamEvent) -> StreamEvent {
+    match event {
+        RuntimeStreamEvent::MessageStarted { message_id } => StreamEvent::MessageStart {
+            message_id: message_id.clone(),
+        },
+        RuntimeStreamEvent::ContentBlockStarted {
+            index,
+            content_block,
+        } => StreamEvent::ContentBlockStart {
+            index: *index,
+            content_block: content_block.clone(),
+        },
+        RuntimeStreamEvent::ContentBlockDelta { index, delta } => StreamEvent::ContentBlockDelta {
+            index: *index,
+            delta: delta.clone(),
+        },
+        RuntimeStreamEvent::ContentBlockStopped { index } => {
+            StreamEvent::ContentBlockStop { index: *index }
+        }
+        RuntimeStreamEvent::MessageDelta { stop_reason } => StreamEvent::MessageDelta {
+            stop_reason: stop_reason.clone(),
+        },
+        RuntimeStreamEvent::MessageStopped => StreamEvent::MessageStop,
+        RuntimeStreamEvent::Ping => StreamEvent::Ping,
+        RuntimeStreamEvent::Error {
+            error_type,
+            message,
+        } => StreamEvent::Error {
+            error_type: error_type.clone(),
+            message: message.clone(),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -385,8 +500,7 @@ mod tests {
     // ---- consume_sse_stream 测试 ----
 
     fn make_lines(raw: &[&str]) -> Box<dyn Iterator<Item = Result<String, String>>> {
-        let lines: Vec<Result<String, String>> =
-            raw.iter().map(|s| Ok(s.to_string())).collect();
+        let lines: Vec<Result<String, String>> = raw.iter().map(|s| Ok(s.to_string())).collect();
         Box::new(lines.into_iter())
     }
 

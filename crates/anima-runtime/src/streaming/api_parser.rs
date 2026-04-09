@@ -74,13 +74,20 @@ fn parse_content_block(val: &Value) -> Option<ContentBlock> {
     let block_type = val.get("type")?.as_str()?;
     match block_type {
         "text" => {
-            let text = val.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let text = val
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             Some(ContentBlock::Text { text })
         }
         "tool_use" => {
             let id = val.get("id")?.as_str()?.to_string();
             let name = val.get("name")?.as_str()?.to_string();
-            let input = val.get("input").cloned().unwrap_or(Value::Object(Default::default()));
+            let input = val
+                .get("input")
+                .cloned()
+                .unwrap_or(Value::Object(Default::default()));
             Some(ContentBlock::ToolUse { id, name, input })
         }
         _ => None,
@@ -112,27 +119,40 @@ mod tests {
     fn parse_message_start() {
         let data = r#"{"type":"message_start","message":{"id":"msg_123"}}"#;
         let event = parse_sse_event(data).unwrap();
-        assert!(matches!(event, StreamEvent::MessageStart { message_id } if message_id == "msg_123"));
+        assert!(
+            matches!(event, StreamEvent::MessageStart { message_id } if message_id == "msg_123")
+        );
     }
 
     #[test]
     fn parse_text_delta() {
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#;
         let event = parse_sse_event(data).unwrap();
-        assert!(matches!(event, StreamEvent::ContentBlockDelta { index: 0, delta: ContentDelta::TextDelta { text } } if text == "hello"));
+        assert!(
+            matches!(event, StreamEvent::ContentBlockDelta { index: 0, delta: ContentDelta::TextDelta { text } } if text == "hello")
+        );
     }
 
     #[test]
     fn parse_tool_use_block() {
         let data = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_1","name":"bash","input":{}}}"#;
         let event = parse_sse_event(data).unwrap();
-        assert!(matches!(event, StreamEvent::ContentBlockStart { index: 1, content_block: ContentBlock::ToolUse { .. } }));
+        assert!(matches!(
+            event,
+            StreamEvent::ContentBlockStart {
+                index: 1,
+                content_block: ContentBlock::ToolUse { .. }
+            }
+        ));
     }
 
     #[test]
     fn parse_message_stop() {
         let data = r#"{"type":"message_stop"}"#;
-        assert!(matches!(parse_sse_event(data), Some(StreamEvent::MessageStop)));
+        assert!(matches!(
+            parse_sse_event(data),
+            Some(StreamEvent::MessageStop)
+        ));
     }
 
     #[test]

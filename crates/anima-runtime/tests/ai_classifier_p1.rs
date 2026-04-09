@@ -1,5 +1,5 @@
-use anima_runtime::ai_classifier::*;
 use anima_runtime::agent_classifier::ClassificationKind;
+use anima_runtime::ai_classifier::*;
 use anima_runtime::bus::{make_inbound, MakeInbound};
 use anima_runtime::cache::LruCache;
 use serde_json::json;
@@ -64,7 +64,8 @@ fn quick_classify_returns_none_for_ambiguous() {
 
 #[test]
 fn parse_valid_ai_response() {
-    let response = r#"{"type": "complex-task", "confidence": 0.92, "reasoning": "code generation"}"#;
+    let response =
+        r#"{"type": "complex-task", "confidence": 0.92, "reasoning": "code generation"}"#;
     let r = AiClassifier::parse_response(response);
     assert_eq!(r.classification, AiClassificationType::ComplexTask);
     assert!((r.confidence - 0.92).abs() < 0.01);

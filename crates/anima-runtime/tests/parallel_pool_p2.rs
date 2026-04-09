@@ -1,7 +1,7 @@
+use anima_runtime::agent_executor::TaskExecutor;
 use anima_runtime::agent_parallel_pool::*;
 use anima_runtime::agent_types::*;
 use anima_runtime::agent_worker::WorkerPool;
-use anima_runtime::agent_executor::TaskExecutor;
 use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -77,7 +77,11 @@ fn parallel_pool_lifecycle() {
 #[test]
 fn parallel_pool_execute_batch_success() {
     let pool = ParallelPool::new(make_pool(Arc::new(EchoExecutor)));
-    let tasks = vec![make_test_task("a"), make_test_task("b"), make_test_task("c")];
+    let tasks = vec![
+        make_test_task("a"),
+        make_test_task("b"),
+        make_test_task("c"),
+    ];
     let result = pool.execute_batch(tasks, None);
     assert_eq!(result.successful, 3);
     assert_eq!(result.failed, 0);
@@ -88,11 +92,13 @@ fn parallel_pool_execute_batch_success() {
 fn parallel_pool_execute_batch_with_failures() {
     let pool = ParallelPool::new(make_pool(Arc::new(FailExecutor)));
     let tasks: Vec<Task> = (0..2)
-        .map(|_| make_task(MakeTask {
-            task_type: "session-create".into(),
-            payload: Some(json!({})),
-            ..Default::default()
-        }))
+        .map(|_| {
+            make_task(MakeTask {
+                task_type: "session-create".into(),
+                payload: Some(json!({})),
+                ..Default::default()
+            })
+        })
         .collect();
     let result = pool.execute_batch(tasks, None);
     assert_eq!(result.failed, 2);
