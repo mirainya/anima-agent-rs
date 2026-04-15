@@ -81,6 +81,7 @@ dependencies = [
  "anima-types",
  "axum",
  "crossbeam-channel",
+ "parking_lot",
  "serde",
  "serde_json",
  "tokio",

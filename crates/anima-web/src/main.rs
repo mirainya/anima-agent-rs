@@ -1,6 +1,7 @@
 use anima_runtime::bootstrap::RuntimeBootstrapBuilder;
 use anima_web::{routes, sse, web_channel, AppState};
 use axum::Router;
+use parking_lot::Mutex;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -20,10 +21,10 @@ fn main() {
     runtime.start();
 
     let state = Arc::new(AppState {
-        runtime: std::sync::Mutex::new(runtime),
+        runtime: Mutex::new(runtime),
         bus: bus.clone(),
         web_channel: web_channel.clone(),
-        jobs: std::sync::Mutex::new(anima_web::jobs::JobStore::default()),
+        jobs: Mutex::new(anima_web::jobs::JobStore::default()),
     });
 
     // 启动 SSE 事件转发线程：监听 Bus internal 通道，推送给浏览器
@@ -50,5 +51,5 @@ fn main() {
     });
 
     // 清理
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }

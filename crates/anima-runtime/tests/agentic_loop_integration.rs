@@ -7,6 +7,7 @@ use anima_runtime::execution::agentic_loop::{
     continue_agentic_loop, resume_suspended_tool_invocation, run_agentic_loop, AgenticLoopConfig,
     AgenticLoopOutcome,
 };
+use anima_runtime::hooks::{HookEvent, HookHandler, HookRegistry, HookResult};
 use anima_runtime::messages::types::{InternalMsg, MessageRole};
 use anima_runtime::permissions::{PermissionChecker, PermissionMode};
 use anima_runtime::tools::definition::{Tool, ToolContext};
@@ -62,6 +63,38 @@ impl TaskExecutor for SequenceExecutor {
 
 #[derive(Debug)]
 struct EchoTool;
+
+#[derive(Debug)]
+struct TransformingHook {
+    replacement_text: &'static str,
+}
+
+impl HookHandler for TransformingHook {
+    fn handle(&self, event: &HookEvent) -> HookResult {
+        match event {
+            HookEvent::PreToolUse { input, .. } => {
+                let mut next = input.clone();
+                if let Some(obj) = next.as_object_mut() {
+                    obj.insert("text".into(), Value::String(self.replacement_text.into()));
+                }
+                HookResult::Transform(next)
+            }
+            _ => HookResult::Continue,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BlockingHook;
+
+impl HookHandler for BlockingHook {
+    fn handle(&self, event: &HookEvent) -> HookResult {
+        match event {
+            HookEvent::PreToolUse { .. } => HookResult::Block("policy denied".into()),
+            _ => HookResult::Continue,
+        }
+    }
+}
 
 impl Tool for EchoTool {
     fn name(&self) -> &str {
@@ -466,6 +499,186 @@ fn agentic_loop_allow_resumes_original_tool_invocation() {
         .as_str()
         .unwrap_or_default()
         .contains("echoed: approved"));
+}
+
+#[test]
+fn agentic_loop_pre_tool_transform_changes_actual_tool_input() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "I'll echo that for you."},
+                {"type": "tool_use", "id": "tu_transform_1", "name": "echo", "input": {"text": "original"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Transformed done."}]
+        }),
+    ]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+
+    let mut hook_registry = HookRegistry::new();
+    hook_registry.register_pre_hook(Arc::new(TransformingHook {
+        replacement_text: "transformed",
+    }));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "transform-session".into(),
+        trace_id: "transform-trace".into(),
+        ..Default::default()
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        Some(&hook_registry),
+        vec![make_user_msg("echo 'original'")],
+        &config,
+    )
+    .expect("agentic loop should succeed");
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("should be array");
+    assert_eq!(blocks[0]["is_error"], true == false);
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("echoed: transformed"));
+}
+
+#[test]
+fn agentic_loop_pre_tool_block_returns_error_tool_result() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Let me try."},
+                {"type": "tool_use", "id": "tu_block_1", "name": "echo", "input": {"text": "blocked"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Blocked path finished."}]
+        }),
+    ]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+
+    let mut hook_registry = HookRegistry::new();
+    hook_registry.register_pre_hook(Arc::new(BlockingHook));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "block-session".into(),
+        trace_id: "block-trace".into(),
+        ..Default::default()
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        Some(&hook_registry),
+        vec![make_user_msg("echo 'blocked'")],
+        &config,
+    )
+    .expect("agentic loop should succeed");
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("should be array");
+    assert_eq!(blocks[0]["is_error"], true);
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("blocked by hook: policy denied"));
+}
+
+#[test]
+fn agentic_loop_resume_path_applies_pre_tool_transform() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Need confirmation"},
+                {"type": "tool_use", "id": "tu_perm_transform", "name": "echo", "input": {"text": "approved"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Approval finished."}]
+        }),
+    ]);
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+    let checker = PermissionChecker::new(PermissionMode::RuleBased);
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "perm-transform-session".into(),
+        trace_id: "perm-transform-trace".into(),
+        ..Default::default()
+    };
+
+    let initial = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        Some(&checker),
+        None,
+        vec![make_user_msg("please use echo")],
+        &config,
+    )
+    .expect("initial loop should suspend");
+    let AgenticLoopOutcome::Suspended(suspension) = initial else {
+        panic!("loop should suspend first");
+    };
+    let suspension = *suspension;
+
+    let mut hook_registry = HookRegistry::new();
+    hook_registry.register_pre_hook(Arc::new(TransformingHook {
+        replacement_text: "transformed-on-resume",
+    }));
+
+    let resumed_messages = resume_suspended_tool_invocation(
+        &suspension,
+        true,
+        &registry,
+        Some(&hook_registry),
+        &config,
+    )
+    .expect("approval should resume tool invocation");
+    let resumed = continue_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        Some(&hook_registry),
+        resumed_messages,
+        suspension.iterations,
+        suspension.compact_count,
+        &config,
+    )
+    .expect("continued loop should complete");
+
+    let AgenticLoopOutcome::Completed(result) = resumed else {
+        panic!("loop should complete after allow");
+    };
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("should be array");
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("echoed: transformed-on-resume"));
 }
 
 #[test]

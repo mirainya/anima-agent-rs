@@ -2,33 +2,149 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 24px;
   height: 100%;
+}
+
+.runtime-header-cluster {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 28px;
 }
 
 .runtime-header-main {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .app-title {
-  font-size: 16px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.app-title-version {
+  margin-left: 8px;
+  color: rgba(59, 130, 246, 0.7);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-weight: 600;
 }
 
 .runtime-header-subtitle {
   margin-top: 4px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
   color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.runtime-header-side {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
 }
 
 .runtime-header-meta {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: 10px;
+  font-size: 11px;
   color: var(--text2);
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.runtime-worker-stack {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 2px;
+}
+
+.runtime-worker-chip {
+  width: 32px;
+  height: 32px;
+  margin-left: -8px;
+  border-radius: 999px;
+  border: 2px solid rgba(8, 9, 14, 0.95);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.runtime-worker-chip:first-child {
+  margin-left: 0;
+}
+
+.runtime-worker-chip.active {
+  color: var(--text);
+  background: rgba(59, 130, 246, 0.22);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.22), 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.runtime-steps {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.runtime-step-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runtime-step-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text2);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.runtime-step-dot.done {
+  color: var(--green);
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+.runtime-step-dot.active {
+  color: var(--accent);
+  background: rgba(59, 130, 246, 0.16);
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+.runtime-step-label {
+  font-size: 11px;
+  color: var(--text2);
+}
+
+.runtime-step-label.active,
+.runtime-step-label.done {
+  color: var(--text);
+}
+
+.runtime-step-separator {
+  color: rgba(255, 255, 255, 0.16);
+  font-size: 12px;
 }
 
 .header-status-dot {
@@ -37,6 +153,7 @@
   border-radius: 999px;
   display: inline-block;
   background: var(--text2);
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.04);
 }
 
 .header-status-dot.connected {
@@ -52,11 +169,12 @@
 }
 
 .inspector-toggle-btn {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 8px 14px;
   color: var(--text);
   cursor: pointer;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .jobs-page {
@@ -65,6 +183,16 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
+}
+
+.jobs-workbench-surface {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 24px 24px 0;
 }
 
 .jobs-toolbar {
@@ -73,37 +201,38 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 0 8px 18px;
 }
 
 .jobs-context-bar {
-  background: linear-gradient(180deg, rgba(108, 92, 231, 0.08), rgba(108, 92, 231, 0));
+  background: transparent;
 }
 
 .jobs-toolbar-title,
 .pane-title {
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .jobs-toolbar-subtitle,
 .jobs-toolbar-meta,
 .pane-subtitle {
-  margin-top: 4px;
+  margin-top: 6px;
   font-size: 12px;
   color: var(--text2);
+  line-height: 1.6;
 }
 
 .jobs-toolbar-actions {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 8px;
+  gap: 10px;
 }
 
 .jobs-context-actions {
-  max-width: 440px;
+  max-width: 520px;
 }
 
 .jobs-filter-group {
@@ -114,29 +243,32 @@
 }
 
 .jobs-filter-chip {
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 999px;
-  padding: 6px 12px;
+  padding: 7px 12px;
   font-size: 12px;
   color: var(--text2);
   cursor: pointer;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .jobs-filter-chip.active {
   color: var(--text);
-  border-color: var(--accent);
-  background: rgba(108, 92, 231, 0.16);
+  border-color: rgba(59, 130, 246, 0.32);
+  background: rgba(59, 130, 246, 0.12);
 }
 
 .jobs-drawer-trigger,
 .jobs-drawer-close {
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
   padding: 8px 14px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text);
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.05);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .jobs-main {
@@ -145,7 +277,7 @@
 }
 
 .jobs-conversation-stage {
-  padding-top: 16px;
+  padding-top: 0;
 }
 
 .jobs-main-stage {
@@ -155,38 +287,37 @@
 }
 
 .jobs-main-panel {
-  background: #151521;
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  padding: 16px;
+  position: relative;
+  background: rgba(8, 10, 16, 0.62);
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 12px;
   min-height: 0;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(20px);
 }
 
 .jobs-secondary-panel {
   min-height: 280px;
 }
 
-.jobs-composer-bar {
-  flex: 0 0 auto;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(15, 15, 19, 0), rgba(15, 15, 19, 0.92) 24px);
+.jobs-composer-floating {
+  position: absolute;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  width: min(100%, 880px);
+  z-index: 3;
 }
 
 .jobs-list-pane,
 .jobs-detail-pane {
-  background: #151521;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 14px;
   min-height: 0;
   overflow: auto;
-}
-
-@media (max-width: 720px) {
-  .jobs-main-panel {
-    padding: 12px;
-  }
 }
 
 .pane-header {
@@ -195,4 +326,19 @@
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+@media (max-width: 960px) {
+  .jobs-workbench-surface {
+    padding: 16px 16px 0;
+  }
+
+  .jobs-main-panel {
+    border-radius: 20px;
+  }
+
+  .jobs-composer-floating {
+    width: calc(100% - 24px);
+    bottom: 18px;
+  }
 }

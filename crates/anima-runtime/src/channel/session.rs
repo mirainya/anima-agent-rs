@@ -8,8 +8,8 @@
 use crate::channel::message::{extract_session_id, make_session_routing_key};
 use crate::support::now_ms;
 use indexmap::IndexMap;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
-use std::sync::Mutex;
 use uuid::Uuid;
 
 /// 会话实体，表示一个用户与通道之间的交互上下文
@@ -93,7 +93,7 @@ impl SessionStore {
             last_active: now,
         };
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.sessions.insert(session_id.clone(), session.clone());
         state.by_routing_key.insert(routing_key, session_id.clone());
         state
@@ -107,17 +107,17 @@ impl SessionStore {
     }
 
     pub fn get_session(&self, session_id: &str) -> Option<Session> {
-        self.state.lock().unwrap().sessions.get(session_id).cloned()
+        self.state.lock().sessions.get(session_id).cloned()
     }
 
     pub fn get_session_by_routing_key(&self, routing_key: &str) -> Option<Session> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock();
         let session_id = state.by_routing_key.get(routing_key)?.clone();
         state.sessions.get(&session_id).cloned()
     }
 
     pub fn get_sessions_by_channel(&self, channel: &str, account_id: Option<&str>) -> Vec<Session> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock();
         let Some(accounts) = state.by_channel.get(channel) else {
             return Vec::new();
         };
@@ -133,7 +133,6 @@ impl SessionStore {
     pub fn get_all_sessions(&self) -> Vec<Session> {
         self.state
             .lock()
-            .unwrap()
             .sessions
             .values()
             .cloned()
@@ -141,11 +140,11 @@ impl SessionStore {
     }
 
     pub fn session_exists(&self, session_id: &str) -> bool {
-        self.state.lock().unwrap().sessions.contains_key(session_id)
+        self.state.lock().sessions.contains_key(session_id)
     }
 
     pub fn session_count(&self) -> usize {
-        self.state.lock().unwrap().sessions.len()
+        self.state.lock().sessions.len()
     }
 
     /// 增量合并更新会话上下文（浅合并 JSON 对象的顶层字段）
@@ -154,7 +153,7 @@ impl SessionStore {
         session_id: &str,
         context_update: Value,
     ) -> Option<Session> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let session = state.sessions.get_mut(session_id)?;
         merge_json_object(&mut session.context, &context_update);
         session.last_active = now_ms();
@@ -162,7 +161,7 @@ impl SessionStore {
     }
 
     pub fn set_session_context(&self, session_id: &str, new_context: Value) -> Option<Session> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let session = state.sessions.get_mut(session_id)?;
         session.context = new_context;
         session.last_active = now_ms();
@@ -171,7 +170,7 @@ impl SessionStore {
 
     /// 向会话的 context.history 数组追加一条消息记录
     pub fn add_to_history(&self, session_id: &str, message: Value) -> Option<Session> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let session = state.sessions.get_mut(session_id)?;
         if !session.context.is_object() {
             session.context = json!({});
@@ -197,7 +196,7 @@ impl SessionStore {
     }
 
     pub fn touch_session(&self, session_id: &str) -> Option<Session> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let session = state.sessions.get_mut(session_id)?;
         session.last_active = now_ms();
         Some(session.clone())
@@ -205,7 +204,7 @@ impl SessionStore {
 
     /// 关闭会话并清理所有索引（路由键索引、通道索引）
     pub fn close_session(&self, session_id: &str) -> Option<Session> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let session = state.sessions.shift_remove(session_id)?;
         state.by_routing_key.shift_remove(&session.routing_key);
         if let Some(accounts) = state.by_channel.get_mut(&session.channel) {
@@ -228,14 +227,14 @@ impl SessionStore {
     }
 
     pub fn close_all_sessions(&self) -> usize {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let count = state.sessions.len();
         *state = SessionStoreState::default();
         count
     }
 
     pub fn session_count_by_channel(&self, channel: &str, account_id: Option<&str>) -> usize {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock();
         let Some(accounts) = state.by_channel.get(channel) else {
             return 0;
         };
@@ -247,7 +246,7 @@ impl SessionStore {
     }
 
     pub fn get_stats(&self) -> SessionStats {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock();
         let one_hour_ago = now_ms().saturating_sub(3_600_000);
         let mut by_channel = IndexMap::new();
         for session in state.sessions.values() {

@@ -26,6 +26,10 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
   const { mutate: reviewJob, isPending } = useReviewJobMutation(job?.job_id);
   const { mutate: answerQuestion, isPending: isAnswering } = useQuestionAnswerMutation(job?.job_id);
   const [questionInput, setQuestionInput] = useState('');
+  const subtaskJobs = useMemo(
+    () => (job ? jobs.filter((item) => item.parent_job_id === job.job_id) : []),
+    [jobs, job],
+  );
 
   if (!job) {
     return <div className="jobs-empty">{selectedSessionChatId ? `当前会话 ${shortId(selectedSessionChatId)} 暂无可查看的 Job` : '请选择一个 Job'}</div>;
@@ -43,10 +47,6 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
   const processEntries = deriveProcessEntriesFromJob(job);
   const decisionSummary = deriveAgentDecisionSummary(processEntries);
   const orchestration = job.orchestration ?? null;
-  const subtaskJobs = useMemo(
-    () => jobs.filter((item) => item.parent_job_id === job.job_id),
-    [jobs, job.job_id],
-  );
 
   return (
     <div className="job-detail">

@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+use crate::agent::runtime_error::{RuntimeError, RuntimeErrorKind, RuntimeErrorStage};
 use crate::agent::types::{make_task, MakeTask, Task, TaskResult};
 use crate::agent::worker::WorkerPool;
 
@@ -36,10 +37,16 @@ pub fn build_api_call_task(request: &ApiCallExecutionRequest) -> Task {
 pub fn execute_api_call(
     worker_pool: &Arc<WorkerPool>,
     request: ApiCallExecutionRequest,
-) -> Result<TaskResult, String> {
+) -> Result<TaskResult, RuntimeError> {
     let task = build_api_call_task(&request);
     worker_pool
         .submit_task(task)
         .recv()
-        .map_err(|error| format!("Failed to receive {:?} result: {error}", request.kind))
+        .map_err(|error| {
+            RuntimeError::new(
+                RuntimeErrorKind::TaskExecutionFailed,
+                RuntimeErrorStage::PlanExecute,
+                format!("Failed to receive {:?} result: {error}", request.kind),
+            )
+        })
 }

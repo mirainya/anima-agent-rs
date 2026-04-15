@@ -9,6 +9,7 @@ use crate::execution::driver::{
 use crate::support::{make_api_cache_key, now_ms};
 
 use super::core::{CoreAgent, InitialExecutionOutcome, InitialPlanDispatchContext};
+use super::runtime_error::RuntimeError;
 use super::runtime_helpers::truncate_preview;
 use super::runtime_ids::execution_kind_label;
 use super::types::ExecutionPlan;
@@ -23,7 +24,7 @@ impl CoreAgent {
         request: &ApiCallExecutionRequest,
         task_summary: &str,
         extra_payload: Value,
-    ) -> Result<TaskResult, String> {
+    ) -> Result<TaskResult, RuntimeError> {
         let task = build_api_call_task(request);
         let extra_payload_for_started = extra_payload.clone();
         let mut assigned_payload = json!({

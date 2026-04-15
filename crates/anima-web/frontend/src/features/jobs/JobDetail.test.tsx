@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { JobDetail } from './JobDetail';
@@ -42,19 +43,39 @@ function makeJob(partial: Partial<JobView>): JobView {
   };
 }
 
-function renderJob(job: JobView) {
+function renderWithClient(ui: ReactElement) {
   const client = new QueryClient();
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
+function renderJob(job: JobView) {
   useUiStore.setState({ selectedJobId: job.job_id });
-  return render(
-    <QueryClientProvider client={client}>
-      <JobDetail jobs={[job]} selectedSessionChatId={job.chat_id ?? null} />
-    </QueryClientProvider>,
+  return renderWithClient(
+    <JobDetail jobs={[job]} selectedSessionChatId={job.chat_id ?? null} />,
   );
 }
 
 describe('JobDetail status interactions', () => {
   beforeEach(() => {
     useUiStore.setState({ selectedJobId: null });
+  });
+
+  it('does not break hooks when jobs appear after initial empty render', () => {
+    useUiStore.setState({ selectedJobId: 'job-1' });
+    const job = makeJob({ job_id: 'job-1', chat_id: 'chat-1' });
+    const view = renderWithClient(
+      <JobDetail jobs={[]} selectedSessionChatId="chat-1" />,
+    );
+
+    expect(screen.getByText(/暂无可查看的 Job/)).toBeTruthy();
+
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <JobDetail jobs={[job]} selectedSessionChatId="chat-1" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText(job.status)).toBeTruthy();
   });
 
   it('shows waiting panel and answer UI for unanswered waiting_user_input', () => {

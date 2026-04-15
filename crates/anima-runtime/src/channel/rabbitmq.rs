@@ -1,9 +1,9 @@
 use crate::channel::adapter::{err, Channel, SendOptions, SendResult};
 use crate::channel::http::{ChannelAdapter, ChannelCapabilities, ChannelHealthSnapshot};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RabbitMqChannelConfig {
@@ -49,7 +49,7 @@ impl RabbitMqChannel {
 impl Channel for RabbitMqChannel {
     fn start(&self) {
         self.running.store(true, Ordering::SeqCst);
-        *self.last_health.lock().unwrap() = Some(ChannelHealthSnapshot {
+        *self.last_health.lock() = Some(ChannelHealthSnapshot {
             status: "unknown".into(),
             running: true,
             details: json!({
@@ -82,7 +82,7 @@ impl Channel for RabbitMqChannel {
                 "routing_key": self.config.routing_key,
             }),
         };
-        *self.last_health.lock().unwrap() = Some(snapshot.clone());
+        *self.last_health.lock() = Some(snapshot.clone());
         err(
             "RabbitMQ adapter skeleton is not connected to a live broker yet",
             Some(snapshot.details),
@@ -98,7 +98,6 @@ impl Channel for RabbitMqChannel {
             && self
                 .last_health
                 .lock()
-                .unwrap()
                 .as_ref()
                 .map(|snapshot| snapshot.status == "healthy")
                 .unwrap_or(false)
@@ -118,7 +117,6 @@ impl ChannelAdapter for RabbitMqChannel {
     fn health_snapshot(&self) -> ChannelHealthSnapshot {
         self.last_health
             .lock()
-            .unwrap()
             .clone()
             .unwrap_or(ChannelHealthSnapshot {
                 status: if self.running.load(Ordering::SeqCst) {

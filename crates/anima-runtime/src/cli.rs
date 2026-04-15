@@ -1,7 +1,8 @@
+use parking_lot::Mutex;
 use serde_json::json;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::bus::{make_inbound, Bus, MakeInbound};
 use crate::channel::{
@@ -71,11 +72,11 @@ impl CliChannel {
     }
 
     pub fn default_session(&self) -> Option<Session> {
-        self.default_session.lock().unwrap().clone()
+        self.default_session.lock().clone()
     }
 
     pub fn outputs(&self) -> Vec<String> {
-        self.output.lock().unwrap().clone()
+        self.output.lock().clone()
     }
 
     pub fn status_text(&self) -> String {
@@ -124,7 +125,6 @@ impl CliChannel {
                 .set_session_context(&session.id, json!({"history": []}));
             self.output
                 .lock()
-                .unwrap()
                 .push("Conversation history cleared.".to_string());
         }
     }
@@ -210,7 +210,7 @@ impl CliChannel {
 impl Channel for CliChannel {
     fn start(&self) {
         if !self.running.swap(true, Ordering::SeqCst) {
-            let mut default_session = self.default_session.lock().unwrap();
+            let mut default_session = self.default_session.lock();
             if default_session.is_none() {
                 *default_session = Some(
                     self.session_store
@@ -239,11 +239,11 @@ impl Channel for CliChannel {
                 if self.was_streaming.swap(false, Ordering::SeqCst) {
                     let _ = writeln!(stdout);
                 } else {
-                    self.output.lock().unwrap().push(message.to_string());
+                    self.output.lock().push(message.to_string());
                     let _ = writeln!(stdout, "\n{}", message);
                 }
                 if opts.stage.as_deref() == Some("final") || opts.stage.is_none() {
-                    self.output.lock().unwrap().push(self.prompt.clone());
+                    self.output.lock().push(self.prompt.clone());
                     let _ = write!(stdout, "{}", self.prompt);
                 }
                 let _ = stdout.flush();

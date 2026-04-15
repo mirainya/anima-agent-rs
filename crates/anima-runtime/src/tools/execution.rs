@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::definition::{Tool, ToolContext};
 use super::result::{ToolError, ToolResult, ToolResultBlock};
-use crate::hooks::{HookEvent, HookRegistry};
+use crate::hooks::{HookEvent, HookRegistry, HookResult};
 use crate::permissions::{PermissionChecker, PermissionDecision, PermissionRequest};
 use crate::support::now_ms;
 
@@ -173,14 +173,6 @@ fn execute_tool_call(
     invocation: &mut ToolInvocationRecord,
     lifecycle_callback: Option<&ToolLifecycleEventCallback>,
 ) -> std::result::Result<ToolResult, ToolError> {
-    if let Some(hooks) = hook_registry {
-        let event = HookEvent::PreToolUse {
-            tool_name: options.tool_name.clone(),
-            input: options.input.clone(),
-        };
-        hooks.run_pre_hooks(&event);
-    }
-
     invocation.mark_phase(ToolInvocationPhase::Executing);
     emit_tool_lifecycle_event(
         lifecycle_callback,
@@ -240,6 +232,7 @@ pub fn run_tool_use(
     hook_registry: Option<&HookRegistry>,
     lifecycle_callback: Option<&ToolLifecycleEventCallback>,
 ) -> std::result::Result<RunToolUseOutcome, ToolError> {
+    let mut options = options;
     let mut invocation = ToolInvocationRecord::new(
         options
             .invocation_id
@@ -257,6 +250,31 @@ pub fn run_tool_use(
             "tool_input": options.input,
         }),
     );
+
+    if let Some(hooks) = hook_registry {
+        match hooks.run_pre_tool_hooks(&options.tool_name, &options.input) {
+            HookResult::Continue => {}
+            HookResult::Transform(value) => {
+                options.input = value;
+            }
+            HookResult::Block(reason) => {
+                invocation.mark_phase(ToolInvocationPhase::Failed);
+                invocation.set_error(format!("blocked by hook: {reason}"));
+                emit_tool_lifecycle_event(
+                    lifecycle_callback,
+                    "tool_execution_failed",
+                    &invocation,
+                    serde_json::json!({
+                        "error": format!("blocked by hook: {reason}"),
+                        "stage": "pre_hook",
+                    }),
+                );
+                return Err(ToolError::PermissionDenied(format!(
+                    "blocked by hook: {reason}"
+                )));
+            }
+        }
+    }
 
     invocation.mark_phase(ToolInvocationPhase::ValidatingInput);
     tool.validate_input(&options.input).map_err(|msg| {
@@ -355,6 +373,33 @@ pub fn execute_tool_after_permission(
     mut invocation: ToolInvocationRecord,
     lifecycle_callback: Option<&ToolLifecycleEventCallback>,
 ) -> std::result::Result<(ToolInvocationRecord, ToolResult), ToolError> {
+    let mut options = options;
+
+    if let Some(hooks) = hook_registry {
+        match hooks.run_pre_tool_hooks(&options.tool_name, &options.input) {
+            HookResult::Continue => {}
+            HookResult::Transform(value) => {
+                options.input = value;
+            }
+            HookResult::Block(reason) => {
+                invocation.mark_phase(ToolInvocationPhase::Failed);
+                invocation.set_error(format!("blocked by hook: {reason}"));
+                emit_tool_lifecycle_event(
+                    lifecycle_callback,
+                    "tool_execution_failed",
+                    &invocation,
+                    serde_json::json!({
+                        "error": format!("blocked by hook: {reason}"),
+                        "stage": "pre_hook",
+                    }),
+                );
+                return Err(ToolError::PermissionDenied(format!(
+                    "blocked by hook: {reason}"
+                )));
+            }
+        }
+    }
+
     invocation.mark_phase(ToolInvocationPhase::ValidatingInput);
     tool.validate_input(&options.input).map_err(|msg| {
         invocation.mark_phase(ToolInvocationPhase::Failed);

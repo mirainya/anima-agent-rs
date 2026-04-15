@@ -15,6 +15,7 @@ export function RootLayout() {
       header={<RuntimeHeader sseState={sseState} />}
       sidebar={<SessionSidebar />}
       rightPanel={<DiagnosticsInspector />}
+      footer={null}
       isRightPanelOpen={isInspectorOpen}
     >
       <Outlet />

@@ -2,9 +2,9 @@ use crate::dispatcher::diagnostics::DispatchFailureStage;
 use crate::dispatcher::message::DispatchMessage;
 use crate::support::now_ms;
 use indexmap::IndexMap;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DispatchEnvelope {
@@ -94,7 +94,7 @@ impl DispatchQueue {
     }
 
     pub fn enqueue(&self, envelope: DispatchEnvelope) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state
             .routes
             .entry(envelope.message.channel.clone())
@@ -105,7 +105,7 @@ impl DispatchQueue {
     }
 
     pub fn dequeue(&self) -> Option<DispatchEnvelope> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let now = now_ms();
 
         let route_min_priorities: Vec<(String, u8)> = state
@@ -156,7 +156,6 @@ impl DispatchQueue {
     pub fn len(&self) -> usize {
         self.state
             .lock()
-            .unwrap()
             .routes
             .values()
             .flat_map(|priorities| priorities.values())
@@ -169,7 +168,7 @@ impl DispatchQueue {
     }
 
     pub fn snapshot(&self) -> DispatchQueueSnapshot {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock();
         let mut by_priority = IndexMap::new();
         let mut by_route = IndexMap::new();
 

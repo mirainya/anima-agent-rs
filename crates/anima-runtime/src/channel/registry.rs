@@ -1,7 +1,8 @@
 use crate::channel::adapter::Channel;
 use indexmap::IndexMap;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 type ChannelMap = IndexMap<String, IndexMap<String, Arc<dyn Channel>>>;
 
@@ -39,7 +40,7 @@ impl ChannelRegistry {
     }
 
     pub fn register(&self, channel: Arc<dyn Channel>, account_id: Option<&str>) {
-        let mut channels = self.channels.lock().unwrap();
+        let mut channels = self.channels.lock();
         let account = account_id.unwrap_or("default").to_string();
         channels
             .entry(channel.channel_name().to_string())
@@ -48,11 +49,11 @@ impl ChannelRegistry {
     }
 
     pub fn unregister(&self, channel_name: &str) {
-        self.channels.lock().unwrap().shift_remove(channel_name);
+        self.channels.lock().shift_remove(channel_name);
     }
 
     pub fn unregister_with_account(&self, channel_name: &str, account_id: &str) {
-        let mut channels = self.channels.lock().unwrap();
+        let mut channels = self.channels.lock();
         if account_id == "default" {
             channels.shift_remove(channel_name);
         } else if let Some(accounts) = channels.get_mut(channel_name) {
@@ -73,7 +74,7 @@ impl ChannelRegistry {
         channel_name: &str,
         account_id: Option<&str>,
     ) -> (Option<Arc<dyn Channel>>, ChannelLookupSnapshot) {
-        let channels = self.channels.lock().unwrap();
+        let channels = self.channels.lock();
         let requested_account_id = account_id.map(ToString::to_string);
         let Some(accounts) = channels.get(channel_name) else {
             return (
@@ -136,20 +137,18 @@ impl ChannelRegistry {
     pub fn all_channels(&self) -> Vec<Arc<dyn Channel>> {
         self.channels
             .lock()
-            .unwrap()
             .values()
             .flat_map(|accounts| accounts.values().cloned())
             .collect()
     }
 
     pub fn channel_names(&self) -> Vec<String> {
-        self.channels.lock().unwrap().keys().cloned().collect()
+        self.channels.lock().keys().cloned().collect()
     }
 
     pub fn entries(&self) -> Vec<ChannelRegistryEntry> {
         self.channels
             .lock()
-            .unwrap()
             .iter()
             .flat_map(|(channel, accounts)| {
                 accounts
@@ -166,7 +165,6 @@ impl ChannelRegistry {
     pub fn channel_count(&self) -> usize {
         self.channels
             .lock()
-            .unwrap()
             .values()
             .map(IndexMap::len)
             .sum()

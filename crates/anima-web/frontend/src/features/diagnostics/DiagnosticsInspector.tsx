@@ -48,7 +48,7 @@ export function DiagnosticsInspector() {
   const activeInspectorTab = useUiStore((state) => state.activeInspectorTab);
   const setActiveInspectorTab = useUiStore((state) => state.setActiveInspectorTab);
   const isInspectorOpen = useUiStore((state) => state.isInspectorOpen);
-  const context = getWorkbenchContext(status, jobs, selectedSessionId, selectedJobId);
+  const context = getWorkbenchContext(status?.recent_sessions, jobs, selectedSessionId, selectedJobId);
 
   if (!isInspectorOpen) {
     return (

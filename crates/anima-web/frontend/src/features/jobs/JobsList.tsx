@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type { JobView } from '@/shared/utils/types';
 import { useUiStore } from '@/shared/state/useUiStore';
+import { useNavigate, useParams } from 'react-router-dom';
 import { formatDurationShort, shortId } from '@/shared/utils/format';
 import { deriveJobSummary } from './deriveJobSummary';
 import { formatActiveSubtask } from './formatOrchestration';
@@ -12,6 +13,8 @@ interface JobsListProps {
 }
 
 export function JobsList({ jobs, selectedSessionChatId }: JobsListProps) {
+  const navigate = useNavigate();
+  const { jobId: routeJobId } = useParams<{ jobId?: string }>();
   const selectedJobId = useUiStore((state) => state.selectedJobId);
   const setSelectedJobId = useUiStore((state) => state.setSelectedJobId);
   const selectNewestJob = useUiStore((state) => state.selectNewestJob);
@@ -24,8 +27,14 @@ export function JobsList({ jobs, selectedSessionChatId }: JobsListProps) {
       return;
     }
 
-    const selectedStillExists = selectedJobId ? jobs.some((job) => job.job_id === selectedJobId) : false;
-    if (selectNewestJob || !selectedJobId || !selectedStillExists) {
+    const effectiveSelectedJobId = routeJobId ?? selectedJobId;
+    const selectedStillExists = effectiveSelectedJobId
+      ? jobs.some((job) => job.job_id === effectiveSelectedJobId)
+      : false;
+    if (routeJobId && selectedStillExists) {
+      return;
+    }
+    if (selectNewestJob || !effectiveSelectedJobId || !selectedStillExists) {
       setSelectedJobId(jobs[0].job_id);
     }
   }, [jobs, selectedJobId, selectNewestJob, setSelectedJobId]);
@@ -41,7 +50,7 @@ export function JobsList({ jobs, selectedSessionChatId }: JobsListProps) {
   return (
     <div className="jobs-list">
       {jobs.map((job) => {
-        const active = job.job_id === selectedJobId;
+        const active = job.job_id === (routeJobId ?? selectedJobId);
         const summary = deriveJobSummary(job);
         const orchestration = job.orchestration ?? null;
         return (
@@ -49,7 +58,10 @@ export function JobsList({ jobs, selectedSessionChatId }: JobsListProps) {
             key={job.job_id}
             type="button"
             className={`job-list-card ${active ? 'active' : ''}`}
-            onClick={() => setSelectedJobId(job.job_id)}
+            onClick={() => {
+              setSelectedJobId(job.job_id);
+              navigate(`/jobs/${job.job_id}`);
+            }}
           >
             <div className="job-list-top">
               <div className="job-list-badges">

@@ -16,6 +16,7 @@ use anima_web::jobs::JobKind;
 use anima_web::{routes, web_channel, AppState};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::util::ServiceExt;
@@ -45,10 +46,10 @@ fn build_state_with_runtime(
     web_channel: Arc<anima_web::web_channel::WebChannel>,
 ) -> Arc<AppState> {
     Arc::new(AppState {
-        runtime: std::sync::Mutex::new(runtime),
+        runtime: Mutex::new(runtime),
         bus,
         web_channel,
-        jobs: std::sync::Mutex::new(anima_web::jobs::JobStore::default()),
+        jobs: Mutex::new(anima_web::jobs::JobStore::default()),
     })
 }
 
@@ -59,10 +60,10 @@ fn build_state_with_store(
     store: anima_web::jobs::JobStore,
 ) -> Arc<AppState> {
     Arc::new(AppState {
-        runtime: std::sync::Mutex::new(runtime),
+        runtime: Mutex::new(runtime),
         bus,
         web_channel,
-        jobs: std::sync::Mutex::new(store),
+        jobs: Mutex::new(store),
     })
 }
 
@@ -2433,7 +2434,7 @@ fn jobs_api_prefers_runtime_payload_hierarchy_for_subtasks() {
     assert_eq!(subtask_job["kind"], "subtask");
     assert_eq!(subtask_job["parent_job_id"], "job-main");
 
-    let status = state.runtime.lock().unwrap().agent.status();
+    let status = state.runtime.lock().agent.status();
     let subtask_events = status
         .core
         .runtime_timeline
@@ -2453,7 +2454,7 @@ fn jobs_api_prefers_runtime_payload_hierarchy_for_subtasks() {
         .iter()
         .all(|event| event.payload["parent_job_id"] == "job-main"));
 
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }
 
 #[test]
@@ -2932,7 +2933,7 @@ fn status_api_exposes_runtime_summary() {
         .unwrap_or("")
         .starts_with("reply[mock-session-web]:"));
 
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }
 
 #[test]
@@ -3017,7 +3018,7 @@ fn status_api_exposes_failure_snapshot_and_counts() {
     assert_eq!(jobs[0]["failure"]["error_code"], "task_execution_failed");
     assert!(jobs[0]["pending_question"].is_null());
 
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }
 
 #[test]
@@ -3098,7 +3099,7 @@ fn question_answer_api_rejects_job_without_real_pending_question() {
         .unwrap_or("")
         .contains("No pending question"));
 
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }
 
 #[test]
@@ -3116,7 +3117,7 @@ fn sessions_api_lists_history_and_send_alias_reuses_existing_session() {
 
     let state = build_state_with_runtime(runtime, bus.clone(), web_channel);
     {
-        let manager = &state.runtime.lock().unwrap().agent.session_manager;
+        let manager = &state.runtime.lock().agent.session_manager;
         let session = manager.create_session(
             "web",
             anima_runtime::channel::session::SessionCreateOptions {
@@ -3228,7 +3229,7 @@ fn sessions_api_lists_history_and_send_alias_reuses_existing_session() {
     assert_eq!(send_payload["session_id"], "session-api-1");
     assert!(send_payload["job_id"].as_str().is_some());
 
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }
 
 #[test]
@@ -3327,7 +3328,7 @@ fn send_api_returns_job_id_and_review_records_feedback_only() {
     assert!(review_payload["job"]["parent_job_id"].is_null());
     assert_eq!(review_payload["job"]["review"]["verdict"], "accepted");
 
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }
 
 #[test]
@@ -3448,7 +3449,7 @@ fn status_api_exposes_orchestration_p2_question_observability() {
         job["orchestration"]["plan_id"].is_string() || job["orchestration"]["plan_id"].is_null()
     );
 
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }
 
 #[test]
@@ -3553,7 +3554,7 @@ fn status_api_exposes_orchestration_p2_followup_observability() {
     assert_eq!(job["status"], "completed");
     assert!(job["pending_question"].is_null());
 
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }
 
 #[test]
@@ -3668,5 +3669,5 @@ fn status_api_exposes_orchestration_fallback_observability() {
         .iter()
         .any(|entry| entry["event"] == "orchestration_fallback"));
 
-    state.runtime.lock().unwrap().stop();
+    state.runtime.lock().stop();
 }

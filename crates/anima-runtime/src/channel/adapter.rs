@@ -5,9 +5,9 @@
 //! 并提供流式传输能力（`StreamingChannel`）用于打字指示器和分块发送。
 //! 同时包含 `TestChannel` 用于单元测试中的消息通道模拟。
 
+use parking_lot::Mutex;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 /// 消息发送结果，封装成功/失败状态及可选的返回数据
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +94,7 @@ impl TestChannel {
     }
 
     pub fn sent_messages(&self) -> Vec<SentMessage> {
-        self.sent_messages.lock().unwrap().clone()
+        self.sent_messages.lock().clone()
     }
 
     pub fn is_running(&self) -> bool {
@@ -123,7 +123,7 @@ impl Channel for TestChannel {
         if self.should_fail {
             return err("Mock send failed", None);
         }
-        self.sent_messages.lock().unwrap().push(SentMessage {
+        self.sent_messages.lock().push(SentMessage {
             target: target.to_string(),
             message: message.to_string(),
             opts,

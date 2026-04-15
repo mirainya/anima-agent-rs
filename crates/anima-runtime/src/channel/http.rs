@@ -1,9 +1,9 @@
 use crate::channel::adapter::{err, ok, Channel, SendOptions, SendResult};
+use parking_lot::Mutex;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,7 +90,7 @@ impl HttpChannel {
                         running: true,
                         details: json!({"status_code": status.as_u16()}),
                     };
-                    *self.last_health.lock().unwrap() = Some(snapshot);
+                    *self.last_health.lock() = Some(snapshot);
                     ok(data)
                 } else {
                     let snapshot = ChannelHealthSnapshot {
@@ -98,7 +98,7 @@ impl HttpChannel {
                         running: true,
                         details: json!({"status_code": status.as_u16()}),
                     };
-                    *self.last_health.lock().unwrap() = Some(snapshot.clone());
+                    *self.last_health.lock() = Some(snapshot.clone());
                     err(
                         format!("HTTP send failed with status {}", status.as_u16()),
                         Some(snapshot.details),
@@ -111,7 +111,7 @@ impl HttpChannel {
                     running: true,
                     details: json!({"error": error.to_string()}),
                 };
-                *self.last_health.lock().unwrap() = Some(snapshot.clone());
+                *self.last_health.lock() = Some(snapshot.clone());
                 err(error.to_string(), Some(snapshot.details))
             }
         }
@@ -145,7 +145,6 @@ impl Channel for HttpChannel {
             && self
                 .last_health
                 .lock()
-                .unwrap()
                 .as_ref()
                 .map(|snapshot| snapshot.status == "healthy")
                 .unwrap_or(true)
@@ -165,7 +164,6 @@ impl ChannelAdapter for HttpChannel {
     fn health_snapshot(&self) -> ChannelHealthSnapshot {
         self.last_health
             .lock()
-            .unwrap()
             .clone()
             .unwrap_or(ChannelHealthSnapshot {
                 status: if self.running.load(Ordering::SeqCst) {

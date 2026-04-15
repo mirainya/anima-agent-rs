@@ -3,6 +3,9 @@ use serde_json::{json, Value};
 use crate::bus::InboundMessage;
 
 use super::core::CoreAgent;
+use super::runtime_error::{
+    classify_runtime_error, RuntimeError, RuntimeErrorKind, RuntimeErrorStage,
+};
 use super::types::{make_task, MakeTask, TaskResult};
 
 impl CoreAgent {
@@ -17,7 +20,7 @@ impl CoreAgent {
         &self,
         inbound_msg: &InboundMessage,
         key: &str,
-    ) -> Result<TaskResult, String> {
+    ) -> Result<TaskResult, RuntimeError> {
         let task = make_task(MakeTask {
             trace_id: Some(inbound_msg.id.clone()),
             task_type: "session-create".into(),
@@ -39,22 +42,70 @@ impl CoreAgent {
         self.worker_pool
             .submit_task(task)
             .recv()
-            .map_err(|error| format!("Failed to receive session-create result: {error}"))
+            .map_err(|error| {
+                let internal_message = format!("Failed to receive session-create result: {error}");
+                let error_info = classify_runtime_error(
+                    Some(internal_message.as_str()),
+                    Some(RuntimeErrorStage::SessionCreate.as_str()),
+                );
+                RuntimeError::new(
+                    match error_info.code {
+                        "worker_unavailable" => RuntimeErrorKind::WorkerUnavailable,
+                        "worker_capacity_exhausted" => RuntimeErrorKind::WorkerCapacityExhausted,
+                        _ => RuntimeErrorKind::SessionCreateFailed,
+                    },
+                    match error_info.stage {
+                        "worker_pool" => RuntimeErrorStage::WorkerPool,
+                        _ => RuntimeErrorStage::SessionCreate,
+                    },
+                    internal_message,
+                )
+            })
     }
 
     pub(crate) fn extract_created_opencode_session_id(
         &self,
         result: &TaskResult,
-    ) -> Result<String, String> {
+    ) -> Result<String, RuntimeError> {
         if result.status != "success" {
             let error_text = result.error.clone().unwrap_or_else(|| {
                 format!("Failed to create session: task status={}", result.status)
             });
-            return Err(error_text);
+            let error_info = classify_runtime_error(
+                Some(error_text.as_str()),
+                Some(RuntimeErrorStage::SessionCreate.as_str()),
+            );
+            return Err(RuntimeError::new(
+                match error_info.code {
+                    "worker_unavailable" => RuntimeErrorKind::WorkerUnavailable,
+                    "worker_capacity_exhausted" => RuntimeErrorKind::WorkerCapacityExhausted,
+                    _ => RuntimeErrorKind::SessionCreateFailed,
+                },
+                match error_info.stage {
+                    "worker_pool" => RuntimeErrorStage::WorkerPool,
+                    _ => RuntimeErrorStage::SessionCreate,
+                },
+                error_text,
+            ));
         }
 
         if let Some(error_text) = result.error.clone() {
-            return Err(error_text);
+            let error_info = classify_runtime_error(
+                Some(error_text.as_str()),
+                Some(RuntimeErrorStage::SessionCreate.as_str()),
+            );
+            return Err(RuntimeError::new(
+                match error_info.code {
+                    "worker_unavailable" => RuntimeErrorKind::WorkerUnavailable,
+                    "worker_capacity_exhausted" => RuntimeErrorKind::WorkerCapacityExhausted,
+                    _ => RuntimeErrorKind::SessionCreateFailed,
+                },
+                match error_info.stage {
+                    "worker_pool" => RuntimeErrorStage::WorkerPool,
+                    _ => RuntimeErrorStage::SessionCreate,
+                },
+                error_text,
+            ));
         }
 
         result
@@ -63,7 +114,13 @@ impl CoreAgent {
             .and_then(|value| value.get("opencode-session-id"))
             .and_then(Value::as_str)
             .map(ToString::to_string)
-            .ok_or_else(|| "Failed to create session: no ID returned".to_string())
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    RuntimeErrorKind::SessionCreateFailed,
+                    RuntimeErrorStage::SessionCreate,
+                    "Failed to create session: no ID returned",
+                )
+            })
     }
 
     pub(crate) fn store_opencode_session_id(&self, key: &str, session_id: &str) {
@@ -77,7 +134,7 @@ impl CoreAgent {
         &self,
         inbound_msg: &InboundMessage,
         key: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, RuntimeError> {
         if let Some(existing_id) = self.existing_opencode_session_id(key) {
             return Ok(existing_id);
         }

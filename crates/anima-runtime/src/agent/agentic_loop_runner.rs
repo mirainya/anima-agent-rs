@@ -9,6 +9,7 @@ use crate::streaming::types::{ContentBlock, ContentDelta, StreamEvent};
 use crate::support::now_ms;
 
 use super::core::{CoreAgent, InitialAgenticLoopRunPreparation};
+use super::runtime_error::RuntimeError;
 use super::types::{make_task_result, MakeTaskResult, TaskResult};
 
 impl CoreAgent {
@@ -145,6 +146,15 @@ impl CoreAgent {
         })
     }
 
+    pub(crate) fn build_failed_agentic_loop_task_result_from_runtime_error(
+        &self,
+        inbound_msg: &InboundMessage,
+        started: u64,
+        error: &RuntimeError,
+    ) -> TaskResult {
+        self.build_failed_agentic_loop_task_result(inbound_msg, started, &error.internal_message)
+    }
+
     pub(crate) fn run_agentic_loop_for_plan(
         &self,
         inbound_msg: &InboundMessage,
@@ -172,7 +182,14 @@ impl CoreAgent {
                     *suspension,
                     started,
                 ),
-            Err(err) => self.build_failed_agentic_loop_task_result(inbound_msg, started, err),
+            Err(err) => {
+                let runtime_error = err.to_runtime_error();
+                self.build_failed_agentic_loop_task_result_from_runtime_error(
+                    inbound_msg,
+                    started,
+                    &runtime_error,
+                )
+            }
         }
     }
 }

@@ -55,7 +55,8 @@ impl CoreAgent {
             json!({
                 "question_id": pending.question_id,
             }),
-        )?;
+        )
+        .map_err(|err| err.internal_message)?;
 
         if continuation_result.status != "success" {
             return Err(continuation_result
@@ -146,7 +147,7 @@ impl CoreAgent {
             self.hook_registry.as_deref(),
             &config,
         )
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| err.to_runtime_error().internal_message)?;
 
         self.upsert_runtime_suspension(
             &suspended.inbound,
@@ -457,7 +458,7 @@ impl CoreAgent {
             suspended.suspension.compact_count,
             &config,
         )
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| err.to_runtime_error().internal_message)?;
 
         self.handle_tool_permission_continuation_outcome(job_id, &pending, suspended, outcome)
     }

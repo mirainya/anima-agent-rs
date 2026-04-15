@@ -8,6 +8,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::agent::executor::TaskExecutor;
+use crate::agent::runtime_error::{RuntimeError, RuntimeErrorKind, RuntimeErrorStage};
 use crate::hooks::HookRegistry;
 use crate::messages::compact::{compact_if_needed, CompactConfig};
 use crate::messages::normalize::normalize_messages_for_api;
@@ -130,19 +131,59 @@ pub enum AgenticLoopOutcome {
 #[derive(Debug, Clone)]
 pub enum AgenticLoopError {
     /// API 调用失败
-    ApiCallFailed(String),
+    ApiCall { internal_message: String },
     /// 响应解析错误
-    ResponseParseError(String),
+    ResponseParse { internal_message: String },
     /// 所有工具执行均失败
-    AllToolsFailed(String),
+    AllToolsFailed { internal_message: String },
+}
+
+impl AgenticLoopError {
+    pub(crate) fn to_runtime_error(&self) -> RuntimeError {
+        match self {
+            Self::ApiCall { internal_message } => {
+                let lower = internal_message.to_ascii_lowercase();
+                let kind = if lower.contains("request timeout")
+                    || lower.contains("408 request timeout")
+                    || lower.contains("timed out")
+                    || lower.contains("timeout")
+                {
+                    RuntimeErrorKind::UpstreamTimeout
+                } else if lower.contains("empty_stream")
+                    || lower.contains("upstream stream closed before first payload")
+                    || lower.contains("stream disconnected before completion")
+                    || lower.contains("stream closed before response.completed")
+                {
+                    RuntimeErrorKind::UpstreamStreamFailed
+                } else {
+                    RuntimeErrorKind::TaskExecutionFailed
+                };
+                RuntimeError::new(kind, RuntimeErrorStage::PlanExecute, internal_message.clone())
+            }
+            Self::ResponseParse { internal_message } => RuntimeError::new(
+                RuntimeErrorKind::ResponseParseFailed,
+                RuntimeErrorStage::PlanExecute,
+                internal_message.clone(),
+            ),
+            Self::AllToolsFailed { internal_message } => RuntimeError::new(
+                RuntimeErrorKind::ToolExecutionFailed,
+                RuntimeErrorStage::PlanExecute,
+                internal_message.clone(),
+            ),
+        }
+    }
 }
 
 impl std::fmt::Display for AgenticLoopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ApiCallFailed(msg) => write!(f, "API call failed: {msg}"),
-            Self::ResponseParseError(msg) => write!(f, "response parse error: {msg}"),
-            Self::AllToolsFailed(msg) => write!(f, "all tools failed: {msg}"),
+            Self::ApiCall { internal_message } => write!(f, "API call failed: {internal_message}"),
+            Self::ResponseParse { internal_message } => {
+                write!(f, "response parse error: {internal_message}")
+            }
+            Self::AllToolsFailed { internal_message } => {
+                write!(f, "all tools failed: {internal_message}")
+            }
         }
     }
 }
@@ -234,10 +275,12 @@ pub fn parse_response(response: &Value) -> Result<ParsedResponse, AgenticLoopErr
         });
     }
 
-    Err(AgenticLoopError::ResponseParseError(format!(
-        "unexpected response structure: {}",
-        serde_json::to_string(response).unwrap_or_default()
-    )))
+    Err(AgenticLoopError::ResponseParse {
+        internal_message: format!(
+            "unexpected response structure: {}",
+            serde_json::to_string(response).unwrap_or_default()
+        ),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -483,10 +526,12 @@ pub fn resume_suspended_tool_invocation(
         let tool = tool_registry
             .get(&suspension.suspended_tool.tool_name)
             .ok_or_else(|| {
-                AgenticLoopError::AllToolsFailed(format!(
-                    "tool '{}' not found in registry during resume",
-                    suspension.suspended_tool.tool_name
-                ))
+                AgenticLoopError::AllToolsFailed {
+                    internal_message: format!(
+                        "tool '{}' not found in registry during resume",
+                        suspension.suspended_tool.tool_name
+                    ),
+                }
             })?;
         let options = RunToolOptions {
             tool_name: suspension.suspended_tool.tool_name.clone(),
@@ -505,7 +550,9 @@ pub fn resume_suspended_tool_invocation(
             suspension.suspended_tool.invocation.clone(),
             config.on_tool_lifecycle_event.as_ref(),
         )
-        .map_err(|err| AgenticLoopError::AllToolsFailed(err.to_string()))?
+        .map_err(|err| AgenticLoopError::AllToolsFailed {
+            internal_message: err.to_string(),
+        })?
     } else {
         let mut invocation = suspension.suspended_tool.invocation.clone();
         invocation.set_permission_state(crate::tools::execution::ToolPermissionState::Denied);
@@ -646,16 +693,16 @@ pub fn continue_agentic_loop(
         let parsed = if config.streaming {
             let lines = executor
                 .send_prompt_streaming(client, &config.session_id, content)
-                .map_err(AgenticLoopError::ApiCallFailed)?;
+                .map_err(|internal_message| AgenticLoopError::ApiCall { internal_message })?;
             let (parsed, response_value) =
                 consume_sse_stream(lines, config.on_stream_event.as_deref())
-                    .map_err(AgenticLoopError::ResponseParseError)?;
+                    .map_err(|internal_message| AgenticLoopError::ResponseParse { internal_message })?;
             messages.push(build_assistant_msg(&response_value));
             parsed
         } else {
             let response = executor
                 .send_prompt(client, &config.session_id, content)
-                .map_err(AgenticLoopError::ApiCallFailed)?;
+                .map_err(|internal_message| AgenticLoopError::ApiCall { internal_message })?;
             let parsed = parse_response(&response)?;
             messages.push(build_assistant_msg(&response));
             parsed

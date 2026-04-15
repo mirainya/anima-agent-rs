@@ -708,7 +708,9 @@ anima-agent-rs/
 ├── README.md
 ├── README.zh-CN.md
 ├── docs/
-│   └── main-agent-orchestration-design.md
+│   ├── next-phase-plan.md
+│   ├── main-agent-orchestration-design.md
+│   └── archive/
 └── crates/
     ├── anima-cli/
     ├── anima-runtime/
@@ -771,7 +773,8 @@ anima-agent-rs/
 
 ## Further reading
 
-- [Main Agent / Subagent Orchestration Design](./docs/main-agent-orchestration-design.md)
+- [Next Phase Plan](./docs/next-phase-plan.md)
+- [Main Agent / Subagent Orchestration Design](./docs/main-agent-orchestration-design.md) — historical design background
 
 ## Status
 

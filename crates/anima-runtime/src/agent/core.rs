@@ -22,7 +22,6 @@ use std::time::Duration;
 use super::event_emitter::RuntimeEventEmitter;
 use super::executor::{SdkTaskExecutor, TaskExecutor};
 use super::requirement::RequirementCoordinator;
-use super::runtime_error::classify_runtime_error;
 use super::runtime_helpers::truncate_preview;
 use super::types::{ExecutionPlan, TaskResult};
 use super::worker::{WorkerPool, WorkerPoolStatus};
@@ -594,9 +593,7 @@ impl CoreAgent {
         let session_started = now_ms();
         let opencode_session_id = self
             .get_or_create_opencode_session(inbound_msg, key)
-            .map_err(|error_text| {
-                classify_runtime_error(Some(error_text.as_str()), Some("session_create"))
-            })?;
+            .map_err(|error| error.to_error_info())?;
         let session_ms = now_ms().saturating_sub(session_started);
         self.emitter.publish(
             "session_ready",

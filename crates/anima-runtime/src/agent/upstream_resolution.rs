@@ -522,7 +522,8 @@ impl CoreAgent {
             &followup_request,
             "主 agent 触发自动 followup，派发给 worker 继续推进",
             json!({}),
-        )?;
+        )
+        .map_err(|err| err.internal_message)?;
 
         if followup_result.status != "success" {
             let error_info =
