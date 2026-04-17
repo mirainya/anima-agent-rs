@@ -145,7 +145,7 @@ where
                     .map_err(|err| AnimaError::Transport(err.to_string()))?;
                 if should_retry_status(status) && attempt < client.options.max_retries {
                     attempt += 1;
-                    thread::sleep(Duration::from_millis(client.options.retry_backoff_ms));
+                    thread::sleep(Duration::from_millis(client.options.backoff_delay_ms(attempt)));
                     continue;
                 }
                 return Ok(parse_response(status, &body));
@@ -153,7 +153,7 @@ where
             Err(err) => {
                 if attempt < client.options.max_retries {
                     attempt += 1;
-                    thread::sleep(Duration::from_millis(client.options.retry_backoff_ms));
+                    thread::sleep(Duration::from_millis(client.options.backoff_delay_ms(attempt)));
                     continue;
                 }
                 return Err(AnimaError::Transport(err.to_string()));

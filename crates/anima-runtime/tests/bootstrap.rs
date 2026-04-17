@@ -203,6 +203,7 @@ fn runtime_bootstrap_builder_accepts_sdk_options() {
             connect_timeout_ms: 2_000,
             max_retries: 2,
             retry_backoff_ms: 10,
+            retry_backoff_cap_ms: 100,
         })
         .build();
 
@@ -210,6 +211,7 @@ fn runtime_bootstrap_builder_accepts_sdk_options() {
     assert_eq!(runtime.agent.opencode_client.options.connect_timeout_ms, 2_000);
     assert_eq!(runtime.agent.opencode_client.options.max_retries, 2);
     assert_eq!(runtime.agent.opencode_client.options.retry_backoff_ms, 10);
+    assert_eq!(runtime.agent.opencode_client.options.retry_backoff_cap_ms, 100);
 }
 
 #[test]

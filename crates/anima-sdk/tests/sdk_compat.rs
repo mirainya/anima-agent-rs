@@ -16,6 +16,50 @@ fn client_options_default_matches_phase_b_contract() {
     assert_eq!(options.connect_timeout_ms, 60_000);
     assert_eq!(options.max_retries, 1);
     assert_eq!(options.retry_backoff_ms, 250);
+    assert_eq!(options.retry_backoff_cap_ms, 5_000);
+}
+
+#[test]
+fn client_options_backoff_delay_grows_exponentially_until_cap() {
+    let options = anima_sdk::ClientOptions {
+        retry_backoff_ms: 100,
+        retry_backoff_cap_ms: 1_000,
+        ..Default::default()
+    };
+    assert_eq!(options.backoff_delay_ms(0), 0);
+    assert_eq!(options.backoff_delay_ms(1), 100);
+    assert_eq!(options.backoff_delay_ms(2), 200);
+    assert_eq!(options.backoff_delay_ms(3), 400);
+    assert_eq!(options.backoff_delay_ms(4), 800);
+    // Capped at retry_backoff_cap_ms
+    assert_eq!(options.backoff_delay_ms(5), 1_000);
+    assert_eq!(options.backoff_delay_ms(20), 1_000);
+}
+
+#[test]
+fn client_options_from_env_overrides_defaults() {
+    // 使用唯一前缀避免与其他测试并发冲突
+    // SAFETY: test-only env var mutation
+    unsafe {
+        std::env::set_var("ANIMA_SDK_REQUEST_TIMEOUT_MS", "12345");
+        std::env::set_var("ANIMA_SDK_CONNECT_TIMEOUT_MS", "6789");
+        std::env::set_var("ANIMA_SDK_MAX_RETRIES", "7");
+        std::env::set_var("ANIMA_SDK_RETRY_BACKOFF_MS", "321");
+        std::env::set_var("ANIMA_SDK_RETRY_BACKOFF_CAP_MS", "9999");
+    }
+    let options = anima_sdk::ClientOptions::from_env();
+    assert_eq!(options.request_timeout_ms, 12345);
+    assert_eq!(options.connect_timeout_ms, 6789);
+    assert_eq!(options.max_retries, 7);
+    assert_eq!(options.retry_backoff_ms, 321);
+    assert_eq!(options.retry_backoff_cap_ms, 9999);
+    unsafe {
+        std::env::remove_var("ANIMA_SDK_REQUEST_TIMEOUT_MS");
+        std::env::remove_var("ANIMA_SDK_CONNECT_TIMEOUT_MS");
+        std::env::remove_var("ANIMA_SDK_MAX_RETRIES");
+        std::env::remove_var("ANIMA_SDK_RETRY_BACKOFF_MS");
+        std::env::remove_var("ANIMA_SDK_RETRY_BACKOFF_CAP_MS");
+    }
 }
 
 #[test]
