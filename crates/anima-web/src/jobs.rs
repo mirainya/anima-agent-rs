@@ -5,15 +5,17 @@ pub use crate::jobs_types::{
 };
 use crate::jobs_derive::{
     collect_recent_job_events, derive_job_hierarchy, derive_job_status,
-    derive_orchestration_view, derive_pending_question, derive_tool_invocation_status,
-    derive_tool_state, failure_to_value, job_status_from_label, match_worker,
-    question_decision_mode_label, question_kind_label, question_risk_level_label,
-    runtime_failure_from_run, runtime_status_with_worker, summary_to_value,
+    derive_orchestration_view, derive_pending_question, derive_tool_state, failure_to_value,
+    job_status_from_label, match_worker, runtime_failure_from_run,
+    runtime_pending_question_view, runtime_status_with_worker, runtime_tool_state_view,
+    summary_to_value,
 };
 use anima_runtime::agent::{
     ExecutionSummary, RuntimeFailureSnapshot, RuntimeTimelineEvent, WorkerStatus,
 };
-use anima_runtime::runtime::{build_projection, RuntimeProjectionView, RuntimeStateSnapshot};
+use anima_runtime::runtime::{
+    build_projection, queued_current_step, RuntimeProjectionView, RuntimeStateSnapshot,
+};
 use anima_runtime::support::now_ms;
 use anima_runtime::tasks::{run_by_job_id, RunRecord};
 use serde_json::Value;
@@ -27,6 +29,21 @@ struct JobTimelineIndex {
     grouped: HashMap<String, Vec<RuntimeTimelineEvent>>,
 }
 
+struct LegacyStatusContext<'a> {
+    events: &'a [RuntimeTimelineEvent],
+    pending_question: Option<&'a QuestionView>,
+    tool_state: Option<&'a ToolStateView>,
+    summary: Option<&'a ExecutionSummary>,
+    failure: Option<&'a RuntimeFailureSnapshot>,
+    review: Option<&'a JobReviewView>,
+    worker: Option<&'a WorkerTaskView>,
+    idle_since_update_ms: u64,
+    job_id: &'a str,
+    execution_summary: &'a Option<Value>,
+    runtime_failure_value: &'a Option<Value>,
+    runtime_projection: &'a RuntimeProjectionView,
+}
+
 struct JobDerivedState {
     pending_question: Option<QuestionView>,
     tool_state: Option<ToolStateView>,
@@ -35,6 +52,14 @@ struct JobDerivedState {
     status: JobStatus,
     status_label: String,
     current_step: String,
+}
+
+struct JobObservabilityState {
+    pending_question: Option<QuestionView>,
+    tool_state: Option<ToolStateView>,
+    execution_summary: Option<Value>,
+    runtime_failure_value: Option<Value>,
+    failure_value: Option<Value>,
 }
 
 pub fn build_job_views(
@@ -292,113 +317,181 @@ fn derive_job_state(
     idle_since_update_ms: u64,
 ) -> JobDerivedState {
     let runtime_backed = runtime_run.is_some();
-    let runtime_pending_question = runtime_projection
-        .pending_questions
-        .get(job_id)
-        .cloned()
-        .map(|question| QuestionView {
-            question_id: question.question_id,
-            question_kind: question_kind_label(&question.question_kind),
-            prompt: question.prompt,
-            options: question.options,
-            raw_question: question.raw_question,
-            decision_mode: question_decision_mode_label(&question.decision_mode),
-            risk_level: question_risk_level_label(&question.risk_level),
-            requires_user_confirmation: question.requires_user_confirmation,
-            opencode_session_id: Some(question.opencode_session_id),
-            answer_summary: question.answer_summary,
-            resolution_source: question.resolution_source,
-        });
-    let pending_question = runtime_pending_question.clone().or_else(|| {
-        if runtime_backed {
-            None
-        } else {
-            derive_pending_question(events)
-        }
-    });
-    let runtime_tool_state = runtime_projection
-        .tool_states
-        .get(job_id)
-        .cloned()
-        .map(|tool_state| {
-            let (invocation_status, status_text) = derive_tool_invocation_status(
-                tool_state.tool_name.as_deref(),
-                &tool_state.phase,
-                tool_state.permission_state.as_deref(),
-                tool_state.awaits_user_confirmation,
-            );
-            ToolStateView {
-                invocation_id: tool_state.invocation_id,
-                tool_name: tool_state.tool_name,
-                tool_use_id: tool_state.tool_use_id,
-                phase: tool_state.phase,
-                permission_state: tool_state.permission_state,
-                invocation_status,
-                status_text,
-                input_preview: tool_state.input_preview,
-                result_preview: tool_state.result_preview,
-                error: tool_state.error,
-                awaits_user_confirmation: tool_state.awaits_user_confirmation,
-            }
-        });
-    let tool_state = runtime_tool_state.or_else(|| {
-        if runtime_backed {
-            None
-        } else {
-            derive_tool_state(events, pending_question.as_ref())
-        }
-    });
-    let runtime_execution_summary = runtime_projection
-        .execution_summaries
-        .get(job_id)
-        .and_then(|summary| serde_json::to_value(summary).ok());
-    let execution_summary = runtime_execution_summary.or_else(|| {
-        if runtime_backed {
-            None
-        } else {
-            summary.map(summary_to_value)
-        }
-    });
-    let runtime_failure = runtime_projection
-        .failures
-        .get(job_id)
-        .and_then(|failure| serde_json::to_value(failure).ok())
-        .or_else(|| runtime_run.and_then(|run| runtime_failure_from_run(run, job_id)));
-    let failure_value = runtime_failure.or_else(|| failure.map(failure_to_value));
-    let runtime_status = derive_runtime_status(job_id, &execution_summary, &failure_value, failure, worker, runtime_projection);
-    let (status, status_label, current_step) = runtime_status.unwrap_or_else(|| {
-        derive_job_status(
+    let observability = derive_job_observability(
+        job_id,
+        events,
+        summary,
+        failure,
+        runtime_run,
+        runtime_projection,
+    );
+    let (status, status_label, current_step) = if runtime_backed {
+        derive_runtime_backed_status(
+            job_id,
+            &observability.execution_summary,
+            &observability.runtime_failure_value,
+            worker,
+            runtime_projection,
+        )
+    } else {
+        let legacy_context = LegacyStatusContext {
             events,
-            pending_question.as_ref(),
-            tool_state.as_ref(),
+            pending_question: observability.pending_question.as_ref(),
+            tool_state: observability.tool_state.as_ref(),
             summary,
             failure,
             review,
             worker,
             idle_since_update_ms,
-        )
-    });
+            job_id,
+            execution_summary: &observability.execution_summary,
+            runtime_failure_value: &observability.runtime_failure_value,
+            runtime_projection,
+        };
+        derive_legacy_status(legacy_context)
+    };
 
     JobDerivedState {
-        pending_question,
-        tool_state,
-        execution_summary,
-        failure_value,
+        pending_question: observability.pending_question,
+        tool_state: observability.tool_state,
+        execution_summary: observability.execution_summary,
+        failure_value: observability.failure_value,
         status,
         status_label,
         current_step,
     }
 }
 
-fn derive_runtime_status(
+fn derive_runtime_observability(
+    job_id: &str,
+    runtime_run: Option<&RunRecord>,
+    runtime_projection: &RuntimeProjectionView,
+) -> JobObservabilityState {
+    let pending_question = runtime_projection
+        .pending_questions
+        .get(job_id)
+        .map(runtime_pending_question_view);
+    let tool_state = runtime_projection
+        .tool_states
+        .get(job_id)
+        .map(runtime_tool_state_view);
+    let execution_summary = runtime_projection
+        .execution_summaries
+        .get(job_id)
+        .and_then(|summary| serde_json::to_value(summary).ok());
+    let runtime_failure_value = runtime_projection
+        .failures
+        .get(job_id)
+        .and_then(|failure| serde_json::to_value(failure).ok())
+        .or_else(|| runtime_run.and_then(|run| runtime_failure_from_run(run, job_id)));
+
+    JobObservabilityState {
+        pending_question,
+        tool_state,
+        execution_summary,
+        failure_value: runtime_failure_value.clone(),
+        runtime_failure_value,
+    }
+}
+
+fn apply_legacy_observability_fallback(
+    base: JobObservabilityState,
+    events: &[RuntimeTimelineEvent],
+    summary: Option<&ExecutionSummary>,
+    failure: Option<&RuntimeFailureSnapshot>,
+) -> JobObservabilityState {
+    let pending_question = base
+        .pending_question
+        .or_else(|| derive_pending_question(events));
+    let tool_state = base
+        .tool_state
+        .or_else(|| derive_tool_state(events, pending_question.as_ref()));
+    let execution_summary = base
+        .execution_summary
+        .or_else(|| summary.map(summary_to_value));
+    let failure_value = base
+        .failure_value
+        .or_else(|| failure.map(failure_to_value));
+
+    JobObservabilityState {
+        pending_question,
+        tool_state,
+        execution_summary,
+        runtime_failure_value: base.runtime_failure_value,
+        failure_value,
+    }
+}
+
+fn derive_job_observability(
+    job_id: &str,
+    events: &[RuntimeTimelineEvent],
+    summary: Option<&ExecutionSummary>,
+    failure: Option<&RuntimeFailureSnapshot>,
+    runtime_run: Option<&RunRecord>,
+    runtime_projection: &RuntimeProjectionView,
+) -> JobObservabilityState {
+    let mut base = derive_runtime_observability(job_id, runtime_run, runtime_projection);
+    if base.failure_value.is_none() {
+        base.failure_value = failure.map(failure_to_value);
+    }
+    if runtime_run.is_some() {
+        base
+    } else {
+        apply_legacy_observability_fallback(base, events, summary, failure)
+    }
+}
+
+fn derive_runtime_backed_status(
     job_id: &str,
     execution_summary: &Option<Value>,
-    failure_value: &Option<Value>,
-    failure: Option<&RuntimeFailureSnapshot>,
+    runtime_failure_value: &Option<Value>,
     worker: Option<&WorkerTaskView>,
     runtime_projection: &RuntimeProjectionView,
+) -> (JobStatus, String, String) {
+    derive_runtime_status(
+        job_id,
+        execution_summary,
+        runtime_failure_value,
+        worker,
+        runtime_projection,
+    )
+    .unwrap_or_else(|| (JobStatus::Queued, "queued".to_string(), queued_current_step()))
+}
+
+fn derive_legacy_status(context: LegacyStatusContext<'_>) -> (JobStatus, String, String) {
+    derive_runtime_status(
+        context.job_id,
+        context.execution_summary,
+        context.runtime_failure_value,
+        context.worker,
+        context.runtime_projection,
+    )
+    .or_else(|| {
+        if context.failure.is_none() {
+            None
+        } else {
+            derive_runtime_failure_status(context.execution_summary, context.runtime_failure_value)
+        }
+    })
+    .unwrap_or_else(|| {
+        derive_job_status(
+            context.events,
+            context.pending_question,
+            context.tool_state,
+            context.summary,
+            context.failure,
+            context.review,
+            context.worker,
+            context.idle_since_update_ms,
+        )
+    })
+}
+
+fn derive_runtime_failure_status(
+    execution_summary: &Option<Value>,
+    runtime_failure_value: &Option<Value>,
 ) -> Option<(JobStatus, String, String)> {
-    let runtime_failure_status = failure_value.as_ref().map(|_| {
+    let runtime_failure_status = runtime_failure_value.as_ref().map(|_| {
         (
             JobStatus::Failed,
             "failed".to_string(),
@@ -418,26 +511,30 @@ fn derive_runtime_status(
         }
     });
 
-    runtime_failure_status
-        .or(execution_summary_failure_status)
-        .or_else(|| {
-            if failure.is_some() {
-                None
-            } else {
-                runtime_projection.job_statuses.get(job_id).map(|summary| {
-                    let worker_override = worker
-                        .as_ref()
-                        .and_then(|worker| runtime_status_with_worker(summary, worker));
-                    worker_override.unwrap_or_else(|| {
-                        (
-                            job_status_from_label(&summary.status_label),
-                            summary.status_label.clone(),
-                            summary.current_step.clone(),
-                        )
-                    })
-                })
-            }
+    runtime_failure_status.or(execution_summary_failure_status)
+}
+
+fn derive_runtime_status(
+    job_id: &str,
+    execution_summary: &Option<Value>,
+    runtime_failure_value: &Option<Value>,
+    worker: Option<&WorkerTaskView>,
+    runtime_projection: &RuntimeProjectionView,
+) -> Option<(JobStatus, String, String)> {
+    derive_runtime_failure_status(execution_summary, runtime_failure_value).or_else(|| {
+        runtime_projection.job_statuses.get(job_id).map(|summary| {
+            let worker_override = worker
+                .as_ref()
+                .and_then(|worker| runtime_status_with_worker(summary, worker));
+            worker_override.unwrap_or_else(|| {
+                (
+                    job_status_from_label(&summary.status_label),
+                    summary.status_label.clone(),
+                    summary.current_step.clone(),
+                )
+            })
         })
+    })
 }
 
 fn attach_orchestration_views(
@@ -471,5 +568,86 @@ fn attach_orchestration_views(
             runtime_snapshot,
             runtime_projection,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_job_views_with_projection;
+    use crate::jobs_store::JobStore;
+    use crate::jobs_types::JobStatus;
+    use anima_runtime::agent::RuntimeFailureSnapshot;
+    use anima_runtime::runtime::RuntimeStateSnapshot;
+    use anima_runtime::tasks::{RunRecord, RunStatus, RuntimeTaskIndex};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn runtime_backed_job_status_ignores_legacy_failure_snapshot() {
+        let runtime_snapshot = RuntimeStateSnapshot {
+            runs: HashMap::from([(
+                "run-1".into(),
+                RunRecord {
+                    run_id: "run-1".into(),
+                    trace_id: "trace-1".into(),
+                    job_id: "job-1".into(),
+                    chat_id: Some("session-1".into()),
+                    channel: "web".into(),
+                    status: RunStatus::Running,
+                    current_turn_id: None,
+                    latest_error: None,
+                    created_at_ms: 10,
+                    updated_at_ms: 20,
+                    completed_at_ms: None,
+                },
+            )]),
+            index: RuntimeTaskIndex {
+                run_ids_by_job_id: HashMap::from([("job-1".into(), "run-1".into())]),
+                ..RuntimeTaskIndex::default()
+            },
+            ..RuntimeStateSnapshot::default()
+        };
+        let runtime_projection = anima_runtime::runtime::build_projection(&runtime_snapshot);
+        let legacy_failures = vec![RuntimeFailureSnapshot {
+            error_code: "legacy_failure".into(),
+            error_stage: "runtime".into(),
+            message_id: "job-1".into(),
+            channel: "web".into(),
+            chat_id: Some("session-1".into()),
+            occurred_at_ms: 30,
+            internal_message: "legacy only".into(),
+        }];
+        let jobs = build_job_views_with_projection(
+            &[],
+            &[],
+            &legacy_failures,
+            &[],
+            &JobStore::default(),
+            &runtime_snapshot,
+            &runtime_projection,
+        );
+
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_id, "job-1");
+        assert_eq!(jobs[0].status, JobStatus::Executing);
+        assert_eq!(jobs[0].status_label, "executing");
+        assert_eq!(
+            jobs[0]
+                .failure
+                .as_ref()
+                .and_then(|value| value.get("error_code"))
+                .and_then(|value| value.as_str()),
+            Some("legacy_failure")
+        );
+        assert_eq!(jobs[0].execution_summary, Some(json!({
+            "plan_type": "single",
+            "status": "running",
+            "cache_hit": false,
+            "worker_id": null,
+            "error_code": null,
+            "error_stage": null,
+            "task_duration_ms": 10,
+            "stages": {}
+        })));
     }
 }

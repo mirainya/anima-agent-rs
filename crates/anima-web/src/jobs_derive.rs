@@ -13,11 +13,11 @@ use anima_runtime::runtime::{
     session_ready_current_step, tool_execution_failed_current_step,
     tool_execution_finished_current_step, tool_permission_resolved_current_step,
     tool_phase_current_step, tool_result_recorded_current_step, waiting_user_input_current_step,
-    worker_executing_current_step, ProjectionJobStatusSummary, RuntimeProjectionView,
-    RuntimeStateSnapshot,
+    ProjectionToolStateSummary, worker_executing_current_step, ProjectionJobStatusSummary,
+    RuntimeProjectionView, RuntimeStateSnapshot,
 };
 use anima_runtime::support::now_ms;
-use anima_runtime::tasks::{tasks_for_job, RunRecord};
+use anima_runtime::tasks::{subtasks_for_plan, tasks_for_job, RunRecord, TaskStatus};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -81,6 +81,46 @@ pub(crate) fn question_risk_level_label(level: &anima_runtime::agent::QuestionRi
     match level {
         anima_runtime::agent::QuestionRiskLevel::Low => "low".into(),
         anima_runtime::agent::QuestionRiskLevel::High => "high".into(),
+    }
+}
+
+pub(crate) fn runtime_pending_question_view(
+    question: &anima_runtime::agent::PendingQuestion,
+) -> QuestionView {
+    QuestionView {
+        question_id: question.question_id.clone(),
+        question_kind: question_kind_label(&question.question_kind),
+        prompt: question.prompt.clone(),
+        options: question.options.clone(),
+        raw_question: question.raw_question.clone(),
+        decision_mode: question_decision_mode_label(&question.decision_mode),
+        risk_level: question_risk_level_label(&question.risk_level),
+        requires_user_confirmation: question.requires_user_confirmation,
+        opencode_session_id: Some(question.opencode_session_id.clone()),
+        answer_summary: question.answer_summary.clone(),
+        resolution_source: question.resolution_source.clone(),
+    }
+}
+
+pub(crate) fn runtime_tool_state_view(tool_state: &ProjectionToolStateSummary) -> ToolStateView {
+    let (invocation_status, status_text) = derive_tool_invocation_status(
+        tool_state.tool_name.as_deref(),
+        &tool_state.phase,
+        tool_state.permission_state.as_deref(),
+        tool_state.awaits_user_confirmation,
+    );
+    ToolStateView {
+        invocation_id: tool_state.invocation_id.clone(),
+        tool_name: tool_state.tool_name.clone(),
+        tool_use_id: tool_state.tool_use_id.clone(),
+        phase: tool_state.phase.clone(),
+        permission_state: tool_state.permission_state.clone(),
+        invocation_status,
+        status_text,
+        input_preview: tool_state.input_preview.clone(),
+        result_preview: tool_state.result_preview.clone(),
+        error: tool_state.error.clone(),
+        awaits_user_confirmation: tool_state.awaits_user_confirmation,
     }
 }
 
@@ -160,6 +200,43 @@ fn current_task_matches(job_id: &str, task: &CurrentTaskInfo) -> bool {
     task.trace_id == job_id || task.task_id == job_id
 }
 
+fn derive_orchestration_from_runtime_tasks(
+    runtime_snapshot: &RuntimeStateSnapshot,
+    job_id: &str,
+    child_job_ids: &[String],
+) -> Option<OrchestrationView> {
+    let plan_id = tasks_for_job(runtime_snapshot, job_id)
+        .into_iter()
+        .find_map(|task| task.plan_id.clone())?;
+    let subtasks = subtasks_for_plan(runtime_snapshot, &plan_id);
+    let active_subtask = subtasks
+        .iter()
+        .filter(|task| task.status == TaskStatus::Running)
+        .max_by_key(|task| task.updated_at_ms)
+        .copied();
+
+    Some(OrchestrationView {
+        plan_id: Some(plan_id),
+        active_subtask_name: active_subtask.map(|task| task.name.clone()),
+        active_subtask_type: active_subtask.map(|task| task.task_type.clone()),
+        active_subtask_id: active_subtask.map(|task| task.task_id.clone()),
+        total_subtasks: subtasks.len(),
+        active_subtasks: subtasks
+            .iter()
+            .filter(|task| task.status == TaskStatus::Running)
+            .count(),
+        completed_subtasks: subtasks
+            .iter()
+            .filter(|task| task.status == TaskStatus::Completed)
+            .count(),
+        failed_subtasks: subtasks
+            .iter()
+            .filter(|task| task.status == TaskStatus::Failed)
+            .count(),
+        child_job_ids: child_job_ids.to_vec(),
+    })
+}
+
 pub(crate) fn derive_orchestration_view(
     job: &JobView,
     child_job_ids: &[String],
@@ -181,16 +258,17 @@ pub(crate) fn derive_orchestration_view(
         });
     }
 
-    let plan_id = tasks_for_job(runtime_snapshot, &job.job_id)
-        .into_iter()
-        .find_map(|task| task.plan_id.clone())
-        .or_else(|| {
-            latest_payload_string(
-                &job.recent_events,
-                &["orchestration_plan_created"],
-                "plan_id",
-            )
-        });
+    if let Some(runtime_view) =
+        derive_orchestration_from_runtime_tasks(runtime_snapshot, &job.job_id, child_job_ids)
+    {
+        return Some(runtime_view);
+    }
+
+    let plan_id = latest_payload_string(
+        &job.recent_events,
+        &["orchestration_plan_created"],
+        "plan_id",
+    );
     let active_subtask_name = latest_payload_string(
         &job.recent_events,
         &["orchestration_subtask_started"],
