@@ -24,7 +24,8 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -476,7 +477,7 @@ impl AgentOrchestrator {
                     }),
                     started_at_ms: existing
                         .and_then(|task| task.started_at_ms)
-                        .or(*subtask.started_at.lock().unwrap_or_else(|e| e.into_inner())),
+                        .or(*subtask.started_at.lock()),
                     updated_at_ms,
                     completed_at_ms: match status {
                         TaskStatus::Completed | TaskStatus::Failed => Some(updated_at_ms),
@@ -591,7 +592,7 @@ impl AgentOrchestrator {
     // ── Status / Metrics ──────────────────────────────────────────
 
     pub fn status(&self) -> Value {
-        let m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+        let m = self.metrics.lock();
         json!({
             "id": self.id,
             "running": self.is_running(),
@@ -615,7 +616,6 @@ impl AgentOrchestrator {
     pub fn metrics(&self) -> OrchestratorMetrics {
         self.metrics
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
@@ -992,7 +992,7 @@ impl AgentOrchestrator {
         );
 
         {
-            let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let mut m = self.metrics.lock();
             m.plans_created += 1;
         }
 
@@ -1053,7 +1053,7 @@ impl AgentOrchestrator {
                         );
                         finalize_plan(&mut publish_event, &result.status);
                         {
-                            let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut m = self.metrics.lock();
                             m.plans_failed += 1;
                             m.total_duration_ms += now_ms().saturating_sub(started);
                         }
@@ -1113,7 +1113,7 @@ impl AgentOrchestrator {
         self.update_plan_runtime_status(&plan, TaskStatus::Completed, None);
         finalize_plan(&mut publish_event, &final_result.status);
         {
-            let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let mut m = self.metrics.lock();
             m.plans_completed += 1;
             m.total_duration_ms += now_ms().saturating_sub(started);
         }
@@ -1374,7 +1374,7 @@ impl AgentOrchestrator {
     ) where
         F: FnMut(&str, Value),
     {
-        *subtask.started_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
+        *subtask.started_at.lock() = Some(now_ms());
         self.update_subtask_runtime_status(
             subtask,
             lowered,
@@ -1419,11 +1419,10 @@ impl AgentOrchestrator {
     {
         *subtask
             .completed_at
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
-        *subtask.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result.clone());
+            .lock() = Some(now_ms());
+        *subtask.result.lock() = Some(result.clone());
         {
-            let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let mut m = self.metrics.lock();
             m.subtasks_executed += 1;
             if result.status != "success" {
                 m.subtasks_failed += 1;
@@ -1710,7 +1709,7 @@ impl AgentOrchestrator {
         let plan = Arc::new(self.decompose_task(request, &trace_id, &trace_id));
 
         {
-            let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let mut m = self.metrics.lock();
             m.plans_created += 1;
         }
 
@@ -1720,7 +1719,7 @@ impl AgentOrchestrator {
         // Update metrics
         let elapsed = now_ms().saturating_sub(started);
         {
-            let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let mut m = self.metrics.lock();
             m.total_duration_ms += elapsed;
             if result.status == "success" {
                 m.plans_completed += 1;
@@ -1751,7 +1750,7 @@ impl AgentOrchestrator {
                 let mut receivers = Vec::new();
                 for name in group {
                     if let Some(subtask) = plan.subtasks.get(name) {
-                        *subtask.started_at.lock().unwrap_or_else(|e| e.into_inner()) =
+                        *subtask.started_at.lock() =
                             Some(now_ms());
 
                         let task = make_task(MakeTask {
@@ -1791,10 +1790,9 @@ impl AgentOrchestrator {
                     if let Some(subtask) = plan.subtasks.get(&name) {
                         *subtask
                             .completed_at
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
+                            .lock() = Some(now_ms());
 
-                        let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut m = self.metrics.lock();
                         m.subtasks_executed += 1;
 
                         if result.status == "success" {
@@ -1805,7 +1803,7 @@ impl AgentOrchestrator {
                                 fail_result = Some(result.clone());
                             }
                         }
-                        *subtask.result.lock().unwrap_or_else(|e| e.into_inner()) =
+                        *subtask.result.lock() =
                             Some(result.clone());
                     }
                 }
@@ -1846,7 +1844,7 @@ impl AgentOrchestrator {
             }
         };
 
-        *subtask.started_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
+        *subtask.started_at.lock() = Some(now_ms());
 
         let task = make_task(MakeTask {
             trace_id: Some(subtask.trace_id.clone()),
@@ -1882,18 +1880,17 @@ impl AgentOrchestrator {
 
         *subtask
             .completed_at
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(now_ms());
+            .lock() = Some(now_ms());
 
         {
-            let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let mut m = self.metrics.lock();
             m.subtasks_executed += 1;
             if result.status != "success" {
                 m.subtasks_failed += 1;
             }
         }
 
-        *subtask.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result.clone());
+        *subtask.result.lock() = Some(result.clone());
         result
     }
 

@@ -10,7 +10,8 @@ use crate::agent::worker::WorkerPool;
 use crate::support::now_ms;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use uuid::Uuid;
 
 // ── Config ─────────────────────────────────────────────────────────
@@ -252,7 +253,8 @@ impl ParallelPool {
         };
 
         // Update metrics
-        if let Ok(mut m) = self.metrics.lock() {
+        {
+            let mut m = self.metrics.lock();
             m.batches_executed += 1;
             m.total_tasks += total as u64;
             m.successful_tasks += successful as u64;
@@ -288,7 +290,7 @@ impl ParallelPool {
     // ── Status / Metrics ───────────────────────────────────────────
 
     pub fn status(&self) -> Value {
-        let m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+        let m = self.metrics.lock();
         json!({
             "running": self.is_running(),
             "config": {
@@ -308,9 +310,6 @@ impl ParallelPool {
     }
 
     pub fn metrics(&self) -> ParallelPoolMetrics {
-        self.metrics
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.metrics.lock().clone()
     }
 }
