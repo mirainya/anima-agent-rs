@@ -10,9 +10,10 @@
 use crate::agent::types::{make_task_result, MakeTaskResult, Task, TaskResult};
 use crate::agent::worker::WorkerPool;
 use indexmap::IndexMap;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -99,11 +100,11 @@ impl Specialist {
         SpecialistInfo {
             id: self.id.clone(),
             name: self.name.clone(),
-            capabilities: self.capabilities.lock().unwrap().clone(),
+            capabilities: self.capabilities.lock().clone(),
             priority: self.priority,
             max_concurrent: self.max_concurrent,
             current_load: self.current_load.load(Ordering::SeqCst),
-            status: *self.status.lock().unwrap(),
+            status: *self.status.lock(),
         }
     }
 }
@@ -202,18 +203,12 @@ impl SpecialistPool {
 
     /// 旧版注册：按名称关联一个 WorkerPool
     pub fn register(&self, specialist: impl Into<String>, worker_pool: Arc<WorkerPool>) {
-        self.specialists
-            .lock()
-            .unwrap()
-            .insert(specialist.into(), worker_pool);
+        self.specialists.lock().insert(specialist.into(), worker_pool);
     }
 
     /// 旧版解析：按名称查找 WorkerPool，找不到则返回默认池
     pub fn resolve(&self, specialist: &str) -> Arc<WorkerPool> {
-        self.specialists
-            .lock()
-            .unwrap()
-            .get(specialist)
+        self.specialists.lock().get(specialist)
             .cloned()
             .unwrap_or_else(|| self.default_pool.clone())
     }
@@ -270,13 +265,10 @@ impl SpecialistPool {
             pool: opts.pool,
         });
 
-        self.specialist_registry
-            .lock()
-            .unwrap()
-            .insert(opts.id.clone(), specialist);
+        self.specialist_registry.lock().insert(opts.id.clone(), specialist);
 
         // Update capability index
-        let mut caps = self.capabilities.lock().unwrap();
+        let mut caps = self.capabilities.lock();
         for cap in &opts.capabilities {
             caps.entry(cap.clone()).or_default().push(opts.id.clone());
         }
@@ -290,10 +282,10 @@ impl SpecialistPool {
         // Step 1: lock registry to retrieve the specialist and clone its
         // capabilities, then immediately drop the registry lock.
         let spec_caps: Option<Vec<String>> = {
-            let registry = self.specialist_registry.lock().unwrap();
+            let registry = self.specialist_registry.lock();
             registry
                 .get(id)
-                .map(|s| s.capabilities.lock().unwrap().clone())
+                .map(|s| s.capabilities.lock().clone())
         };
 
         // Step 2: lock capabilities (no registry lock held) and clean up the
@@ -301,7 +293,7 @@ impl SpecialistPool {
         // released — matches the order used by pick_specialist_for, eliminating
         // the ABBA deadlock risk.
         if let Some(ref caps_list) = spec_caps {
-            let mut caps = self.capabilities.lock().unwrap();
+            let mut caps = self.capabilities.lock();
             for cap in caps_list {
                 if let Some(ids) = caps.get_mut(cap) {
                     ids.retain(|sid| sid != id);
@@ -313,39 +305,30 @@ impl SpecialistPool {
         }
 
         // Step 3: lock registry again to actually remove the specialist.
-        self.specialist_registry
-            .lock()
-            .unwrap()
-            .shift_remove(id)
-            .is_some()
+        self.specialist_registry.lock().shift_remove(id).is_some()
     }
 
     pub fn get_specialist(&self, id: &str) -> Option<SpecialistInfo> {
-        self.specialist_registry
-            .lock()
-            .unwrap()
-            .get(id)
-            .map(|s| s.info())
+        self.specialist_registry.lock().get(id).map(|s| s.info())
     }
 
     pub fn list_specialists(&self) -> Vec<SpecialistInfo> {
         self.specialist_registry
             .lock()
-            .unwrap()
             .values()
             .map(|s| s.info())
             .collect()
     }
 
     pub fn list_specialists_by_capability(&self, cap: &str) -> Vec<SpecialistInfo> {
-        let caps = self.capabilities.lock().unwrap();
+        let caps = self.capabilities.lock();
         let ids = match caps.get(cap) {
             Some(ids) => ids.clone(),
             None => return Vec::new(),
         };
         drop(caps);
 
-        let registry = self.specialist_registry.lock().unwrap();
+        let registry = self.specialist_registry.lock();
         ids.iter()
             .filter_map(|id| registry.get(id).map(|s| s.info()))
             .collect()
@@ -356,14 +339,14 @@ impl SpecialistPool {
     // -----------------------------------------------------------------------
 
     pub fn list_capabilities(&self) -> Vec<String> {
-        self.capabilities.lock().unwrap().keys().cloned().collect()
+        self.capabilities.lock().keys().cloned().collect()
     }
 
     /// 为专家动态添加能力标签
     pub fn add_capability(&self, specialist_id: &str, capability: &str) {
-        let registry = self.specialist_registry.lock().unwrap();
+        let registry = self.specialist_registry.lock();
         if let Some(specialist) = registry.get(specialist_id) {
-            let mut spec_caps = specialist.capabilities.lock().unwrap();
+            let mut spec_caps = specialist.capabilities.lock();
             if !spec_caps.contains(&capability.to_string()) {
                 spec_caps.push(capability.to_string());
             }
@@ -372,7 +355,7 @@ impl SpecialistPool {
         }
         drop(registry);
 
-        let mut caps = self.capabilities.lock().unwrap();
+        let mut caps = self.capabilities.lock();
         let ids = caps.entry(capability.to_string()).or_default();
         if !ids.contains(&specialist_id.to_string()) {
             ids.push(specialist_id.to_string());
@@ -381,14 +364,14 @@ impl SpecialistPool {
 
     /// 移除专家的某个能力标签
     pub fn remove_capability(&self, specialist_id: &str, capability: &str) {
-        let registry = self.specialist_registry.lock().unwrap();
+        let registry = self.specialist_registry.lock();
         if let Some(specialist) = registry.get(specialist_id) {
-            let mut spec_caps = specialist.capabilities.lock().unwrap();
+            let mut spec_caps = specialist.capabilities.lock();
             spec_caps.retain(|c| c != capability);
         }
         drop(registry);
 
-        let mut caps = self.capabilities.lock().unwrap();
+        let mut caps = self.capabilities.lock();
         if let Some(ids) = caps.get_mut(capability) {
             ids.retain(|sid| sid != specialist_id);
             if ids.is_empty() {
@@ -475,7 +458,7 @@ impl SpecialistPool {
 
     /// 根据配置的负载均衡策略，从匹配能力的活跃专家中选择一个
     fn pick_specialist_for(&self, capability: &str) -> Option<Arc<Specialist>> {
-        let caps = self.capabilities.lock().unwrap();
+        let caps = self.capabilities.lock();
         let ids = caps.get(capability)?;
         if ids.is_empty() {
             return None;
@@ -484,11 +467,11 @@ impl SpecialistPool {
         let ids = ids.clone();
         drop(caps);
 
-        let registry = self.specialist_registry.lock().unwrap();
+        let registry = self.specialist_registry.lock();
         let candidates: Vec<Arc<Specialist>> = ids
             .iter()
             .filter_map(|id| registry.get(id))
-            .filter(|s| *s.status.lock().unwrap() == SpecialistStatus::Active)
+            .filter(|s| *s.status.lock() == SpecialistStatus::Active)
             .cloned()
             .collect();
         drop(registry);
@@ -578,9 +561,9 @@ impl SpecialistPool {
     }
 
     pub fn health_check(&self) -> Value {
-        let specialist_count = self.specialist_registry.lock().unwrap().len();
-        let capability_count = self.capabilities.lock().unwrap().len();
-        let legacy_count = self.specialists.lock().unwrap().len();
+        let specialist_count = self.specialist_registry.lock().len();
+        let capability_count = self.capabilities.lock().len();
+        let legacy_count = self.specialists.lock().len();
 
         json!({
             "running": self.is_running(),

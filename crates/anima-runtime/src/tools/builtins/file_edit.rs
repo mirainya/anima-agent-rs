@@ -65,6 +65,10 @@ impl Tool for FileEditTool {
         Ok(())
     }
 
+    fn is_concurrency_safe(&self) -> bool {
+        false
+    }
+
     fn call(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let file_path = input["file_path"].as_str().expect("validated");
         let old_string = input["old_string"].as_str().expect("validated");

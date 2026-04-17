@@ -31,6 +31,19 @@ pub enum HookResult {
     Block(String),
     /// 修改输入后继续
     Transform(Value),
+    /// 修改工具输出后继续
+    TransformToolResult(ToolResult),
+}
+
+/// Post-tool hook 聚合结果
+#[derive(Debug, Clone, PartialEq)]
+pub enum PostToolHookResult {
+    /// 保持原始结果
+    Continue,
+    /// 将结果转换成更明确的错误反馈
+    Block(String),
+    /// 用新的工具结果替换原结果
+    Transform(ToolResult),
 }
 
 /// 钩子配置

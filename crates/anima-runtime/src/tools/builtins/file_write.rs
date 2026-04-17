@@ -52,6 +52,10 @@ impl Tool for FileWriteTool {
         Ok(())
     }
 
+    fn is_concurrency_safe(&self) -> bool {
+        false
+    }
+
     fn call(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let file_path = input["file_path"].as_str().expect("validated");
         let content = input["content"].as_str().expect("validated");

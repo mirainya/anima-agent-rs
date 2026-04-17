@@ -63,6 +63,10 @@ impl Tool for BashExecTool {
         Ok(())
     }
 
+    fn is_concurrency_safe(&self) -> bool {
+        false
+    }
+
     fn call(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let command = input["command"].as_str().expect("validated").to_string();
         let timeout_ms = input

@@ -1,7 +1,8 @@
 use anima_types::{AnimaError, ApiErrorKind, ApiResponse, Result};
 use reqwest::blocking::RequestBuilder;
 use serde_json::{Map, Value};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::facade::Client;
 
@@ -125,15 +126,40 @@ fn debug_http_event(label: &str, detail: &str) {
     }
 }
 
-fn send(builder: RequestBuilder) -> Result<ApiResponse> {
-    let response = builder
-        .send()
-        .map_err(|err| AnimaError::Transport(err.to_string()))?;
-    let status = response.status().as_u16();
-    let body = response
-        .text()
-        .map_err(|err| AnimaError::Transport(err.to_string()))?;
-    Ok(parse_response(status, &body))
+fn should_retry_status(status: u16) -> bool {
+    status >= 500
+}
+
+fn send_with_retry<F>(client: &Client, mut make_builder: F) -> Result<ApiResponse>
+where
+    F: FnMut() -> RequestBuilder,
+{
+    let mut attempt = 0;
+    loop {
+        let response = make_builder().send();
+        match response {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let body = response
+                    .text()
+                    .map_err(|err| AnimaError::Transport(err.to_string()))?;
+                if should_retry_status(status) && attempt < client.options.max_retries {
+                    attempt += 1;
+                    thread::sleep(Duration::from_millis(client.options.retry_backoff_ms));
+                    continue;
+                }
+                return Ok(parse_response(status, &body));
+            }
+            Err(err) => {
+                if attempt < client.options.max_retries {
+                    attempt += 1;
+                    thread::sleep(Duration::from_millis(client.options.retry_backoff_ms));
+                    continue;
+                }
+                return Err(AnimaError::Transport(err.to_string()));
+            }
+        }
+    }
 }
 
 pub fn get_request(
@@ -142,12 +168,12 @@ pub fn get_request(
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    send(
+    send_with_retry(client, || {
         client
             .http_client
-            .get(url)
-            .header("accept", "application/json"),
-    )
+            .get(url.clone())
+            .header("accept", "application/json")
+    })
 }
 
 pub fn post_request(
@@ -157,14 +183,15 @@ pub fn post_request(
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    send(
+    let request_body = serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?;
+    send_with_retry(client, || {
         client
             .http_client
-            .post(url)
+            .post(url.clone())
             .header("accept", "application/json")
             .header("content-type", "application/json")
-            .body(serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?),
-    )
+            .body(request_body.clone())
+    })
 }
 
 pub fn patch_request(
@@ -174,14 +201,15 @@ pub fn patch_request(
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    send(
+    let request_body = serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?;
+    send_with_retry(client, || {
         client
             .http_client
-            .patch(url)
+            .patch(url.clone())
             .header("accept", "application/json")
             .header("content-type", "application/json")
-            .body(serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?),
-    )
+            .body(request_body.clone())
+    })
 }
 
 pub fn put_request(
@@ -191,14 +219,15 @@ pub fn put_request(
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    send(
+    let request_body = serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?;
+    send_with_retry(client, || {
         client
             .http_client
-            .put(url)
+            .put(url.clone())
             .header("accept", "application/json")
             .header("content-type", "application/json")
-            .body(serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?),
-    )
+            .body(request_body.clone())
+    })
 }
 
 pub fn delete_request(
@@ -207,12 +236,12 @@ pub fn delete_request(
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    send(
+    send_with_retry(client, || {
         client
             .http_client
-            .delete(url)
-            .header("accept", "application/json"),
-    )
+            .delete(url.clone())
+            .header("accept", "application/json")
+    })
 }
 
 /// 发送 GET 请求并返回原始 Response（不读取 body），用于 SSE 流式读取

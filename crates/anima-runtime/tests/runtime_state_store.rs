@@ -1,6 +1,7 @@
 use anima_runtime::messages::types::MessageRole;
 use anima_runtime::runtime::{build_projection, RuntimeDomainEvent, RuntimeStateStore};
 use anima_runtime::support::now_ms;
+use std::path::PathBuf;
 use anima_runtime::tasks::{
     RequirementRecord, RequirementStatus, RunRecord, RunStatus, SuspensionKind, SuspensionRecord,
     SuspensionStatus, TaskKind, TaskRecord, TaskStatus, ToolInvocationRuntimeRecord, TurnRecord,
@@ -385,4 +386,108 @@ fn transcript_pairing_validator_reports_missing_tool_result() {
 
     let violations = validate_pairing(&messages);
     assert_eq!(violations.len(), 1);
+}
+
+fn temp_runtime_state_path(name: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!("anima_runtime_state_store_{name}_{}.json", now_ms()));
+    path
+}
+
+#[test]
+fn runtime_state_store_persists_and_restores_snapshot_round_trip() {
+    let path = temp_runtime_state_path("round_trip");
+    let store = RuntimeStateStore::with_persistence(path.clone());
+    let now = now_ms();
+
+    store.append(RuntimeDomainEvent::RunUpserted {
+        run: RunRecord {
+            run_id: "run-persist-1".into(),
+            trace_id: "trace-persist-1".into(),
+            job_id: "job-persist-1".into(),
+            chat_id: Some("chat-persist-1".into()),
+            channel: "web".into(),
+            status: RunStatus::Running,
+            current_turn_id: None,
+            latest_error: None,
+            created_at_ms: now,
+            updated_at_ms: now,
+            completed_at_ms: None,
+        },
+    });
+
+    store.append(RuntimeDomainEvent::RequirementUpserted {
+        requirement: RequirementRecord {
+            requirement_id: "req-persist-1".into(),
+            run_id: "run-persist-1".into(),
+            turn_id: None,
+            job_id: "job-persist-1".into(),
+            original_user_request: "persist me".into(),
+            attempted_rounds: 1,
+            max_rounds: 3,
+            last_result_fingerprint: None,
+            last_reason: Some("waiting".into()),
+            status: RequirementStatus::WaitingUserInput,
+            created_at_ms: now,
+            updated_at_ms: now,
+        },
+    });
+
+    let restored = RuntimeStateStore::with_persistence(path.clone());
+    assert_eq!(restored.snapshot(), store.snapshot());
+    assert_eq!(restored.next_sequence(), store.next_sequence());
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn runtime_state_store_restores_next_sequence_continuity() {
+    let path = temp_runtime_state_path("sequence");
+    let store = RuntimeStateStore::with_persistence(path.clone());
+    let now = now_ms();
+
+    store.append(RuntimeDomainEvent::RunUpserted {
+        run: RunRecord {
+            run_id: "run-seq-1".into(),
+            trace_id: "trace-seq-1".into(),
+            job_id: "job-seq-1".into(),
+            chat_id: None,
+            channel: "web".into(),
+            status: RunStatus::Running,
+            current_turn_id: None,
+            latest_error: None,
+            created_at_ms: now,
+            updated_at_ms: now,
+            completed_at_ms: None,
+        },
+    });
+
+    let restored = RuntimeStateStore::with_persistence(path.clone());
+    let sequence = restored.append(RuntimeDomainEvent::ProjectionHintRecorded {
+        run_id: "run-seq-1".into(),
+        scope: "job".into(),
+        key: "status".into(),
+        value: json!("running"),
+    });
+    assert_eq!(sequence, 2);
+    assert_eq!(restored.next_sequence(), 2);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn runtime_state_store_missing_or_corrupt_file_falls_back_to_empty() {
+    let missing_path = temp_runtime_state_path("missing");
+    let missing = RuntimeStateStore::with_persistence(missing_path.clone());
+    assert!(missing.snapshot().runs.is_empty());
+    assert_eq!(missing.next_sequence(), 0);
+
+    let corrupt_path = temp_runtime_state_path("corrupt");
+    std::fs::write(&corrupt_path, "{not-json").unwrap();
+    let corrupt = RuntimeStateStore::with_persistence(corrupt_path.clone());
+    assert!(corrupt.snapshot().runs.is_empty());
+    assert_eq!(corrupt.next_sequence(), 0);
+
+    let _ = std::fs::remove_file(missing_path);
+    let _ = std::fs::remove_file(corrupt_path);
 }

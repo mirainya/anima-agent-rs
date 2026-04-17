@@ -65,6 +65,10 @@ impl Tool for GrepSearchTool {
         Ok(())
     }
 
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
     fn call(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let pattern = input["pattern"].as_str().expect("validated");
         let search_path = input.get("path").and_then(Value::as_str).unwrap_or(".");

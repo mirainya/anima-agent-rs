@@ -9,4 +9,4 @@ pub mod sessions;
 pub mod utils;
 
 pub use anima_types::{AnimaError, ApiErrorKind, ApiResponse, Result};
-pub use facade::Client;
+pub use facade::{Client, ClientOptions};

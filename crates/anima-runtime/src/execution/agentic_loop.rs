@@ -5,6 +5,7 @@
 
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::thread;
 use uuid::Uuid;
 
 use crate::agent::executor::TaskExecutor;
@@ -23,7 +24,7 @@ use crate::tools::execution::{
     RunToolUseOutcome, ToolInvocationPhase, ToolInvocationRecord, ToolLifecycleEventCallback,
 };
 use crate::tools::registry::ToolRegistry;
-use crate::tools::result::ToolResult;
+use crate::tools::result::{ToolError, ToolResult};
 
 use anima_sdk::facade::Client as SdkClient;
 
@@ -134,6 +135,8 @@ pub enum AgenticLoopError {
     ApiCall { internal_message: String },
     /// 响应解析错误
     ResponseParse { internal_message: String },
+    /// 工具执行失败
+    ToolExecution { error: ToolError },
     /// 所有工具执行均失败
     AllToolsFailed { internal_message: String },
 }
@@ -165,6 +168,9 @@ impl AgenticLoopError {
                 RuntimeErrorStage::PlanExecute,
                 internal_message.clone(),
             ),
+            Self::ToolExecution { error } => {
+                RuntimeError::from_tool_error(error, RuntimeErrorStage::PlanExecute)
+            }
             Self::AllToolsFailed { internal_message } => RuntimeError::new(
                 RuntimeErrorKind::ToolExecutionFailed,
                 RuntimeErrorStage::PlanExecute,
@@ -181,6 +187,7 @@ impl std::fmt::Display for AgenticLoopError {
             Self::ResponseParse { internal_message } => {
                 write!(f, "response parse error: {internal_message}")
             }
+            Self::ToolExecution { error } => write!(f, "tool execution failed: {error}"),
             Self::AllToolsFailed { internal_message } => {
                 write!(f, "all tools failed: {internal_message}")
             }
@@ -401,9 +408,22 @@ enum SingleToolExecutionOutcome {
     AwaitingPermission(Box<AwaitingToolPermission>),
 }
 
+#[derive(Debug, Clone)]
+struct IndexedToolUse {
+    index: usize,
+    tool_use: ParsedToolUse,
+}
+
+#[derive(Debug, Clone)]
+struct IndexedToolOutcome {
+    index: usize,
+    tool_use_id: String,
+    outcome: SingleToolExecutionOutcome,
+}
+
 /// 执行单个 tool_use；真实错误转为 ToolResult::error，但保留 AwaitingPermission 语义
 fn execute_single_tool(
-    tool_use: &ParsedToolUse,
+    tool_use: ParsedToolUse,
     tool_registry: &ToolRegistry,
     permission_checker: Option<&PermissionChecker>,
     hook_registry: Option<&HookRegistry>,
@@ -514,6 +534,64 @@ fn execute_single_tool(
     }
 }
 
+fn is_tool_use_concurrency_safe(tool_use: &ParsedToolUse, tool_registry: &ToolRegistry) -> bool {
+    tool_registry
+        .get(&tool_use.name)
+        .map(|tool| tool.is_concurrency_safe())
+        .unwrap_or(false)
+}
+
+fn execute_tool_segment(
+    segment: &[IndexedToolUse],
+    tool_registry: &ToolRegistry,
+    permission_checker: Option<&PermissionChecker>,
+    hook_registry: Option<&HookRegistry>,
+    config: &AgenticLoopConfig,
+) -> Vec<IndexedToolOutcome> {
+    if segment.is_empty() {
+        return Vec::new();
+    }
+
+    if segment.len() == 1 {
+        let item = &segment[0];
+        return vec![IndexedToolOutcome {
+            index: item.index,
+            tool_use_id: item.tool_use.id.clone(),
+            outcome: execute_single_tool(
+                item.tool_use.clone(),
+                tool_registry,
+                permission_checker,
+                hook_registry,
+                config,
+            ),
+        }];
+    }
+
+    thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(segment.len());
+        for item in segment {
+            handles.push(scope.spawn(move || IndexedToolOutcome {
+                index: item.index,
+                tool_use_id: item.tool_use.id.clone(),
+                outcome: execute_single_tool(
+                    item.tool_use.clone(),
+                    tool_registry,
+                    permission_checker,
+                    hook_registry,
+                    config,
+                ),
+            }));
+        }
+
+        let mut outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("tool execution worker panicked"))
+            .collect::<Vec<_>>();
+        outcomes.sort_by_key(|item| item.index);
+        outcomes
+    })
+}
+
 pub fn resume_suspended_tool_invocation(
     suspension: &AgenticLoopSuspension,
     allowed: bool,
@@ -550,9 +628,7 @@ pub fn resume_suspended_tool_invocation(
             suspension.suspended_tool.invocation.clone(),
             config.on_tool_lifecycle_event.as_ref(),
         )
-        .map_err(|err| AgenticLoopError::AllToolsFailed {
-            internal_message: err.to_string(),
-        })?
+        .map_err(|error| AgenticLoopError::ToolExecution { error })?
     } else {
         let mut invocation = suspension.suspended_tool.invocation.clone();
         invocation.set_permission_state(crate::tools::execution::ToolPermissionState::Denied);
@@ -718,59 +794,110 @@ pub fn continue_agentic_loop(
             }));
         }
 
-        for tool_use in &parsed.tool_uses {
-            match execute_single_tool(
-                tool_use,
-                tool_registry,
-                permission_checker,
-                hook_registry,
-                config,
-            ) {
-                SingleToolExecutionOutcome::Completed {
-                    mut invocation,
-                    result,
-                } => {
-                    invocation.mark_phase(ToolInvocationPhase::ResultRecorded);
-                    if let Some(callback) = config.on_tool_lifecycle_event.as_ref() {
-                        callback(
-                            "tool_result_recorded",
-                            json!({
-                                "invocation_id": invocation.invocation_id,
-                                "tool_name": invocation.tool_name,
-                                "tool_use_id": invocation.tool_use_id,
-                                "phase": invocation.phase,
-                                "permission_state": invocation.permission_state,
-                                "started_at_ms": invocation.started_at_ms,
-                                "finished_at_ms": invocation.finished_at_ms,
-                                "result_summary": invocation.result_summary,
-                                "error_summary": invocation.error_summary,
-                                "details": {
-                                    "is_error": result.is_error,
-                                }
-                            }),
-                        );
+        let indexed_tool_uses = parsed
+            .tool_uses
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, tool_use)| IndexedToolUse { index, tool_use })
+            .collect::<Vec<_>>();
+
+        let mut cursor = 0;
+        while cursor < indexed_tool_uses.len() {
+            let concurrency_safe =
+                is_tool_use_concurrency_safe(&indexed_tool_uses[cursor].tool_use, tool_registry);
+            let mut segment_end = cursor + 1;
+            while segment_end < indexed_tool_uses.len()
+                && is_tool_use_concurrency_safe(&indexed_tool_uses[segment_end].tool_use, tool_registry)
+                    == concurrency_safe
+            {
+                segment_end += 1;
+            }
+
+            let segment = &indexed_tool_uses[cursor..segment_end];
+            let outcomes = if concurrency_safe {
+                execute_tool_segment(
+                    segment,
+                    tool_registry,
+                    permission_checker,
+                    hook_registry,
+                    config,
+                )
+            } else {
+                segment
+                    .iter()
+                    .map(|item| IndexedToolOutcome {
+                        index: item.index,
+                        tool_use_id: item.tool_use.id.clone(),
+                        outcome: execute_single_tool(
+                            item.tool_use.clone(),
+                            tool_registry,
+                            permission_checker,
+                            hook_registry,
+                            config,
+                        ),
+                    })
+                    .collect::<Vec<_>>()
+            };
+
+            let earliest_permission = outcomes.iter().find_map(|item| match &item.outcome {
+                SingleToolExecutionOutcome::AwaitingPermission(awaiting) => Some((
+                    item.tool_use_id.clone(),
+                    awaiting.clone(),
+                )),
+                _ => None,
+            });
+
+            if let Some((tool_use_id, awaiting)) = earliest_permission {
+                return Ok(AgenticLoopOutcome::Suspended(Box::new(AgenticLoopSuspension {
+                    suspended_tool: SuspendedToolInvocation {
+                        tool_use_id,
+                        tool_name: awaiting.invocation.tool_name.clone(),
+                        tool_input: awaiting.input,
+                        permission_request: awaiting.permission_request,
+                        invocation: awaiting.invocation,
+                    },
+                    messages,
+                    iterations,
+                    compact_count,
+                })));
+            }
+
+            for item in outcomes {
+                match item.outcome {
+                    SingleToolExecutionOutcome::Completed {
+                        mut invocation,
+                        result,
+                    } => {
+                        invocation.mark_phase(ToolInvocationPhase::ResultRecorded);
+                        if let Some(callback) = config.on_tool_lifecycle_event.as_ref() {
+                            callback(
+                                "tool_result_recorded",
+                                json!({
+                                    "invocation_id": invocation.invocation_id,
+                                    "tool_name": invocation.tool_name,
+                                    "tool_use_id": invocation.tool_use_id,
+                                    "phase": invocation.phase,
+                                    "permission_state": invocation.permission_state,
+                                    "started_at_ms": invocation.started_at_ms,
+                                    "finished_at_ms": invocation.finished_at_ms,
+                                    "result_summary": invocation.result_summary,
+                                    "error_summary": invocation.error_summary,
+                                    "details": {
+                                        "is_error": result.is_error,
+                                    }
+                                }),
+                            );
+                        }
+                        let tool_result_msg =
+                            build_tool_result_msg(&item.tool_use_id, &result, Some(&invocation));
+                        messages.push(tool_result_msg);
                     }
-                    let tool_result_msg =
-                        build_tool_result_msg(&tool_use.id, &result, Some(&invocation));
-                    messages.push(tool_result_msg);
-                }
-                SingleToolExecutionOutcome::AwaitingPermission(awaiting) => {
-                    return Ok(AgenticLoopOutcome::Suspended(Box::new(
-                        AgenticLoopSuspension {
-                            suspended_tool: SuspendedToolInvocation {
-                                tool_use_id: tool_use.id.clone(),
-                                tool_name: awaiting.invocation.tool_name.clone(),
-                                tool_input: awaiting.input,
-                                permission_request: awaiting.permission_request,
-                                invocation: awaiting.invocation,
-                            },
-                            messages,
-                            iterations,
-                            compact_count,
-                        },
-                    )));
+                    SingleToolExecutionOutcome::AwaitingPermission(_) => unreachable!(),
                 }
             }
+
+            cursor = segment_end;
         }
 
         iterations += 1;

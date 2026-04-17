@@ -513,16 +513,17 @@ pub(crate) fn derive_job_status(
     }
 
     if let Some(tool_state) = tool_state {
-        let tool_label = tool_state.tool_name.as_deref().unwrap_or("工具");
-        let current_step = match tool_state.phase.as_str() {
-            "permission_resolved" => tool_permission_resolved_current_step(),
-            "execution_started" | "executing" => format!("正在执行工具：{tool_label}"),
-            "execution_finished" | "completed" => tool_execution_finished_current_step(),
-            "execution_failed" | "failed" => tool_execution_failed_current_step(),
-            "result_recorded" => tool_result_recorded_current_step(),
-            other => tool_phase_current_step(other),
+        let status = if tool_state.invocation_status == "permission_requested" {
+            JobStatus::WaitingUserInput
+        } else {
+            JobStatus::Executing
         };
-        return (JobStatus::Executing, "executing".into(), current_step);
+        let status_label = if matches!(status, JobStatus::WaitingUserInput) {
+            "waiting_user_input"
+        } else {
+            "executing"
+        };
+        return (status, status_label.into(), tool_state.status_text.clone());
     }
 
     if has_followup_scheduled || matches!(summary_status, Some("followup_pending")) {
@@ -594,6 +595,45 @@ pub(crate) fn derive_job_status(
     }
 
     (JobStatus::Queued, "queued".into(), queued_current_step())
+}
+
+pub(crate) fn derive_tool_invocation_status(
+    tool_name: Option<&str>,
+    phase: &str,
+    permission_state: Option<&str>,
+    awaits_user_confirmation: bool,
+) -> (String, String) {
+    let invocation_status = if awaits_user_confirmation || permission_state == Some("requested") {
+        "permission_requested"
+    } else if permission_state == Some("denied") {
+        "permission_denied"
+    } else if phase == "permission_resolved" && permission_state == Some("allowed") {
+        "permission_allowed"
+    } else if matches!(phase, "execution_started" | "executing") {
+        "executing"
+    } else if matches!(phase, "execution_finished" | "completed") {
+        "completed"
+    } else if matches!(phase, "execution_failed" | "failed") {
+        "failed"
+    } else if phase == "result_recorded" {
+        "result_recorded"
+    } else {
+        phase
+    };
+
+    let tool_label = tool_name.unwrap_or("工具");
+    let status_text = match invocation_status {
+        "permission_requested" => "等待用户确认工具调用权限".to_string(),
+        "permission_allowed" => tool_permission_resolved_current_step(),
+        "permission_denied" => "工具权限已拒绝".to_string(),
+        "executing" => format!("正在执行工具：{tool_label}"),
+        "completed" => tool_execution_finished_current_step(),
+        "failed" => tool_execution_failed_current_step(),
+        "result_recorded" => tool_result_recorded_current_step(),
+        other => tool_phase_current_step(other),
+    };
+
+    (invocation_status.to_string(), status_text)
 }
 
 pub(crate) fn derive_tool_state(
@@ -689,6 +729,12 @@ pub(crate) fn derive_tool_state(
                     == Some("tool_permission")
         })
         .unwrap_or(false);
+    let (invocation_status, status_text) = derive_tool_invocation_status(
+        raw_tool_name,
+        &phase,
+        permission_state,
+        awaits_user_confirmation,
+    );
 
     Some(ToolStateView {
         invocation_id: raw_invocation_id.map(ToString::to_string),
@@ -696,6 +742,8 @@ pub(crate) fn derive_tool_state(
         tool_use_id: raw_tool_use_id.map(ToString::to_string),
         phase,
         permission_state: permission_state.map(ToString::to_string),
+        invocation_status,
+        status_text,
         input_preview,
         result_preview: result_preview.map(ToString::to_string),
         error: error.map(ToString::to_string),

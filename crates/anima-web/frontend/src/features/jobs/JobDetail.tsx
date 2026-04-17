@@ -196,10 +196,12 @@ export function JobDetail({ jobs, selectedSessionChatId, jobId }: JobDetailProps
         {job.status !== 'waiting_user_input' && toolState && (
           <div className="job-detail-section">
             <div className="section-title">工具执行状态</div>
+            <div className="job-status-explanation">{toolState.status_text}</div>
             <div className="job-detail-grid summary-grid">
               <span className="detail-label">tool</span><span>{toolState.tool_name ?? '-'}</span>
               <span className="detail-label">tool_use_id</span><span>{toolState.tool_use_id ?? '-'}</span>
               <span className="detail-label">invocation</span><span>{toolState.invocation_id ?? '-'}</span>
+              <span className="detail-label">status</span><span>{toolState.invocation_status}</span>
               <span className="detail-label">phase</span><span>{toolState.phase}</span>
               <span className="detail-label">permission</span><span>{toolState.permission_state ?? '-'}</span>
               <span className="detail-label">input</span><span className="job-prewrap">{toolState.input_preview ?? '-'}</span>

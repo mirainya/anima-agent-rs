@@ -34,6 +34,7 @@ pub struct StatusSnapshot {
     pub runtime_timeline: Vec<serde_json::Value>,
     pub recent_execution_summaries: Vec<serde_json::Value>,
     pub metrics: serde_json::Value,
+    pub warnings: serde_json::Value,
     pub unified_runtime: serde_json::Value,
     pub jobs: Vec<crate::jobs::JobView>,
 }
@@ -119,6 +120,7 @@ pub fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
     let runtime_snapshot = runtime.agent.core_agent().runtime_state_snapshot();
     let runtime_projection = build_projection(&runtime_snapshot);
     let worker_status = agent_status.core.worker_pool.clone();
+    let bus_telemetry = state.bus.telemetry_snapshot();
     let failure_list = agent_status
         .core
         .failures
@@ -232,18 +234,42 @@ pub fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
                 "total_ms": summary.stages.total_ms,
             }
         })).collect::<Vec<_>>(),
-        metrics: serde_json::json!({
-            "counters": agent_status.core.metrics.counters,
-            "gauges": agent_status.core.metrics.gauges,
-            "histograms": agent_status.core.metrics.histograms.iter().map(|entry| {
-                let (name, histogram) = entry;
-                (name.clone(), serde_json::json!({
-                    "buckets": histogram.buckets,
-                    "counts": histogram.counts,
-                    "sum": histogram.sum,
-                    "count": histogram.count,
-                }))
-            }).collect::<serde_json::Map<String, serde_json::Value>>(),
+        metrics: {
+            let mut counters = agent_status.core.metrics.counters.clone();
+            counters.insert("bus_inbound_dropped_total".into(), bus_telemetry.inbound_dropped_total);
+            counters.insert("bus_outbound_dropped_total".into(), bus_telemetry.outbound_dropped_total);
+            counters.insert("bus_internal_dropped_total".into(), bus_telemetry.internal_dropped_total);
+            counters.insert("bus_control_dropped_total".into(), bus_telemetry.control_dropped_total);
+
+            let mut gauges = agent_status.core.metrics.gauges.clone();
+            gauges.insert("bus_inbound_queue_depth".into(), bus_telemetry.inbound_queue_depth as i64);
+            gauges.insert("bus_outbound_queue_depth".into(), bus_telemetry.outbound_queue_depth as i64);
+            gauges.insert("bus_internal_queue_depth".into(), bus_telemetry.internal_queue_depth as i64);
+            gauges.insert("bus_control_queue_depth".into(), bus_telemetry.control_queue_depth as i64);
+
+            serde_json::json!({
+                "counters": counters,
+                "gauges": gauges,
+                "histograms": agent_status.core.metrics.histograms.iter().map(|entry| {
+                    let (name, histogram) = entry;
+                    (name.clone(), serde_json::json!({
+                        "buckets": histogram.buckets,
+                        "counts": histogram.counts,
+                        "sum": histogram.sum,
+                        "count": histogram.count,
+                    }))
+                }).collect::<serde_json::Map<String, serde_json::Value>>(),
+            })
+        },
+        warnings: serde_json::json!({
+            "bus_overflow_active": bus_telemetry.inbound_dropped_total > 0
+                || bus_telemetry.outbound_dropped_total > 0
+                || bus_telemetry.internal_dropped_total > 0
+                || bus_telemetry.control_dropped_total > 0,
+            "bus_drop_total": bus_telemetry.inbound_dropped_total
+                + bus_telemetry.outbound_dropped_total
+                + bus_telemetry.internal_dropped_total
+                + bus_telemetry.control_dropped_total,
         }),
         unified_runtime: serde_json::json!({
             "runs": runtime_projection.runs,

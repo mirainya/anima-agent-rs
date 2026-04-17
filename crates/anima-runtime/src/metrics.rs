@@ -104,10 +104,22 @@ impl MetricsCollector {
             "cache_misses",
             "cache_evictions",
             "workers_tasks_total",
+            "bus_inbound_dropped_total",
+            "bus_outbound_dropped_total",
+            "bus_internal_dropped_total",
+            "bus_control_dropped_total",
         ] {
             self.counters.lock().entry(key.into()).or_insert(0);
         }
-        for key in ["sessions_active", "workers_active", "workers_idle"] {
+        for key in [
+            "sessions_active",
+            "workers_active",
+            "workers_idle",
+            "bus_inbound_queue_depth",
+            "bus_outbound_queue_depth",
+            "bus_internal_queue_depth",
+            "bus_control_queue_depth",
+        ] {
             self.gauges.lock().entry(key.into()).or_insert(0);
         }
         self.histograms

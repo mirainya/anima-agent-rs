@@ -45,6 +45,11 @@ pub trait Tool: Send + Sync + Debug {
         self.name()
     }
 
+    /// 工具是否可与其它工具并发执行
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
     /// 可选：渲染工具结果为人类可读文本
     fn render(&self, result: &ToolResult) -> Option<String> {
         let _ = result;

@@ -19,7 +19,8 @@ use crate::dispatcher::message::{DispatchMessage, DispatcherConfig};
 use crate::dispatcher::queue::{DispatchEnvelope, DispatchQueue, DispatchQueueSnapshot};
 use crate::support::now_ms;
 use indexmap::IndexMap;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -58,18 +59,15 @@ impl Dispatcher {
 
     /// 为指定通道绑定负载均衡器
     pub fn add_balancer(&self, channel: impl Into<String>, balancer: Arc<Balancer>) {
-        self.balancers
-            .lock()
-            .unwrap()
-            .insert(channel.into(), balancer);
+        self.balancers.lock().insert(channel.into(), balancer);
     }
 
     pub fn remove_balancer(&self, channel: &str) -> Option<Arc<Balancer>> {
-        self.balancers.lock().unwrap().shift_remove(channel)
+        self.balancers.lock().shift_remove(channel)
     }
 
     pub fn get_balancer(&self, channel: &str) -> Option<Arc<Balancer>> {
-        self.balancers.lock().unwrap().get(channel).cloned()
+        self.balancers.lock().get(channel).cloned()
     }
 
     pub fn last_dispatch_diagnostic(&self) -> Option<DispatchDiagnosticSnapshot> {

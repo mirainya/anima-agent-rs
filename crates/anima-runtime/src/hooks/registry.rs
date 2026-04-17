@@ -5,7 +5,9 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::runner::HookHandler;
-use super::types::{HookEvent, HookResult};
+use crate::tools::result::ToolResult;
+
+use super::types::{HookEvent, HookResult, PostToolHookResult};
 
 /// 钩子注册中心：管理 pre/post 钩子
 #[derive(Debug, Default)]
@@ -53,6 +55,7 @@ impl HookRegistry {
                     transformed = true;
                 }
                 HookResult::Block(reason) => return HookResult::Block(reason),
+                HookResult::TransformToolResult(_) => {}
             }
         }
 
@@ -67,6 +70,34 @@ impl HookRegistry {
     pub fn run_post_hooks(&self, event: &HookEvent) {
         for hook in &self.post_hooks {
             hook.handle(event);
+        }
+    }
+
+    /// 执行 post-tool hooks，并聚合 Continue / Transform / Block 结果
+    pub fn run_post_tool_hooks(&self, tool_name: &str, result: &ToolResult) -> PostToolHookResult {
+        let mut effective_result = result.clone();
+        let mut transformed = false;
+
+        for hook in &self.post_hooks {
+            let event = HookEvent::PostToolUse {
+                tool_name: tool_name.to_string(),
+                result: effective_result.clone(),
+            };
+            match hook.handle(&event) {
+                HookResult::Continue => {}
+                HookResult::TransformToolResult(result) => {
+                    effective_result = result;
+                    transformed = true;
+                }
+                HookResult::Block(reason) => return PostToolHookResult::Block(reason),
+                HookResult::Transform(_) => {}
+            }
+        }
+
+        if transformed {
+            PostToolHookResult::Transform(effective_result)
+        } else {
+            PostToolHookResult::Continue
         }
     }
 

@@ -90,6 +90,11 @@ export function DiagnosticsInspector() {
   const executionSummary = (executionCandidates[0] ?? context.selectedJob?.execution_summary ?? null) as ExecutionSummaryView | null;
 
   const selectedWorkerId = context.selectedJob?.worker?.worker_id ?? executionSummary?.worker_id ?? null;
+  const busDropTotal = status.warnings.bus_drop_total;
+  const busInboundDepth = status.metrics.gauges['bus_inbound_queue_depth'] ?? 0;
+  const busOutboundDepth = status.metrics.gauges['bus_outbound_queue_depth'] ?? 0;
+  const busInternalDepth = status.metrics.gauges['bus_internal_queue_depth'] ?? 0;
+  const busControlDepth = status.metrics.gauges['bus_control_queue_depth'] ?? 0;
 
   return (
     <div className="diagnostics-inspector">
@@ -130,9 +135,10 @@ export function DiagnosticsInspector() {
               <div className="diag-line-react">idle={status.worker_pool.idle} · stopped={status.worker_pool.stopped}</div>
             </div>
             <div className="diag-card-react">
-              <div className="diag-title-react">多主体扩展位</div>
-              <div className="diag-line-react">actor_role / actor_id / subtask_id 预留中</div>
-              <div className="diag-line-react">后续可接 planner / specialist / reviewer / subtask</div>
+              <div className="diag-title-react">Bus / Queue</div>
+              <div className="diag-line-react">drops={busDropTotal}</div>
+              <div className="diag-line-react">in={busInboundDepth} · out={busOutboundDepth}</div>
+              <div className="diag-line-react">internal={busInternalDepth} · control={busControlDepth}</div>
             </div>
           </div>
         )}

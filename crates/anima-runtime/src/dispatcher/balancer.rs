@@ -12,10 +12,10 @@
 use crate::dispatcher::router::{constant_hashing_index, round_robin_index};
 use crate::support::now_ms;
 use indexmap::IndexMap;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 use uuid::Uuid;
 
 /// 目标节点状态
@@ -447,7 +447,7 @@ impl Balancer {
 
     /// 添加目标节点，同时初始化其健康信息（如果启用了运行时特性）
     pub fn add_target(&self, target: Target) -> Target {
-        let mut targets = self.targets.lock().unwrap();
+        let mut targets = self.targets.lock();
         targets.insert(target.id.clone(), target.clone());
         drop(targets);
         if self.runtime.is_some() {
@@ -458,30 +458,29 @@ impl Balancer {
 
     /// 移除目标节点，同时清理健康信息并重新对齐轮询游标
     pub fn remove_target(&self, target_id: &str) -> Option<Target> {
-        let mut targets = self.targets.lock().unwrap();
+        let mut targets = self.targets.lock();
         let removed = targets.shift_remove(target_id);
         if removed.is_some() {
             self.realign_cursor(targets.len());
         }
         drop(targets);
         if removed.is_some() {
-            self.runtime_health.lock().unwrap().shift_remove(target_id);
+            self.runtime_health.lock().shift_remove(target_id);
         }
         removed
     }
 
     pub fn get_target(&self, target_id: &str) -> Option<Target> {
-        self.targets.lock().unwrap().get(target_id).cloned()
+        self.targets.lock().get(target_id).cloned()
     }
 
     pub fn list_targets(&self) -> Vec<Target> {
-        self.targets.lock().unwrap().values().cloned().collect()
+        self.targets.lock().values().cloned().collect()
     }
 
     pub fn list_available_targets(&self) -> Vec<Target> {
         self.targets
             .lock()
-            .unwrap()
             .values()
             .filter(|target| target.status == TargetStatus::Available)
             .cloned()
@@ -490,7 +489,7 @@ impl Balancer {
 
     /// 更新目标的负载计数
     pub fn update_load(&self, target_id: &str, op: LoadUpdate) -> Option<TargetLoad> {
-        let mut targets = self.targets.lock().unwrap();
+        let mut targets = self.targets.lock();
         let target = targets.get_mut(target_id)?;
         match op {
             LoadUpdate::Inc => {
@@ -515,7 +514,6 @@ impl Balancer {
     pub fn get_load(&self, target_id: &str) -> Option<TargetLoad> {
         self.targets
             .lock()
-            .unwrap()
             .get(target_id)
             .map(|target| target.load.clone())
     }
@@ -529,11 +527,10 @@ impl Balancer {
             return self
                 .targets
                 .lock()
-                .unwrap()
                 .get(target_id)
                 .map(|_| TargetHealth::default());
         }
-        self.runtime_health.lock().unwrap().get(target_id).cloned()
+        self.runtime_health.lock().get(target_id).cloned()
     }
 
     pub fn target_health_snapshot(&self) -> IndexMap<String, TargetHealth> {
@@ -541,28 +538,27 @@ impl Balancer {
             return self
                 .targets
                 .lock()
-                .unwrap()
                 .keys()
                 .map(|id| (id.clone(), TargetHealth::default()))
                 .collect();
         }
-        self.runtime_health.lock().unwrap().clone()
+        self.runtime_health.lock().clone()
     }
 
     pub fn diagnostics_snapshot(&self) -> BalancerDiagnosticsSnapshot {
-        self.diagnostics.lock().unwrap().snapshot()
+        self.diagnostics.lock().snapshot()
     }
 
     /// 记录目标成功，更新健康状态
     /// HalfOpen 状态下连续成功达阈值时自动关闭熔断器
     pub fn record_target_success(&self, target_id: &str) -> Option<TargetHealth> {
-        let _ = self.targets.lock().unwrap().get(target_id)?;
+        let _ = self.targets.lock().get(target_id)?;
         let now = now_ms();
         if self.runtime.is_none() {
             return Some(TargetHealth::default());
         }
 
-        let mut runtime_health = self.runtime_health.lock().unwrap();
+        let mut runtime_health = self.runtime_health.lock();
         let health = self.health_entry_mut(&mut runtime_health, target_id);
         health.last_checked_at = Some(now);
         health.healthy = true;
@@ -581,13 +577,13 @@ impl Balancer {
     /// 记录目标失败，更新健康状态
     /// Closed 状态下连续失败达阈值时触发熔断；HalfOpen 状态下任何失败立即重新熔断
     pub fn record_target_failure(&self, target_id: &str) -> Option<TargetHealth> {
-        let _ = self.targets.lock().unwrap().get(target_id)?;
+        let _ = self.targets.lock().get(target_id)?;
         let now = now_ms();
         if self.runtime.is_none() {
             return Some(TargetHealth::default());
         }
 
-        let mut runtime_health = self.runtime_health.lock().unwrap();
+        let mut runtime_health = self.runtime_health.lock();
         let health = self.health_entry_mut(&mut runtime_health, target_id);
         health.last_checked_at = Some(now);
         health.consecutive_failures += 1;
@@ -606,7 +602,7 @@ impl Balancer {
 
     /// 记录目标心跳，更新最后心跳时间和健康状态
     pub fn record_target_heartbeat(&self, target_id: &str, healthy: bool) -> Option<TargetHealth> {
-        let _ = self.targets.lock().unwrap().get(target_id)?;
+        let _ = self.targets.lock().get(target_id)?;
         let now = now_ms();
         if self.runtime.is_none() {
             return Some(TargetHealth {
@@ -617,7 +613,7 @@ impl Balancer {
             });
         }
 
-        let mut runtime_health = self.runtime_health.lock().unwrap();
+        let mut runtime_health = self.runtime_health.lock();
         let health = self.health_entry_mut(&mut runtime_health, target_id);
         health.healthy = healthy;
         health.last_checked_at = Some(now);
@@ -633,12 +629,12 @@ impl Balancer {
     /// 刷新单个目标的健康状态
     /// 检查熔断器冷却超时（Open → HalfOpen）和心跳过期
     pub fn refresh_target_health(&self, target_id: &str, now_ms: u64) -> Option<TargetHealth> {
-        let _ = self.targets.lock().unwrap().get(target_id)?;
+        let _ = self.targets.lock().get(target_id)?;
         if self.runtime.is_none() {
             return Some(TargetHealth::default());
         }
 
-        let mut runtime_health = self.runtime_health.lock().unwrap();
+        let mut runtime_health = self.runtime_health.lock();
         let health = self.health_entry_mut(&mut runtime_health, target_id);
         health.last_checked_at = Some(now_ms);
 
@@ -661,7 +657,7 @@ impl Balancer {
         if self.runtime.is_none() {
             return;
         }
-        let target_ids: Vec<String> = self.targets.lock().unwrap().keys().cloned().collect();
+        let target_ids: Vec<String> = self.targets.lock().keys().cloned().collect();
         for target_id in target_ids {
             let _ = self.refresh_target_health(&target_id, now_ms);
         }
@@ -682,7 +678,7 @@ impl Balancer {
     }
 
     pub fn set_target_status(&self, target_id: &str, status: TargetStatus) -> Option<TargetStatus> {
-        let mut targets = self.targets.lock().unwrap();
+        let mut targets = self.targets.lock();
         let target = targets.get_mut(target_id)?;
         target.status = status;
         Some(target.status)
@@ -703,7 +699,7 @@ impl Balancer {
     /// 选择一个目标节点（核心入口）
     /// 先刷新所有目标健康状态，再根据策略从候选集中选择
     pub fn select_target(&self, key: Option<&str>) -> Option<Target> {
-        let targets = self.targets.lock().unwrap().clone();
+        let targets = self.targets.lock().clone();
         let selection = self.compute_selection(targets, key);
 
         if selection.selected_target.is_some() {
@@ -712,16 +708,13 @@ impl Balancer {
             self.stats.failures.fetch_add(1, Ordering::SeqCst);
         }
 
-        self.diagnostics
-            .lock()
-            .unwrap()
-            .record(selection.diagnostic.clone());
+        self.diagnostics.lock().record(selection.diagnostic.clone());
 
         selection.selected_target
     }
 
     pub fn balancer_status(&self) -> BalancerStatusSnapshot {
-        let targets = self.targets.lock().unwrap().clone();
+        let targets = self.targets.lock().clone();
         let runtime_health = self.target_health_snapshot();
         let snapshot_targets: IndexMap<String, BalancerTargetStatus> = targets
             .iter()
@@ -776,7 +769,7 @@ impl Balancer {
     }
 
     pub fn balancer_metrics(&self) -> BalancerMetrics {
-        let targets = self.targets.lock().unwrap().clone();
+        let targets = self.targets.lock().clone();
         let runtime_health = self.target_health_snapshot();
         let healthy_targets = targets
             .keys()
@@ -1064,7 +1057,7 @@ impl Balancer {
 
     /// 轮询选择
     fn select_round_robin(&self, targets: &[Target]) -> Option<Target> {
-        let mut cursor = self.round_robin_cursor.lock().unwrap();
+        let mut cursor = self.round_robin_cursor.lock();
         let next = round_robin_index(*cursor, targets.len())?;
         *cursor = Some(next);
         targets.get(next).cloned()
@@ -1076,7 +1069,7 @@ impl Balancer {
             .iter()
             .flat_map(|target| std::iter::repeat_n(target.clone(), target.weight.max(1)))
             .collect();
-        let mut cursor = self.round_robin_cursor.lock().unwrap();
+        let mut cursor = self.round_robin_cursor.lock();
         let next = round_robin_index(*cursor, weighted.len())?;
         *cursor = Some(next);
         weighted.get(next).cloned()
@@ -1099,7 +1092,7 @@ impl Balancer {
 
     /// 移除目标后重新对齐轮询游标，防止越界
     fn realign_cursor(&self, len: usize) {
-        let mut cursor = self.round_robin_cursor.lock().unwrap();
+        let mut cursor = self.round_robin_cursor.lock();
         *cursor = if len == 0 {
             None
         } else {
@@ -1109,7 +1102,7 @@ impl Balancer {
 
     /// 确保目标有对应的健康记录（懒初始化）
     fn ensure_target_health(&self, target_id: &str) {
-        let mut runtime_health = self.runtime_health.lock().unwrap();
+        let mut runtime_health = self.runtime_health.lock();
         runtime_health
             .entry(target_id.to_string())
             .or_insert_with(|| self.initial_target_health());

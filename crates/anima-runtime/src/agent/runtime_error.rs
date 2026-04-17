@@ -1,4 +1,5 @@
 use super::core::RuntimeErrorInfo;
+use crate::tools::result::ToolError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeErrorStage {
@@ -25,6 +26,9 @@ pub(crate) enum RuntimeErrorKind {
     UpstreamTimeout,
     UpstreamStreamFailed,
     ResponseParseFailed,
+    ToolValidationFailed,
+    ToolPermissionDenied,
+    ToolTimeout,
     ToolExecutionFailed,
     WorkerUnavailable,
     WorkerCapacityExhausted,
@@ -40,6 +44,9 @@ impl RuntimeErrorKind {
             Self::UpstreamTimeout => "upstream_timeout",
             Self::UpstreamStreamFailed => "upstream_stream_failed",
             Self::ResponseParseFailed => "task_execution_failed",
+            Self::ToolValidationFailed => "tool_validation_failed",
+            Self::ToolPermissionDenied => "tool_permission_denied",
+            Self::ToolTimeout => "tool_timeout",
             Self::ToolExecutionFailed => "task_execution_failed",
             Self::WorkerUnavailable => "worker_unavailable",
             Self::WorkerCapacityExhausted => "worker_capacity_exhausted",
@@ -62,6 +69,9 @@ impl RuntimeErrorKind {
             Self::WorkerCapacityExhausted => "当前执行队列繁忙，请稍后再试。",
             Self::InvalidTaskPayload => "运行时生成了无效任务，请检查主链路任务构建逻辑。",
             Self::UnknownTaskType => "运行时生成了未支持的任务类型。",
+            Self::ToolValidationFailed => "工具输入校验失败，请检查参数后重试。",
+            Self::ToolPermissionDenied => "工具调用未获授权，已停止当前工具执行。",
+            Self::ToolTimeout => "工具执行超时，请稍后重试或缩小操作范围。",
             Self::ResponseParseFailed | Self::ToolExecutionFailed | Self::TaskExecutionFailed => {
                 "任务执行失败，请查看运行时事件获取详细原因。"
             }
@@ -86,6 +96,28 @@ impl RuntimeError {
             kind,
             stage,
             internal_message: internal_message.into(),
+        }
+    }
+
+    pub(crate) fn from_tool_error(error: &ToolError, stage: RuntimeErrorStage) -> Self {
+        match error {
+            ToolError::ValidationFailed(message) => {
+                Self::new(RuntimeErrorKind::ToolValidationFailed, stage, message.clone())
+            }
+            ToolError::PermissionDenied(message) => {
+                Self::new(RuntimeErrorKind::ToolPermissionDenied, stage, message.clone())
+            }
+            ToolError::Timeout {
+                tool_name,
+                timeout_ms,
+            } => Self::new(
+                RuntimeErrorKind::ToolTimeout,
+                stage,
+                format!("tool '{tool_name}' timed out after {timeout_ms}ms"),
+            ),
+            ToolError::Internal(message) => {
+                Self::new(RuntimeErrorKind::ToolExecutionFailed, stage, message.clone())
+            }
         }
     }
 
@@ -253,4 +285,69 @@ pub(crate) fn classify_runtime_error(
         raw,
     )
     .to_error_info()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RuntimeError, RuntimeErrorKind, RuntimeErrorStage};
+    use crate::tools::result::ToolError;
+
+    #[test]
+    fn maps_tool_validation_error_to_runtime_error() {
+        let error = RuntimeError::from_tool_error(
+            &ToolError::ValidationFailed("missing path".into()),
+            RuntimeErrorStage::PlanExecute,
+        );
+
+        assert_eq!(error.kind, RuntimeErrorKind::ToolValidationFailed);
+        assert_eq!(error.stage, RuntimeErrorStage::PlanExecute);
+        assert_eq!(error.internal_message, "missing path");
+        let info = error.to_error_info();
+        assert_eq!(info.code, "tool_validation_failed");
+    }
+
+    #[test]
+    fn maps_tool_permission_denied_error_to_runtime_error() {
+        let error = RuntimeError::from_tool_error(
+            &ToolError::PermissionDenied("blocked by policy".into()),
+            RuntimeErrorStage::PlanExecute,
+        );
+
+        assert_eq!(error.kind, RuntimeErrorKind::ToolPermissionDenied);
+        assert_eq!(error.stage, RuntimeErrorStage::PlanExecute);
+        assert_eq!(error.internal_message, "blocked by policy");
+        let info = error.to_error_info();
+        assert_eq!(info.code, "tool_permission_denied");
+    }
+
+    #[test]
+    fn maps_tool_timeout_error_to_runtime_error() {
+        let error = RuntimeError::from_tool_error(
+            &ToolError::Timeout {
+                tool_name: "bash_exec".into(),
+                timeout_ms: 3_000,
+            },
+            RuntimeErrorStage::PlanExecute,
+        );
+
+        assert_eq!(error.kind, RuntimeErrorKind::ToolTimeout);
+        assert_eq!(error.stage, RuntimeErrorStage::PlanExecute);
+        assert!(error.internal_message.contains("bash_exec"));
+        let info = error.to_error_info();
+        assert_eq!(info.code, "tool_timeout");
+    }
+
+    #[test]
+    fn maps_tool_internal_error_to_generic_tool_execution_failure() {
+        let error = RuntimeError::from_tool_error(
+            &ToolError::Internal("spawn failed".into()),
+            RuntimeErrorStage::PlanExecute,
+        );
+
+        assert_eq!(error.kind, RuntimeErrorKind::ToolExecutionFailed);
+        assert_eq!(error.stage, RuntimeErrorStage::PlanExecute);
+        assert_eq!(error.internal_message, "spawn failed");
+        let info = error.to_error_info();
+        assert_eq!(info.code, "task_execution_failed");
+    }
 }

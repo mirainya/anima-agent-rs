@@ -41,6 +41,8 @@ export function RuntimeHeader({ sseState }: RuntimeHeaderProps) {
   const selectedJob = context.selectedJob;
   const steps = buildHeaderSteps(selectedJob?.current_step, selectedJob?.status);
   const workers = status?.workers ?? [];
+  const busDropTotal = status?.warnings.bus_drop_total ?? 0;
+  const hasBusPressure = status?.warnings.bus_overflow_active ?? false;
 
   const scopeLabel = context.scope === 'job'
     ? `当前 Job ${shortId(selectedJob?.job_id ?? null)}`
@@ -81,6 +83,7 @@ export function RuntimeHeader({ sseState }: RuntimeHeaderProps) {
         <div className="runtime-header-meta">
           <span>Agent {status?.agent.status ?? 'loading'}</span>
           <span>Pool {status?.worker_pool.active ?? 0}/{status?.worker_pool.size ?? 0}</span>
+          {hasBusPressure ? <span>Bus 压力 {busDropTotal}</span> : null}
           <span>{scopeLabel}</span>
         </div>
         <button type="button" className="inspector-toggle-btn" onClick={toggleInspector}>

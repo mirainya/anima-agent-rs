@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::definition::{Tool, ToolContext};
 use super::result::{ToolError, ToolResult, ToolResultBlock};
-use crate::hooks::{HookEvent, HookRegistry, HookResult};
+use crate::hooks::{HookEvent, HookRegistry, HookResult, PostToolHookResult};
 use crate::permissions::{PermissionChecker, PermissionDecision, PermissionRequest};
 use crate::support::now_ms;
 
@@ -183,7 +183,7 @@ fn execute_tool_call(
         }),
     );
 
-    let result = match tool.call(options.input.clone(), &options.context) {
+    let mut result = match tool.call(options.input.clone(), &options.context) {
         Ok(result) => result,
         Err(err) => {
             invocation.mark_phase(ToolInvocationPhase::Failed);
@@ -206,6 +206,15 @@ fn execute_tool_call(
             result: result.clone(),
         };
         hooks.run_post_hooks(&event);
+        match hooks.run_post_tool_hooks(&options.tool_name, &result) {
+            PostToolHookResult::Continue => {}
+            PostToolHookResult::Transform(modified_result) => {
+                result = modified_result;
+            }
+            PostToolHookResult::Block(feedback) => {
+                result = ToolResult::error(feedback);
+            }
+        }
     }
 
     invocation.mark_phase(ToolInvocationPhase::Completed);
@@ -273,6 +282,7 @@ pub fn run_tool_use(
                     "blocked by hook: {reason}"
                 )));
             }
+            HookResult::TransformToolResult(_) => {}
         }
     }
 
@@ -397,6 +407,7 @@ pub fn execute_tool_after_permission(
                     "blocked by hook: {reason}"
                 )));
             }
+            HookResult::TransformToolResult(_) => {}
         }
     }
 

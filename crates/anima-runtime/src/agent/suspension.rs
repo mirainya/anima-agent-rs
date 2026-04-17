@@ -361,7 +361,11 @@ impl SuspensionCoordinator {
                 "type": "tool_permission",
                 "tool_name": state.tool_name(),
                 "tool_use_id": state.tool_use_id(),
+                "tool_input": state.suspension.suspended_tool.tool_input,
+                "raw_input": state.suspension.suspended_tool.permission_request.raw_input,
+                "prompt": state.suspension.suspended_tool.permission_request.prompt,
                 "input_preview": state.input_preview(),
+                "invocation_id": state.invocation_id(),
             }),
             decision_mode: QuestionDecisionMode::UserRequired,
             risk_level: permission_risk_to_question_risk(
@@ -475,6 +479,13 @@ impl SuspensionCoordinator {
     }
 
     pub fn clear_tool_invocation(&self, question_id: &str) {
+        let snapshot = self.runtime_state_store.snapshot();
+        let existing = snapshot
+            .index
+            .suspension_ids_by_question_id
+            .get(question_id)
+            .and_then(|suspension_id| snapshot.suspensions.get(suspension_id))
+            .cloned();
         let removed = self.suspended_tool_invocations.lock().remove(question_id);
         let rebuilt = removed
             .clone()
@@ -504,9 +515,15 @@ impl SuspensionCoordinator {
                 source_kind: PendingQuestionSourceKind::ToolPermission,
                 continuation_token: Some(question_id.to_string()),
                 asked_at_ms: now_ms(),
-                answer_submitted: false,
-                answer_summary: None,
-                resolution_source: None,
+                answer_submitted: existing
+                    .as_ref()
+                    .is_some_and(|record| record.answer_summary.is_some()),
+                answer_summary: existing
+                    .as_ref()
+                    .and_then(|record| record.answer_summary.clone()),
+                resolution_source: existing
+                    .as_ref()
+                    .and_then(|record| record.resolution_source.clone()),
                 inbound: Some(state.inbound.clone()),
             };
             self.emitter.upsert_suspension(
@@ -877,21 +894,23 @@ impl SuspensionCoordinator {
             format!("Missing inbound context for pending question on job: {job_id}")
         })?;
 
-        self.emitter.upsert_suspension(
-            inbound,
-            &pending,
-            Some(runtime_task_id(job_id, RuntimeTaskPhase::Question)),
-            None,
-            SuspensionKind::Question,
-            SuspensionStatus::Resolved,
-        );
-        self.emitter.upsert_task(
-            inbound,
-            RuntimeTaskPhase::Question,
-            TaskStatus::Completed,
-            format!("question answered: {}", pending.prompt),
-            None,
-        );
+        if matches!(pending.source_kind, PendingQuestionSourceKind::UpstreamQuestion) {
+            self.emitter.upsert_suspension(
+                inbound,
+                &pending,
+                Some(runtime_task_id(job_id, RuntimeTaskPhase::Question)),
+                None,
+                SuspensionKind::Question,
+                SuspensionStatus::Resolved,
+            );
+            self.emitter.upsert_task(
+                inbound,
+                RuntimeTaskPhase::Question,
+                TaskStatus::Completed,
+                format!("question answered: {}", pending.prompt),
+                None,
+            );
+        }
 
         Ok(pending)
     }

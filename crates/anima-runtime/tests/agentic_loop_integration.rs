@@ -7,7 +7,7 @@ use anima_runtime::execution::agentic_loop::{
     continue_agentic_loop, resume_suspended_tool_invocation, run_agentic_loop, AgenticLoopConfig,
     AgenticLoopOutcome,
 };
-use anima_runtime::hooks::{HookEvent, HookHandler, HookRegistry, HookResult};
+use anima_runtime::hooks::{HookEvent, HookHandler, HookRegistry, HookResult, StopHook};
 use anima_runtime::messages::types::{InternalMsg, MessageRole};
 use anima_runtime::permissions::{PermissionChecker, PermissionMode};
 use anima_runtime::tools::definition::{Tool, ToolContext};
@@ -19,6 +19,8 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Mock Executor：按预设序列返回 API 响应
@@ -65,6 +67,13 @@ impl TaskExecutor for SequenceExecutor {
 struct EchoTool;
 
 #[derive(Debug)]
+struct DelayedTool {
+    name: &'static str,
+    delay_ms: u64,
+    concurrency_safe: bool,
+}
+
+#[derive(Debug)]
 struct TransformingHook {
     replacement_text: &'static str,
 }
@@ -96,6 +105,24 @@ impl HookHandler for BlockingHook {
     }
 }
 
+#[derive(Debug)]
+struct PostBlockingHook;
+
+impl HookHandler for PostBlockingHook {
+    fn handle(&self, event: &HookEvent) -> HookResult {
+        match event {
+            HookEvent::PostToolUse { .. } => HookResult::Block("stop hook blocked output".into()),
+            _ => HookResult::Continue,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FailingTool {
+    tool_name: &'static str,
+    message: &'static str,
+}
+
 impl Tool for EchoTool {
     fn name(&self) -> &str {
         "echo"
@@ -115,6 +142,51 @@ impl Tool for EchoTool {
             .and_then(Value::as_str)
             .unwrap_or("(empty)");
         Ok(ToolResult::text(format!("echoed: {text}")))
+    }
+}
+
+impl Tool for DelayedTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"text": {"type": "string"}}})
+    }
+
+    fn validate_input(&self, _input: &Value) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        self.concurrency_safe
+    }
+
+    fn call(&self, input: Value, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+        thread::sleep(Duration::from_millis(self.delay_ms));
+        let text = input
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("(empty)");
+        Ok(ToolResult::text(format!("{}:{text}", self.name)))
+    }
+}
+
+impl Tool for FailingTool {
+    fn name(&self) -> &str {
+        self.tool_name
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"text": {"type": "string"}}})
+    }
+
+    fn validate_input(&self, _input: &Value) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn call(&self, _input: Value, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::error(self.message))
     }
 }
 
@@ -295,6 +367,228 @@ fn agentic_loop_multiple_tools_in_one_turn() {
     assert_eq!(result.iterations, 2);
     // user → assistant → tool_result_1 → tool_result_2 → assistant
     assert_eq!(result.messages.len(), 5);
+}
+
+#[test]
+fn agentic_loop_runs_safe_tools_concurrently_and_preserves_result_order() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Run two slow reads"},
+                {"type": "tool_use", "id": "tu_safe_1", "name": "slow_read_a", "input": {"text": "first"}},
+                {"type": "tool_use", "id": "tu_safe_2", "name": "slow_read_b", "input": {"text": "second"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Safe tools done."}]
+        }),
+    ]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(DelayedTool {
+        name: "slow_read_a",
+        delay_ms: 200,
+        concurrency_safe: true,
+    }));
+    registry.register(Arc::new(DelayedTool {
+        name: "slow_read_b",
+        delay_ms: 200,
+        concurrency_safe: true,
+    }));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "safe-concurrent-session".into(),
+        trace_id: "safe-concurrent-trace".into(),
+        ..Default::default()
+    };
+
+    let started = Instant::now();
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        None,
+        vec![make_user_msg("run safe tools")],
+        &config,
+    )
+    .expect("should succeed");
+    let elapsed = started.elapsed();
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    assert_eq!(result.final_text, "Safe tools done.");
+    assert!(
+        elapsed < Duration::from_millis(350),
+        "safe tools should execute concurrently, elapsed: {:?}",
+        elapsed
+    );
+
+    let first_tool_result = &result.messages[2];
+    let second_tool_result = &result.messages[3];
+    let first_blocks = first_tool_result.content.as_array().expect("should be array");
+    let second_blocks = second_tool_result.content.as_array().expect("should be array");
+    assert_eq!(first_blocks[0]["tool_use_id"], "tu_safe_1");
+    assert!(first_blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("slow_read_a:first"));
+    assert_eq!(second_blocks[0]["tool_use_id"], "tu_safe_2");
+    assert!(second_blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("slow_read_b:second"));
+}
+
+#[test]
+fn agentic_loop_mixed_safe_and_unsafe_segments_preserve_order() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Run mixed tools"},
+                {"type": "tool_use", "id": "tu_mixed_1", "name": "slow_read_a", "input": {"text": "first"}},
+                {"type": "tool_use", "id": "tu_mixed_2", "name": "slow_read_b", "input": {"text": "second"}},
+                {"type": "tool_use", "id": "tu_mixed_3", "name": "slow_write", "input": {"text": "third"}},
+                {"type": "tool_use", "id": "tu_mixed_4", "name": "slow_read_c", "input": {"text": "fourth"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Mixed tools done."}]
+        }),
+    ]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(DelayedTool {
+        name: "slow_read_a",
+        delay_ms: 200,
+        concurrency_safe: true,
+    }));
+    registry.register(Arc::new(DelayedTool {
+        name: "slow_read_b",
+        delay_ms: 200,
+        concurrency_safe: true,
+    }));
+    registry.register(Arc::new(DelayedTool {
+        name: "slow_write",
+        delay_ms: 200,
+        concurrency_safe: false,
+    }));
+    registry.register(Arc::new(DelayedTool {
+        name: "slow_read_c",
+        delay_ms: 200,
+        concurrency_safe: true,
+    }));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "mixed-segment-session".into(),
+        trace_id: "mixed-segment-trace".into(),
+        ..Default::default()
+    };
+
+    let started = Instant::now();
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        None,
+        vec![make_user_msg("run mixed tools")],
+        &config,
+    )
+    .expect("should succeed");
+    let elapsed = started.elapsed();
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    assert_eq!(result.final_text, "Mixed tools done.");
+    assert!(
+        elapsed >= Duration::from_millis(550) && elapsed < Duration::from_millis(900),
+        "mixed segments should be safe(max) + unsafe(sum) + safe(max), elapsed: {:?}",
+        elapsed
+    );
+
+    let expected = [
+        ("tu_mixed_1", "slow_read_a:first"),
+        ("tu_mixed_2", "slow_read_b:second"),
+        ("tu_mixed_3", "slow_write:third"),
+        ("tu_mixed_4", "slow_read_c:fourth"),
+    ];
+    for (offset, (tool_use_id, content_fragment)) in expected.iter().enumerate() {
+        let blocks = result.messages[2 + offset]
+            .content
+            .as_array()
+            .expect("tool_result should be array");
+        assert_eq!(blocks[0]["tool_use_id"], *tool_use_id);
+        assert!(blocks[0]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(content_fragment));
+    }
+}
+
+#[test]
+fn agentic_loop_keeps_unsafe_tools_serial() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Run two slow writes"},
+                {"type": "tool_use", "id": "tu_unsafe_1", "name": "slow_write_a", "input": {"text": "first"}},
+                {"type": "tool_use", "id": "tu_unsafe_2", "name": "slow_write_b", "input": {"text": "second"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Unsafe tools done."}]
+        }),
+    ]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(DelayedTool {
+        name: "slow_write_a",
+        delay_ms: 200,
+        concurrency_safe: false,
+    }));
+    registry.register(Arc::new(DelayedTool {
+        name: "slow_write_b",
+        delay_ms: 200,
+        concurrency_safe: false,
+    }));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "unsafe-serial-session".into(),
+        trace_id: "unsafe-serial-trace".into(),
+        ..Default::default()
+    };
+
+    let started = Instant::now();
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        None,
+        vec![make_user_msg("run unsafe tools")],
+        &config,
+    )
+    .expect("should succeed");
+    let elapsed = started.elapsed();
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    assert_eq!(result.final_text, "Unsafe tools done.");
+    assert!(
+        elapsed >= Duration::from_millis(350),
+        "unsafe tools should remain serial, elapsed: {:?}",
+        elapsed
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +849,284 @@ fn agentic_loop_pre_tool_transform_changes_actual_tool_input() {
 }
 
 #[test]
+fn agentic_loop_post_tool_stop_hook_transforms_failing_output() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Run failing tool"},
+                {"type": "tool_use", "id": "tu_stop_1", "name": "failing", "input": {"text": "ignored"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Stop hook finished."}]
+        }),
+    ]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(FailingTool {
+        tool_name: "failing",
+        message: "exit code 1\n--- stderr ---\ntest failed",
+    }));
+
+    let mut hook_registry = HookRegistry::new();
+    hook_registry.register_post_hook(Arc::new(StopHook));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "stop-hook-session".into(),
+        trace_id: "stop-hook-trace".into(),
+        ..Default::default()
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        Some(&hook_registry),
+        vec![make_user_msg("run failing tool")],
+        &config,
+    )
+    .expect("agentic loop should succeed");
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("should be array");
+    assert_eq!(blocks[0]["is_error"], true);
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("测试失败"));
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("原始输出"));
+}
+
+#[test]
+fn agentic_loop_post_tool_stop_hook_passthrough_for_non_matching_error_output() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Run non-matching failing tool"},
+                {"type": "tool_use", "id": "tu_stop_passthrough", "name": "failing", "input": {"text": "ignored"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Passthrough finished."}]
+        }),
+    ]);
+
+    let original_error = "plain domain failure without stop markers";
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(FailingTool {
+        tool_name: "failing",
+        message: original_error,
+    }));
+
+    let mut hook_registry = HookRegistry::new();
+    hook_registry.register_post_hook(Arc::new(StopHook));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "stop-hook-passthrough-session".into(),
+        trace_id: "stop-hook-passthrough-trace".into(),
+        ..Default::default()
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        Some(&hook_registry),
+        vec![make_user_msg("run non-matching failing tool")],
+        &config,
+    )
+    .expect("agentic loop should succeed");
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("should be array");
+    assert_eq!(blocks[0]["is_error"], true);
+    assert_eq!(blocks[0]["content"], original_error);
+}
+
+#[test]
+fn agentic_loop_post_tool_stop_hook_transforms_clippy_output() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Run clippy"},
+                {"type": "tool_use", "id": "tu_stop_clippy", "name": "failing", "input": {"text": "ignored"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Clippy hook finished."}]
+        }),
+    ]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(FailingTool {
+        tool_name: "failing",
+        message: "exit code 101\n--- stderr ---\ncargo clippy\nwarning: needless borrow",
+    }));
+
+    let mut hook_registry = HookRegistry::new();
+    hook_registry.register_post_hook(Arc::new(StopHook));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "stop-hook-clippy-session".into(),
+        trace_id: "stop-hook-clippy-trace".into(),
+        ..Default::default()
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        Some(&hook_registry),
+        vec![make_user_msg("run clippy")],
+        &config,
+    )
+    .expect("agentic loop should succeed");
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("should be array");
+    assert_eq!(blocks[0]["is_error"], true);
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("lint 检查失败"));
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("cargo clippy"));
+}
+
+#[test]
+fn agentic_loop_post_tool_stop_hook_transforms_npm_lint_output() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Run npm lint"},
+                {"type": "tool_use", "id": "tu_stop_npm_lint", "name": "failing", "input": {"text": "ignored"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Npm lint hook finished."}]
+        }),
+    ]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(FailingTool {
+        tool_name: "failing",
+        message: "exit code 1\n--- stderr ---\nnpm run lint\neslint: unexpected console statement",
+    }));
+
+    let mut hook_registry = HookRegistry::new();
+    hook_registry.register_post_hook(Arc::new(StopHook));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "stop-hook-npm-lint-session".into(),
+        trace_id: "stop-hook-npm-lint-trace".into(),
+        ..Default::default()
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        Some(&hook_registry),
+        vec![make_user_msg("run npm lint")],
+        &config,
+    )
+    .expect("agentic loop should succeed");
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("should be array");
+    assert_eq!(blocks[0]["is_error"], true);
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("前端 lint 检查失败"));
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("npm run lint"));
+}
+
+#[test]
+fn agentic_loop_post_tool_block_converts_output_to_error_result() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Run echo"},
+                {"type": "tool_use", "id": "tu_post_block_1", "name": "echo", "input": {"text": "ok"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Post block finished."}]
+        }),
+    ]);
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+
+    let mut hook_registry = HookRegistry::new();
+    hook_registry.register_post_hook(Arc::new(PostBlockingHook));
+
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "post-block-session".into(),
+        trace_id: "post-block-trace".into(),
+        ..Default::default()
+    };
+
+    let result = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        Some(&hook_registry),
+        vec![make_user_msg("run echo")],
+        &config,
+    )
+    .expect("agentic loop should succeed");
+
+    let AgenticLoopOutcome::Completed(result) = result else {
+        panic!("agentic loop should complete");
+    };
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("should be array");
+    assert_eq!(blocks[0]["is_error"], true);
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("stop hook blocked output"));
+}
+
+#[test]
 fn agentic_loop_pre_tool_block_returns_error_tool_result() {
     let executor = SequenceExecutor::new(vec![
         json!({
@@ -679,6 +1251,84 @@ fn agentic_loop_resume_path_applies_pre_tool_transform() {
         .as_str()
         .unwrap_or_default()
         .contains("echoed: transformed-on-resume"));
+}
+
+#[test]
+fn agentic_loop_resume_path_applies_post_tool_stop_hook() {
+    let executor = SequenceExecutor::new(vec![
+        json!({
+            "content": [
+                {"type": "text", "text": "Need confirmation"},
+                {"type": "tool_use", "id": "tu_perm_stop_hook", "name": "failing", "input": {"text": "ignored"}}
+            ]
+        }),
+        json!({
+            "content": [{"type": "text", "text": "Resume stop hook finished."}]
+        }),
+    ]);
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(FailingTool {
+        tool_name: "failing",
+        message: "exit code 1\n--- stderr ---\ncargo test failed",
+    }));
+    let checker = PermissionChecker::new(PermissionMode::RuleBased);
+    let client = make_client();
+    let config = AgenticLoopConfig {
+        max_iterations: 5,
+        session_id: "perm-stop-hook-session".into(),
+        trace_id: "perm-stop-hook-trace".into(),
+        ..Default::default()
+    };
+
+    let initial = run_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        Some(&checker),
+        None,
+        vec![make_user_msg("please use failing")],
+        &config,
+    )
+    .expect("initial loop should suspend");
+    let AgenticLoopOutcome::Suspended(suspension) = initial else {
+        panic!("loop should suspend first");
+    };
+    let suspension = *suspension;
+
+    let mut hook_registry = HookRegistry::new();
+    hook_registry.register_post_hook(Arc::new(StopHook));
+
+    let resumed_messages = resume_suspended_tool_invocation(
+        &suspension,
+        true,
+        &registry,
+        Some(&hook_registry),
+        &config,
+    )
+    .expect("approval should resume tool invocation");
+    let resumed = continue_agentic_loop(
+        &client,
+        &executor,
+        &registry,
+        None,
+        Some(&hook_registry),
+        resumed_messages,
+        suspension.iterations,
+        suspension.compact_count,
+        &config,
+    )
+    .expect("continued loop should complete");
+
+    let AgenticLoopOutcome::Completed(result) = resumed else {
+        panic!("loop should complete after allow");
+    };
+    let tool_result_msg = &result.messages[2];
+    let blocks = tool_result_msg.content.as_array().expect("should be array");
+    assert_eq!(blocks[0]["is_error"], true);
+    assert!(blocks[0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("测试失败"));
 }
 
 #[test]

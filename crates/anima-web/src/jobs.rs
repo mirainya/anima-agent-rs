@@ -5,10 +5,10 @@ pub use crate::jobs_types::{
 };
 use crate::jobs_derive::{
     collect_recent_job_events, derive_job_hierarchy, derive_job_status,
-    derive_orchestration_view, derive_pending_question, derive_tool_state, failure_to_value,
-    job_status_from_label, match_worker, question_decision_mode_label, question_kind_label,
-    question_risk_level_label, runtime_failure_from_run, runtime_status_with_worker,
-    summary_to_value,
+    derive_orchestration_view, derive_pending_question, derive_tool_invocation_status,
+    derive_tool_state, failure_to_value, job_status_from_label, match_worker,
+    question_decision_mode_label, question_kind_label, question_risk_level_label,
+    runtime_failure_from_run, runtime_status_with_worker, summary_to_value,
 };
 use anima_runtime::agent::{
     ExecutionSummary, RuntimeFailureSnapshot, RuntimeTimelineEvent, WorkerStatus,
@@ -320,16 +320,26 @@ fn derive_job_state(
         .tool_states
         .get(job_id)
         .cloned()
-        .map(|tool_state| ToolStateView {
-            invocation_id: tool_state.invocation_id,
-            tool_name: tool_state.tool_name,
-            tool_use_id: tool_state.tool_use_id,
-            phase: tool_state.phase,
-            permission_state: tool_state.permission_state,
-            input_preview: tool_state.input_preview,
-            result_preview: tool_state.result_preview,
-            error: tool_state.error,
-            awaits_user_confirmation: tool_state.awaits_user_confirmation,
+        .map(|tool_state| {
+            let (invocation_status, status_text) = derive_tool_invocation_status(
+                tool_state.tool_name.as_deref(),
+                &tool_state.phase,
+                tool_state.permission_state.as_deref(),
+                tool_state.awaits_user_confirmation,
+            );
+            ToolStateView {
+                invocation_id: tool_state.invocation_id,
+                tool_name: tool_state.tool_name,
+                tool_use_id: tool_state.tool_use_id,
+                phase: tool_state.phase,
+                permission_state: tool_state.permission_state,
+                invocation_status,
+                status_text,
+                input_preview: tool_state.input_preview,
+                result_preview: tool_state.result_preview,
+                error: tool_state.error,
+                awaits_user_confirmation: tool_state.awaits_user_confirmation,
+            }
         });
     let tool_state = runtime_tool_state.or_else(|| {
         if runtime_backed {

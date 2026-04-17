@@ -4,8 +4,10 @@
 
 pub mod registry;
 pub mod runner;
+pub mod stop_hook;
 pub mod types;
 
 pub use registry::*;
 pub use runner::*;
+pub use stop_hook::*;
 pub use types::*;

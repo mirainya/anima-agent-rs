@@ -145,6 +145,7 @@ pub async fn system_status(State(state): State<Arc<AppState>>) -> Json<serde_jso
         "runtime_timeline": snapshot.runtime_timeline,
         "recent_execution_summaries": snapshot.recent_execution_summaries,
         "metrics": snapshot.metrics,
+        "warnings": snapshot.warnings,
         "unified_runtime": snapshot.unified_runtime,
         "jobs": snapshot.jobs,
     }))

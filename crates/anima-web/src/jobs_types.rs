@@ -71,6 +71,8 @@ pub struct ToolStateView {
     pub tool_use_id: Option<String>,
     pub phase: String,
     pub permission_state: Option<String>,
+    pub invocation_status: String,
+    pub status_text: String,
     pub input_preview: Option<String>,
     pub result_preview: Option<String>,
     pub error: Option<String>,

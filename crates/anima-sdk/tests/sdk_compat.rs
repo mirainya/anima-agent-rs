@@ -10,6 +10,15 @@ fn client_reuses_http_client_with_timeouts() {
 }
 
 #[test]
+fn client_options_default_matches_phase_b_contract() {
+    let options = anima_sdk::ClientOptions::default();
+    assert_eq!(options.request_timeout_ms, 600_000);
+    assert_eq!(options.connect_timeout_ms, 60_000);
+    assert_eq!(options.max_retries, 1);
+    assert_eq!(options.retry_backoff_ms, 250);
+}
+
+#[test]
 fn build_url_matches_clojure_behavior() {
     assert_eq!(
         client::build_url("http://localhost:9711", "/api"),

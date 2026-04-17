@@ -2,9 +2,10 @@ use crate::channel::ChannelLookupReason;
 use crate::dispatcher::balancer::{Balancer, BalancerMissReason};
 use crate::support::now_ms;
 use indexmap::IndexMap;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RouteTargetStats {
@@ -50,15 +51,15 @@ impl DispatcherStats {
             channel_not_found: self.channel_not_found.load(Ordering::SeqCst),
             balancer_selected: self.balancer_selected.load(Ordering::SeqCst),
             balancer_misses: self.balancer_misses.load(Ordering::SeqCst),
-            balancer_miss_reasons: self.balancer_miss_reasons.lock().unwrap().clone(),
-            channel_lookup_failures: self.channel_lookup_failures.lock().unwrap().clone(),
-            target_stats: self.target_stats.lock().unwrap().clone(),
+            balancer_miss_reasons: self.balancer_miss_reasons.lock().clone(),
+            channel_lookup_failures: self.channel_lookup_failures.lock().clone(),
+            target_stats: self.target_stats.lock().clone(),
         }
     }
 
     pub(crate) fn record_balancer_selected(&self, target_id: &str) {
         self.balancer_selected.fetch_add(1, Ordering::SeqCst);
-        let mut target_stats = self.target_stats.lock().unwrap();
+        let mut target_stats = self.target_stats.lock();
         let entry = target_stats.entry(target_id.to_string()).or_default();
         entry.selected += 1;
     }
@@ -66,7 +67,7 @@ impl DispatcherStats {
     pub(crate) fn record_balancer_miss(&self, reason: Option<BalancerMissReason>) {
         self.balancer_misses.fetch_add(1, Ordering::SeqCst);
         if let Some(reason) = reason {
-            let mut miss_reasons = self.balancer_miss_reasons.lock().unwrap();
+            let mut miss_reasons = self.balancer_miss_reasons.lock();
             *miss_reasons.entry(reason).or_insert(0) += 1;
         }
     }
@@ -74,7 +75,7 @@ impl DispatcherStats {
     pub(crate) fn record_dispatch_success(&self, target_id: Option<&str>) {
         self.dispatched.fetch_add(1, Ordering::SeqCst);
         if let Some(target_id) = target_id {
-            let mut target_stats = self.target_stats.lock().unwrap();
+            let mut target_stats = self.target_stats.lock();
             let entry = target_stats.entry(target_id.to_string()).or_default();
             entry.success += 1;
         }
@@ -83,7 +84,7 @@ impl DispatcherStats {
     pub(crate) fn record_dispatch_error(&self, target_id: Option<&str>) {
         self.errors.fetch_add(1, Ordering::SeqCst);
         if let Some(target_id) = target_id {
-            let mut target_stats = self.target_stats.lock().unwrap();
+            let mut target_stats = self.target_stats.lock();
             let entry = target_stats.entry(target_id.to_string()).or_default();
             entry.failures += 1;
             entry.last_failure_at = Some(now_ms());
@@ -97,11 +98,11 @@ impl DispatcherStats {
     ) {
         self.channel_not_found.fetch_add(1, Ordering::SeqCst);
         {
-            let mut lookup_failures = self.channel_lookup_failures.lock().unwrap();
+            let mut lookup_failures = self.channel_lookup_failures.lock();
             *lookup_failures.entry(lookup_reason).or_insert(0) += 1;
         }
         if let Some(target_id) = target_id {
-            let mut target_stats = self.target_stats.lock().unwrap();
+            let mut target_stats = self.target_stats.lock();
             let entry = target_stats.entry(target_id.to_string()).or_default();
             entry.failures += 1;
             entry.last_failure_at = Some(now_ms());
@@ -215,11 +216,11 @@ impl Default for DispatcherRuntimeState {
 
 impl DispatcherRuntimeState {
     pub(crate) fn set_state(&self, state: DispatcherState) {
-        *self.state.lock().unwrap() = state;
+        *self.state.lock() = state;
     }
 
     pub(crate) fn current_state(&self) -> DispatcherState {
-        *self.state.lock().unwrap()
+        *self.state.lock()
     }
 
     pub(crate) fn record_error(&self) {
@@ -231,11 +232,11 @@ impl DispatcherRuntimeState {
     }
 
     pub(crate) fn record_dispatch_diagnostic(&self, diagnostic: DispatchDiagnosticSnapshot) {
-        *self.last_dispatch_diagnostic.lock().unwrap() = Some(diagnostic);
+        *self.last_dispatch_diagnostic.lock() = Some(diagnostic);
     }
 
     pub(crate) fn last_dispatch_diagnostic(&self) -> Option<DispatchDiagnosticSnapshot> {
-        self.last_dispatch_diagnostic.lock().unwrap().clone()
+        self.last_dispatch_diagnostic.lock().clone()
     }
 
     pub(crate) fn status(
@@ -244,10 +245,7 @@ impl DispatcherRuntimeState {
         queue_depth: usize,
         queue_by_route: &IndexMap<String, usize>,
     ) -> DispatcherStatus {
-        let routes = balancers
-            .lock()
-            .unwrap()
-            .iter()
+        let routes = balancers.lock().iter()
             .map(|(channel, balancer)| {
                 let balancer_status = balancer.balancer_status();
                 let diagnostics = balancer.diagnostics_snapshot();
@@ -271,7 +269,7 @@ impl DispatcherRuntimeState {
             .collect();
 
         DispatcherStatus {
-            state: *self.state.lock().unwrap(),
+            state: *self.state.lock(),
             last_dispatch_at: non_zero(self.last_dispatch_at.load(Ordering::SeqCst)),
             last_error_at: non_zero(self.last_error_at.load(Ordering::SeqCst)),
             queue_depth,

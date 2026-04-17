@@ -90,10 +90,16 @@ pub async fn review_job(
     State(state): State<Arc<AppState>>,
     Json(input): Json<JobReviewInput>,
 ) -> Json<serde_json::Value> {
-    let review = state
-        .jobs
-        .lock()
-        .record_review(job_id.clone(), input);
+    let snapshot = crate::web_snapshot::build_status_snapshot(state.as_ref());
+    if !snapshot.jobs.iter().any(|job| job.job_id == job_id) {
+        return Json(serde_json::json!({
+            "ok": false,
+            "job_id": job_id,
+            "error": "job_not_found",
+        }));
+    }
+
+    let review = state.jobs.lock().record_review(job_id.clone(), input);
     let snapshot = crate::web_snapshot::build_status_snapshot(state.as_ref());
     let job = snapshot.jobs.into_iter().find(|job| job.job_id == job_id);
     Json(serde_json::json!({

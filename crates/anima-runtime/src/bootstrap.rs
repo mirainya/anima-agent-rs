@@ -2,7 +2,8 @@ use crate::agent::{Agent, TaskExecutor};
 use crate::channel::{Channel, ChannelRegistry, SessionStore};
 use crate::cli::CliChannel;
 use crate::dispatcher::{start_dispatcher_outbound_loop, Dispatcher};
-use anima_sdk::facade::Client as SdkClient;
+use crate::hooks::{HookRegistry, StopHook};
+use anima_sdk::facade::{Client as SdkClient, ClientOptions as SdkClientOptions};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -11,6 +12,7 @@ pub struct RuntimeBootstrapBuilder {
     prompt: Option<String>,
     cli_enabled: bool,
     executor: Option<Arc<dyn TaskExecutor>>,
+    sdk_options: SdkClientOptions,
 }
 
 impl Default for RuntimeBootstrapBuilder {
@@ -20,6 +22,7 @@ impl Default for RuntimeBootstrapBuilder {
             prompt: Some(crate::cli::DEFAULT_PROMPT.to_string()),
             cli_enabled: true,
             executor: None,
+            sdk_options: SdkClientOptions::default(),
         }
     }
 }
@@ -49,6 +52,11 @@ impl RuntimeBootstrapBuilder {
         self
     }
 
+    pub fn with_sdk_options(mut self, options: SdkClientOptions) -> Self {
+        self.sdk_options = options;
+        self
+    }
+
     pub fn build(self) -> RuntimeBootstrap {
         let bus = Arc::new(crate::bus::Bus::create());
         let registry = Arc::new(ChannelRegistry::new());
@@ -66,15 +74,20 @@ impl RuntimeBootstrapBuilder {
         };
         let dispatcher = Arc::new(Dispatcher::new(registry.clone(), None));
         let client = match std::env::current_dir() {
-            Ok(dir) => SdkClient::new(self.url).with_directory(dir.to_string_lossy().to_string()),
-            Err(_) => SdkClient::new(self.url),
+            Ok(dir) => SdkClient::with_options(self.url, self.sdk_options)
+                .with_directory(dir.to_string_lossy().to_string()),
+            Err(_) => SdkClient::with_options(self.url, self.sdk_options),
         };
-        let agent = Agent::create(
+        let mut agent = Agent::create(
             bus.clone(),
             Some(client),
             Some(session_store),
             self.executor,
         );
+        agent.register_builtin_tools();
+        let mut hook_registry = HookRegistry::new();
+        hook_registry.register_post_hook(Arc::new(StopHook));
+        agent.set_hook_registry(hook_registry);
 
         RuntimeBootstrap {
             bus,

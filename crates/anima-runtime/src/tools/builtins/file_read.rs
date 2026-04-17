@@ -63,6 +63,10 @@ impl Tool for FileReadTool {
         Ok(())
     }
 
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
     fn call(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let file_path = input["file_path"].as_str().expect("validated");
         let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(1) as usize;

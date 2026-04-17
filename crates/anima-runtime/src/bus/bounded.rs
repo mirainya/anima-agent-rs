@@ -7,6 +7,8 @@
 //! 设计灵感来自 Clojure core.async 的 dropping-buffer 和 sliding-buffer。
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// 缓冲区溢出策略
@@ -34,6 +36,7 @@ pub struct BoundedSender<T> {
     tx: Sender<T>,
     rx: Receiver<T>,
     strategy: BufferStrategy,
+    dropped_total: Option<Arc<AtomicU64>>,
 }
 
 impl<T> BoundedSender<T> {
@@ -45,6 +48,9 @@ impl<T> BoundedSender<T> {
             BufferStrategy::Dropping(_cap) => {
                 // 满时直接丢弃新消息，不阻塞发送方
                 if self.tx.len() >= self.strategy.capacity() {
+                    if let Some(counter) = &self.dropped_total {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
                     return Ok(());
                 }
                 self.tx.send(msg).map_err(|e| e.to_string())
@@ -52,7 +58,13 @@ impl<T> BoundedSender<T> {
             BufferStrategy::Sliding(_cap) => {
                 // 满时从接收端弹出最旧的消息，为新消息腾出空间
                 while self.tx.len() >= self.strategy.capacity() {
-                    let _ = self.rx.try_recv();
+                    if self.rx.try_recv().is_ok() {
+                        if let Some(counter) = &self.dropped_total {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                        }
+                    } else {
+                        break;
+                    }
                 }
                 self.tx.send(msg).map_err(|e| e.to_string())
             }
@@ -112,12 +124,20 @@ impl<T> Clone for BoundedReceiver<T> {
 /// 实际容量为 strategy.capacity() + 1，多出的 1 个位置用于 Sliding 策略
 /// 在弹出旧消息和写入新消息之间的短暂窗口期避免阻塞。
 pub fn bounded_channel<T>(strategy: BufferStrategy) -> (BoundedSender<T>, BoundedReceiver<T>) {
+    bounded_channel_with_counter(strategy, None)
+}
+
+pub fn bounded_channel_with_counter<T>(
+    strategy: BufferStrategy,
+    dropped_total: Option<Arc<AtomicU64>>,
+) -> (BoundedSender<T>, BoundedReceiver<T>) {
     let cap = strategy.capacity();
     let (tx, rx) = bounded(cap + 1);
     let sender = BoundedSender {
         tx,
         rx: rx.clone(),
         strategy,
+        dropped_total,
     };
     let receiver = BoundedReceiver { rx };
     (sender, receiver)

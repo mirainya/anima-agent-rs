@@ -243,6 +243,9 @@ pub struct CoreAgentStatus {
     pub failures: RuntimeFailureStatus,
     pub runtime_timeline: Vec<RuntimeTimelineEvent>,
     pub recent_execution_summaries: Vec<ExecutionSummary>,
+    pub tool_count: usize,
+    pub pre_hook_count: usize,
+    pub post_hook_count: usize,
 }
 
 impl CoreAgent {
@@ -253,6 +256,26 @@ impl CoreAgent {
         session_store: Option<Arc<SessionStore>>,
         executor: Arc<dyn TaskExecutor>,
         pool_size: Option<usize>,
+    ) -> Self {
+        Self::new_with_runtime_state_store(
+            bus,
+            client,
+            session_store,
+            executor,
+            pool_size,
+            Arc::new(RuntimeStateStore::with_persistence(
+                std::path::PathBuf::from(".opencode/runtime/state.json"),
+            )),
+        )
+    }
+
+    pub fn new_with_runtime_state_store(
+        bus: Arc<Bus>,
+        client: SdkClient,
+        session_store: Option<Arc<SessionStore>>,
+        executor: Arc<dyn TaskExecutor>,
+        pool_size: Option<usize>,
+        runtime_state_store: SharedRuntimeStateStore,
     ) -> Self {
         let metrics = Arc::new(MetricsCollector::new(Some("anima")));
         metrics.register_agent_metrics();
@@ -317,7 +340,6 @@ impl CoreAgent {
                 .with_runtime_event_publisher(worker_runtime_event_publisher),
         );
         let specialist_pool = Arc::new(SpecialistPool::new(worker_pool.clone()));
-        let runtime_state_store = Arc::new(RuntimeStateStore::new());
         let orchestrator = Arc::new(AgentOrchestrator::new(
             worker_pool.clone(),
             specialist_pool,
@@ -479,6 +501,17 @@ impl CoreAgent {
             failures: self.emitter.failures_snapshot(),
             runtime_timeline: self.emitter.timeline_snapshot(),
             recent_execution_summaries: self.emitter.execution_summaries_snapshot(),
+            tool_count: self.tool_registry.len(),
+            pre_hook_count: self
+                .hook_registry
+                .as_ref()
+                .map(|registry| registry.pre_hook_count())
+                .unwrap_or(0),
+            post_hook_count: self
+                .hook_registry
+                .as_ref()
+                .map(|registry| registry.post_hook_count())
+                .unwrap_or(0),
         }
     }
 
@@ -810,7 +843,9 @@ impl Agent {
         session_manager: Option<Arc<SessionStore>>,
         executor: Option<Arc<dyn TaskExecutor>>,
     ) -> Self {
-        let opencode_client = client.unwrap_or_else(|| SdkClient::new("http://127.0.0.1:9711"));
+        let opencode_client = client.unwrap_or_else(|| {
+            SdkClient::with_options("http://127.0.0.1:9711", anima_sdk::ClientOptions::default())
+        });
         let session_manager = session_manager.unwrap_or_else(|| Arc::new(SessionStore::new()));
         let core_agent = Arc::new(CoreAgent::new(
             bus.clone(),
@@ -846,6 +881,24 @@ impl Agent {
     /// 将消息投递到 Bus，由 CoreAgent 的消息循环异步处理
     pub fn process_message(&self, inbound_msg: InboundMessage) {
         let _ = self.bus.publish_inbound(inbound_msg);
+    }
+
+    pub fn register_builtin_tools(&mut self) {
+        let core = Arc::get_mut(&mut self.core_agent)
+            .expect("cannot mutate shared core_agent — ensure no other Arc references exist");
+        core.register_builtin_tools();
+    }
+
+    pub fn set_hook_registry(&mut self, registry: HookRegistry) {
+        let core = Arc::get_mut(&mut self.core_agent)
+            .expect("cannot mutate shared core_agent — ensure no other Arc references exist");
+        core.set_hook_registry(registry);
+    }
+
+    pub fn set_permission_checker(&mut self, checker: PermissionChecker) {
+        let core = Arc::get_mut(&mut self.core_agent)
+            .expect("cannot mutate shared core_agent — ensure no other Arc references exist");
+        core.set_permission_checker(checker);
     }
 
     pub fn core_agent(&self) -> Arc<CoreAgent> {

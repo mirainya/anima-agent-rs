@@ -25,6 +25,40 @@ fn dropping_buffer_discards_new_messages_when_full() {
 }
 
 #[test]
+fn bus_telemetry_counts_drops_and_queue_depths() {
+    let bus = Bus::create_with_config(BusConfig {
+        inbound_capacity: 2,
+        outbound_capacity: 2,
+        internal_capacity: 2,
+        control_capacity: 2,
+    });
+
+    for i in 0..5 {
+        bus.publish_inbound(make_inbound(MakeInbound {
+            channel: "test".into(),
+            content: format!("in-{i}"),
+            ..Default::default()
+        }))
+        .unwrap();
+    }
+
+    for i in 0..5 {
+        bus.publish_outbound(make_outbound(MakeOutbound {
+            channel: "test".into(),
+            content: format!("out-{i}"),
+            ..Default::default()
+        }))
+        .unwrap();
+    }
+
+    let snapshot = bus.telemetry_snapshot();
+    assert!(snapshot.inbound_dropped_total > 0);
+    assert!(snapshot.outbound_dropped_total > 0);
+    assert!(snapshot.inbound_queue_depth > 0);
+    assert!(snapshot.outbound_queue_depth > 0);
+}
+
+#[test]
 fn dropping_buffer_accepts_after_drain() {
     let (tx, rx) = bounded_channel::<i32>(BufferStrategy::Dropping(2));
     tx.send(1).unwrap();
