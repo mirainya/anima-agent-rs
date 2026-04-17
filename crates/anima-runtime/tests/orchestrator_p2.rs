@@ -25,13 +25,13 @@ impl TaskExecutor for EchoExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
             "content": format!("echo[{session_id}]: {}", content)
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "echo-session-1"}))
     }
 }
@@ -42,7 +42,7 @@ impl TaskExecutor for SlowEchoExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
         if text.contains("slow") {
             thread::sleep(Duration::from_millis(200));
@@ -54,7 +54,7 @@ impl TaskExecutor for SlowEchoExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "slow-echo-session-1"}))
     }
 }
@@ -82,7 +82,7 @@ impl TaskExecutor for RecordingExecutorState {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("").to_string();
         self.prompts.lock().unwrap().push(text.clone());
         if text.contains("slow") {
@@ -93,7 +93,7 @@ impl TaskExecutor for RecordingExecutorState {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "recording-session-1"}))
     }
 }
@@ -104,10 +104,10 @@ impl TaskExecutor for ConditionalFailureExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
         if text.contains("fail") {
-            Err(format!("executor refused content: {text}"))
+            Err(format!("executor refused content: {text}").into())
         } else {
             Ok(json!({
                 "content": format!("echo[{session_id}]: {text}")
@@ -115,7 +115,7 @@ impl TaskExecutor for ConditionalFailureExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "conditional-failure-session-1"}))
     }
 }
@@ -126,7 +126,7 @@ impl TaskExecutor for QuestionExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
             "question": {
                 "id": "question-orch-1",
@@ -137,7 +137,7 @@ impl TaskExecutor for QuestionExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "question-session-1"}))
     }
 }

@@ -38,7 +38,7 @@ impl TaskExecutor for SequenceExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
         self.responses
             .get(idx)
@@ -46,7 +46,7 @@ impl TaskExecutor for SequenceExecutor {
             .ok_or_else(|| "no more mock responses".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session"}))
     }
 }

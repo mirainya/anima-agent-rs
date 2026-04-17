@@ -37,12 +37,12 @@ impl TaskExecutor for StreamingApiCallExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         self.sync_call_count.fetch_add(1, Ordering::SeqCst);
         Ok(self.sync_response.clone())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "worker-stream-session"}))
     }
 
@@ -51,13 +51,13 @@ impl TaskExecutor for StreamingApiCallExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Box<dyn Iterator<Item = Result<String, String>>>, String> {
+    ) -> Result<anima_runtime::agent::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
         let idx = self.streaming_call_count.fetch_add(1, Ordering::SeqCst);
         let lines = self
             .sse_sequences
             .get(idx)
             .cloned()
-            .ok_or_else(|| "no more streaming mock sequences".to_string())?;
+            .ok_or_else(|| anima_runtime::agent::runtime_error::RuntimeError::from("no more streaming mock sequences"))?;
         Ok(Box::new(lines.into_iter().map(Ok)))
     }
 }

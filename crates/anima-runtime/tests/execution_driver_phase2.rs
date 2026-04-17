@@ -17,7 +17,7 @@ impl TaskExecutor for RecordingExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         self.payloads.lock().unwrap().push(content.clone());
         Ok(json!({
             "session_id": session_id,
@@ -25,7 +25,7 @@ impl TaskExecutor for RecordingExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "unused"}))
     }
 }

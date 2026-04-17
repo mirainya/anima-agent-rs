@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use super::api_parser::parse_sse_event;
 use super::types::{ContentBlock, ContentDelta, StreamEvent, TrackedToolState};
+use crate::agent::runtime_error::{RuntimeErrorKind, RuntimeErrorStage};
+use crate::agent::{TaskExecutorError, UnifiedStreamSource};
 use crate::execution::agentic_loop::{ParsedResponse, ParsedToolUse};
 use crate::tools::registry::ToolRegistry;
 
@@ -257,9 +259,9 @@ impl StreamAccumulator {
 /// 5. `ToolUse` start / delta / stop → `StreamAccumulator` 追踪
 /// 6. 流结束后 `drain_ready()` → 组装 `ParsedResponse` 和等效 `response_value`
 pub fn consume_sse_stream(
-    lines: Box<dyn Iterator<Item = Result<String, String>>>,
+    lines: UnifiedStreamSource,
     on_event: Option<&(dyn Fn(StreamEvent) + Send + Sync)>,
-) -> Result<(ParsedResponse, Value), String> {
+) -> Result<(ParsedResponse, Value), TaskExecutorError> {
     let runtime_callback = |event: RuntimeStreamEvent| {
         if let Some(cb) = on_event {
             cb(runtime_stream_event_to_stream_event(&event));
@@ -270,9 +272,9 @@ pub fn consume_sse_stream(
 }
 
 pub fn consume_runtime_stream<F>(
-    lines: Box<dyn Iterator<Item = Result<String, String>>>,
+    lines: UnifiedStreamSource,
     on_event: Option<&F>,
-) -> Result<StreamingFinalResult, String>
+) -> Result<StreamingFinalResult, TaskExecutorError>
 where
     F: Fn(RuntimeStreamEvent) + Send + Sync + ?Sized,
 {
@@ -345,14 +347,24 @@ where
                 error_type,
                 message,
             } => {
-                return Err(format!("stream error [{error_type}]: {message}"));
+                return Err(TaskExecutorError::new(
+                    RuntimeErrorKind::UpstreamStreamFailed,
+                    RuntimeErrorStage::PlanExecute,
+                    format!("stream error [{error_type}]: {message}"),
+                ));
             }
             _ => {}
         }
     }
 
     // 排空累积的工具调用
-    let tools = acc.drain_ready()?;
+    let tools = acc.drain_ready().map_err(|internal_message| {
+        TaskExecutorError::new(
+            RuntimeErrorKind::ResponseParseFailed,
+            RuntimeErrorStage::PlanExecute,
+            internal_message,
+        )
+    })?;
 
     // 组装 ParsedResponse
     let tool_uses: Vec<ParsedToolUse> = tools
@@ -499,8 +511,9 @@ mod tests {
 
     // ---- consume_sse_stream 测试 ----
 
-    fn make_lines(raw: &[&str]) -> Box<dyn Iterator<Item = Result<String, String>>> {
-        let lines: Vec<Result<String, String>> = raw.iter().map(|s| Ok(s.to_string())).collect();
+    fn make_lines(raw: &[&str]) -> UnifiedStreamSource {
+        let lines: Vec<Result<String, TaskExecutorError>> =
+            raw.iter().map(|s| Ok(s.to_string())).collect();
         Box::new(lines.into_iter())
     }
 
@@ -562,7 +575,7 @@ mod tests {
 
         let result = consume_sse_stream(lines, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("overloaded"));
+        assert!(result.unwrap_err().internal_message.contains("overloaded"));
     }
 
     #[test]

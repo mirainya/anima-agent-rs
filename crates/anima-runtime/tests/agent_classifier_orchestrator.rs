@@ -16,13 +16,13 @@ impl TaskExecutor for MockExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
             "content": format!("reply[{session_id}]: {}", content.as_str().unwrap_or(""))
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-1"}))
     }
 }

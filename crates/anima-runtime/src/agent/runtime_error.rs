@@ -121,6 +121,10 @@ impl RuntimeError {
         }
     }
 
+    pub fn message(&self) -> &str {
+        &self.internal_message
+    }
+
     pub(crate) fn to_error_info(&self) -> RuntimeErrorInfo {
         RuntimeErrorInfo {
             code: self.kind.as_code(),
@@ -128,6 +132,22 @@ impl RuntimeError {
             user_message: self.kind.user_message().into(),
             internal_message: self.internal_message.clone(),
         }
+    }
+}
+
+impl From<String> for RuntimeError {
+    fn from(message: String) -> Self {
+        RuntimeError::new(
+            RuntimeErrorKind::TaskExecutionFailed,
+            RuntimeErrorStage::TaskExecution,
+            message,
+        )
+    }
+}
+
+impl From<&str> for RuntimeError {
+    fn from(message: &str) -> Self {
+        RuntimeError::from(message.to_string())
     }
 }
 

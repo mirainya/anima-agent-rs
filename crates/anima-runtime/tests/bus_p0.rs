@@ -291,10 +291,10 @@ fn core_agent_stops_on_shutdown_signal() {
             _client: &SdkClient,
             _session_id: &str,
             _content: Value,
-        ) -> Result<Value, String> {
+        ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!("ok"))
         }
-        fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!({"id": "noop"}))
         }
     }

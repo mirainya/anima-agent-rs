@@ -132,7 +132,7 @@ pub enum AgenticLoopOutcome {
 #[derive(Debug, Clone)]
 pub enum AgenticLoopError {
     /// API 调用失败
-    ApiCall { internal_message: String },
+    ApiCall { error: RuntimeError },
     /// 响应解析错误
     ResponseParse { internal_message: String },
     /// 工具执行失败
@@ -144,25 +144,7 @@ pub enum AgenticLoopError {
 impl AgenticLoopError {
     pub(crate) fn to_runtime_error(&self) -> RuntimeError {
         match self {
-            Self::ApiCall { internal_message } => {
-                let lower = internal_message.to_ascii_lowercase();
-                let kind = if lower.contains("request timeout")
-                    || lower.contains("408 request timeout")
-                    || lower.contains("timed out")
-                    || lower.contains("timeout")
-                {
-                    RuntimeErrorKind::UpstreamTimeout
-                } else if lower.contains("empty_stream")
-                    || lower.contains("upstream stream closed before first payload")
-                    || lower.contains("stream disconnected before completion")
-                    || lower.contains("stream closed before response.completed")
-                {
-                    RuntimeErrorKind::UpstreamStreamFailed
-                } else {
-                    RuntimeErrorKind::TaskExecutionFailed
-                };
-                RuntimeError::new(kind, RuntimeErrorStage::PlanExecute, internal_message.clone())
-            }
+            Self::ApiCall { error } => error.clone(),
             Self::ResponseParse { internal_message } => RuntimeError::new(
                 RuntimeErrorKind::ResponseParseFailed,
                 RuntimeErrorStage::PlanExecute,
@@ -183,7 +165,7 @@ impl AgenticLoopError {
 impl std::fmt::Display for AgenticLoopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ApiCall { internal_message } => write!(f, "API call failed: {internal_message}"),
+            Self::ApiCall { error } => write!(f, "API call failed: {}", error.internal_message),
             Self::ResponseParse { internal_message } => {
                 write!(f, "response parse error: {internal_message}")
             }
@@ -769,16 +751,18 @@ pub fn continue_agentic_loop(
         let parsed = if config.streaming {
             let lines = executor
                 .send_prompt_streaming(client, &config.session_id, content)
-                .map_err(|internal_message| AgenticLoopError::ApiCall { internal_message })?;
+                .map_err(|error| AgenticLoopError::ApiCall { error })?;
             let (parsed, response_value) =
                 consume_sse_stream(lines, config.on_stream_event.as_deref())
-                    .map_err(|internal_message| AgenticLoopError::ResponseParse { internal_message })?;
+                    .map_err(|error| AgenticLoopError::ResponseParse {
+                        internal_message: error.internal_message,
+                    })?;
             messages.push(build_assistant_msg(&response_value));
             parsed
         } else {
             let response = executor
                 .send_prompt(client, &config.session_id, content)
-                .map_err(|internal_message| AgenticLoopError::ApiCall { internal_message })?;
+                .map_err(|error| AgenticLoopError::ApiCall { error })?;
             let parsed = parse_response(&response)?;
             messages.push(build_assistant_msg(&response));
             parsed
@@ -963,15 +947,15 @@ mod tests {
             _client: &SdkClient,
             _session_id: &str,
             _content: Value,
-        ) -> Result<Value, String> {
+        ) -> Result<Value, RuntimeError> {
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
             self.responses
                 .get(idx)
                 .cloned()
-                .ok_or_else(|| "no more mock responses".to_string())
+                .ok_or_else(|| RuntimeError::from("no more mock responses"))
         }
 
-        fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        fn create_session(&self, _client: &SdkClient) -> Result<Value, RuntimeError> {
             Ok(json!({"id": "mock-session"}))
         }
     }
@@ -1228,15 +1212,15 @@ mod tests {
             _client: &SdkClient,
             _session_id: &str,
             _content: Value,
-        ) -> Result<Value, String> {
+        ) -> Result<Value, RuntimeError> {
             let idx = self.sync_call_count.fetch_add(1, Ordering::SeqCst);
             self.responses
                 .get(idx)
                 .cloned()
-                .ok_or_else(|| "no more sync mock responses".to_string())
+                .ok_or_else(|| RuntimeError::from("no more sync mock responses"))
         }
 
-        fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+        fn create_session(&self, _client: &SdkClient) -> Result<Value, RuntimeError> {
             Ok(json!({"id": "streaming-mock-session"}))
         }
 
@@ -1245,13 +1229,13 @@ mod tests {
             _client: &SdkClient,
             _session_id: &str,
             _content: Value,
-        ) -> Result<Box<dyn Iterator<Item = Result<String, String>>>, String> {
+        ) -> Result<Box<dyn Iterator<Item = Result<String, RuntimeError>>>, RuntimeError> {
             let idx = self.streaming_call_count.fetch_add(1, Ordering::SeqCst);
             let lines = self
                 .sse_sequences
                 .get(idx)
                 .cloned()
-                .ok_or_else(|| "no more streaming mock sequences".to_string())?;
+                .ok_or_else(|| RuntimeError::from("no more streaming mock sequences"))?;
             Ok(Box::new(lines.into_iter().map(Ok)))
         }
     }

@@ -2475,13 +2475,13 @@ impl TaskExecutor for MockExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
             "content": format!("reply[{session_id}]: {}", content.as_str().unwrap_or(""))
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web"}))
     }
 
@@ -2490,7 +2490,7 @@ impl TaskExecutor for MockExecutor {
         client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<anima_runtime::agent::executor::UnifiedStreamSource, String> {
+    ) -> Result<anima_runtime::agent::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
         let response = self.send_prompt(client, session_id, content)?;
         Ok(Box::new(
             mock_response_to_sse_lines(&response).into_iter().map(Ok),
@@ -2504,13 +2504,13 @@ impl TaskExecutor for IdleExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
             "content": "idle"
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-idle"}))
     }
 }
@@ -2521,11 +2521,11 @@ impl TaskExecutor for FailingExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("upstream exploded".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-fail"}))
     }
 }
@@ -2536,7 +2536,7 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
         if text.contains("[orchestration/") {
             Ok(json!({
@@ -2554,7 +2554,7 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-orch-question"}))
     }
 }
@@ -2565,7 +2565,7 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
         if text.contains("[orchestration/") {
             Ok(json!({
@@ -2578,7 +2578,7 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-orch-followup"}))
     }
 }

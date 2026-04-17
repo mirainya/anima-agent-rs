@@ -27,13 +27,14 @@ fn fake_executor_can_simulate_prompt_and_session_failures() {
     assert_eq!(
         prompt_fail
             .send_prompt(&client, "session-x", json!("hello"))
-            .unwrap_err(),
+            .unwrap_err()
+            .message(),
         "prompt boom"
     );
 
     let session_fail = FakeExecutor::new().fail_session_create_with("session boom");
     assert_eq!(
-        session_fail.create_session(&client).unwrap_err(),
+        session_fail.create_session(&client).unwrap_err().message(),
         "session boom"
     );
 }

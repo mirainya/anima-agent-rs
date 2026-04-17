@@ -34,7 +34,7 @@ impl TaskExecutor for SequenceExecutor {
         _client: &SdkClient,
         _session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         self.payloads
             .lock()
             .expect("payloads lock poisoned")
@@ -46,7 +46,7 @@ impl TaskExecutor for SequenceExecutor {
             .ok_or_else(|| "no more mock responses".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "bootstrap-sequence-session"}))
     }
 
@@ -55,7 +55,7 @@ impl TaskExecutor for SequenceExecutor {
         client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<anima_runtime::agent::executor::UnifiedStreamSource, String> {
+    ) -> Result<anima_runtime::agent::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
         let response = self.send_prompt(client, session_id, content)?;
         Ok(Box::new(response_to_sse_lines(&response).into_iter().map(Ok)))
     }

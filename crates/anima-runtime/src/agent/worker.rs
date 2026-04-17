@@ -20,7 +20,7 @@ use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
 
-use super::executor::TaskExecutor;
+use super::executor::{TaskExecutor, TaskExecutorError};
 use super::types::{make_task_result, MakeTaskResult, Task, TaskResult};
 use crate::streaming::executor::{consume_runtime_stream, RuntimeStreamEvent};
 use crate::streaming::types::{ContentBlock, ContentDelta};
@@ -416,7 +416,7 @@ impl WorkerAgent {
                 sdk_failed_payload["sdk_duration_ms"] =
                     json!(sdk_finished_at_ms.saturating_sub(sdk_started_at_ms));
                 sdk_failed_payload["result_status"] = Value::String("failure".into());
-                sdk_failed_payload["error"] = Value::String(error.clone());
+                sdk_failed_payload["error"] = Value::String(error.internal_message.clone());
                 sdk_failed_payload["error_kind"] = Value::String(error_kind.into());
                 self.publish_runtime_event(
                     &task.trace_id,
@@ -437,14 +437,14 @@ impl WorkerAgent {
                 failed_payload["api_call_duration_ms"] =
                     json!(finished_at_ms.saturating_sub(started_at_ms));
                 failed_payload["result_status"] = Value::String("failure".into());
-                failed_payload["error"] = Value::String(error.clone());
+                failed_payload["error"] = Value::String(error.internal_message.clone());
                 failed_payload["error_kind"] = Value::String(error_kind.into());
                 self.publish_runtime_event(
                     &task.trace_id,
                     "worker_api_call_failed",
                     failed_payload,
                 );
-                ExecuteResult::failure(error)
+                ExecuteResult::executor_failure(error)
             }
         }
     }
@@ -643,7 +643,7 @@ impl WorkerAgent {
                         sdk_failed_payload["sdk_duration_ms"] =
                             json!(sdk_finished_at_ms.saturating_sub(sdk_started_at_ms));
                         sdk_failed_payload["result_status"] = Value::String("failure".into());
-                        sdk_failed_payload["error"] = Value::String(error.clone());
+                        sdk_failed_payload["error"] = Value::String(error.internal_message.clone());
                         sdk_failed_payload["error_kind"] = Value::String(error_kind.into());
                         self.publish_runtime_event(
                             &task.trace_id,
@@ -664,7 +664,7 @@ impl WorkerAgent {
                         streaming_failed_payload["streaming_duration_ms"] =
                             json!(streaming_failed_at_ms.saturating_sub(stream_open_at_ms));
                         streaming_failed_payload["result_status"] = Value::String("failure".into());
-                        streaming_failed_payload["error"] = Value::String(error.clone());
+                        streaming_failed_payload["error"] = Value::String(error.internal_message.clone());
                         streaming_failed_payload["error_kind"] = Value::String(error_kind.into());
                         self.publish_runtime_event(
                             &task.trace_id,
@@ -684,14 +684,14 @@ impl WorkerAgent {
                         failed_payload["api_call_duration_ms"] =
                             json!(finished_at_ms.saturating_sub(started_at_ms));
                         failed_payload["result_status"] = Value::String("failure".into());
-                        failed_payload["error"] = Value::String(error.clone());
+                        failed_payload["error"] = Value::String(error.internal_message.clone());
                         failed_payload["error_kind"] = Value::String(error_kind.into());
                         self.publish_runtime_event(
                             &task.trace_id,
                             "worker_api_call_failed",
                             failed_payload,
                         );
-                        ExecuteResult::failure(error)
+                        ExecuteResult::executor_failure(error)
                     }
                 }
             }
@@ -716,7 +716,7 @@ impl WorkerAgent {
                 sdk_failed_payload["sdk_duration_ms"] =
                     json!(sdk_finished_at_ms.saturating_sub(sdk_started_at_ms));
                 sdk_failed_payload["result_status"] = Value::String("failure".into());
-                sdk_failed_payload["error"] = Value::String(error.clone());
+                sdk_failed_payload["error"] = Value::String(error.internal_message.clone());
                 sdk_failed_payload["error_kind"] = Value::String(error_kind.into());
                 self.publish_runtime_event(
                     &task.trace_id,
@@ -737,7 +737,7 @@ impl WorkerAgent {
                 streaming_failed_payload["streaming_duration_ms"] =
                     json!(streaming_failed_at_ms.saturating_sub(stream_open_at_ms));
                 streaming_failed_payload["result_status"] = Value::String("failure".into());
-                streaming_failed_payload["error"] = Value::String(error.clone());
+                streaming_failed_payload["error"] = Value::String(error.internal_message.clone());
                 streaming_failed_payload["error_kind"] = Value::String(error_kind.into());
                 self.publish_runtime_event(
                     &task.trace_id,
@@ -757,14 +757,14 @@ impl WorkerAgent {
                 failed_payload["api_call_duration_ms"] =
                     json!(finished_at_ms.saturating_sub(started_at_ms));
                 failed_payload["result_status"] = Value::String("failure".into());
-                failed_payload["error"] = Value::String(error.clone());
+                failed_payload["error"] = Value::String(error.internal_message.clone());
                 failed_payload["error_kind"] = Value::String(error_kind.into());
                 self.publish_runtime_event(
                     &task.trace_id,
                     "worker_api_call_failed",
                     failed_payload,
                 );
-                ExecuteResult::failure(error)
+                ExecuteResult::executor_failure(error)
             }
         }
     }
@@ -926,7 +926,7 @@ impl WorkerAgent {
                         ExecuteResult::failure("Failed to create session: no ID returned")
                     }
                 }
-                Err(error) => ExecuteResult::failure(error),
+                Err(error) => ExecuteResult::executor_failure(error),
             },
             // 数据透传，直接返回 payload 中的 data
             "transform" => {
@@ -1003,22 +1003,34 @@ impl ExecuteResult {
             error: Some(error.into()),
         }
     }
-}
 
-fn classify_error_kind(error: &str) -> &'static str {
-    let lower = error.to_ascii_lowercase();
-    if lower.contains("timeout") || lower.contains("timed out") {
-        "timeout"
-    } else {
-        "upstream_error"
+    fn executor_failure(error: TaskExecutorError) -> Self {
+        Self::failure(error.internal_message)
     }
 }
 
-fn is_streaming_unsupported(error: &str) -> bool {
+fn classify_error_kind(error: &TaskExecutorError) -> &'static str {
+    match error.kind {
+        super::runtime_error::RuntimeErrorKind::UpstreamTimeout
+        | super::runtime_error::RuntimeErrorKind::ToolTimeout => "timeout",
+        _ => {
+            let lower = error.internal_message.to_ascii_lowercase();
+            if lower.contains("timeout") || lower.contains("timed out") {
+                "timeout"
+            } else {
+                "upstream_error"
+            }
+        }
+    }
+}
+
+fn is_streaming_unsupported(error: &TaskExecutorError) -> bool {
     error
+        .internal_message
         .to_ascii_lowercase()
         .contains("streaming not supported")
 }
+
 
 /// 工作者池，管理一组 WorkerAgent 的生命周期。
 /// 使用 round-robin + Condvar 实现负载均衡和等待机制。

@@ -1,3 +1,4 @@
+use super::runtime_error::{RuntimeError, RuntimeErrorKind, RuntimeErrorStage};
 use anima_sdk::{facade::Client as SdkClient, messages, sessions};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -5,7 +6,8 @@ use std::io::{BufRead, BufReader};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 
-pub type UnifiedStreamLine = Result<String, String>;
+pub type TaskExecutorError = RuntimeError;
+pub type UnifiedStreamLine = Result<String, TaskExecutorError>;
 pub type UnifiedStreamSource = Box<dyn Iterator<Item = UnifiedStreamLine>>;
 
 pub trait TaskExecutor: Send + Sync {
@@ -14,9 +16,9 @@ pub trait TaskExecutor: Send + Sync {
         client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String>;
+    ) -> Result<Value, TaskExecutorError>;
 
-    fn create_session(&self, client: &SdkClient) -> Result<Value, String>;
+    fn create_session(&self, client: &SdkClient) -> Result<Value, TaskExecutorError>;
 
     /// 流式发送 prompt，返回统一流输入。
     ///
@@ -27,13 +29,47 @@ pub trait TaskExecutor: Send + Sync {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<UnifiedStreamSource, String> {
-        Err("streaming not supported".into())
+    ) -> Result<UnifiedStreamSource, TaskExecutorError> {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::TaskExecutionFailed,
+            RuntimeErrorStage::PlanExecute,
+            "streaming not supported",
+        ))
     }
 }
 
 #[derive(Debug, Default)]
 pub struct SdkTaskExecutor;
+
+fn session_create_error(error: impl std::fmt::Display) -> TaskExecutorError {
+    RuntimeError::new(
+        RuntimeErrorKind::SessionCreateFailed,
+        RuntimeErrorStage::SessionCreate,
+        error.to_string(),
+    )
+}
+
+fn plan_execute_error(error: impl std::fmt::Display) -> TaskExecutorError {
+    let message = error.to_string();
+    let lower = message.to_ascii_lowercase();
+    let kind = if lower.contains("request timeout")
+        || lower.contains("408 request timeout")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+    {
+        RuntimeErrorKind::UpstreamTimeout
+    } else if lower.contains("empty_stream")
+        || lower.contains("upstream stream closed before first payload")
+        || lower.contains("stream disconnected before completion")
+        || lower.contains("stream closed before response.completed")
+    {
+        RuntimeErrorKind::UpstreamStreamFailed
+    } else {
+        RuntimeErrorKind::TaskExecutionFailed
+    };
+
+    RuntimeError::new(kind, RuntimeErrorStage::PlanExecute, message)
+}
 
 impl TaskExecutor for SdkTaskExecutor {
     fn send_prompt(
@@ -41,14 +77,14 @@ impl TaskExecutor for SdkTaskExecutor {
         client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, TaskExecutorError> {
         let response = messages::send_prompt(client, session_id, content, None)
-            .map_err(|err| err.to_string())?;
+            .map_err(plan_execute_error)?;
         wait_for_message_completion(client, session_id, response)
     }
 
-    fn create_session(&self, client: &SdkClient) -> Result<Value, String> {
-        sessions::create_session(client, None).map_err(|err| err.to_string())
+    fn create_session(&self, client: &SdkClient) -> Result<Value, TaskExecutorError> {
+        sessions::create_session(client, None).map_err(session_create_error)
     }
 
     fn send_prompt_streaming(
@@ -56,7 +92,7 @@ impl TaskExecutor for SdkTaskExecutor {
         client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<UnifiedStreamSource, String> {
+    ) -> Result<UnifiedStreamSource, TaskExecutorError> {
         let event_lines = open_opencode_event_stream(client)?;
         let message_result_rx =
             spawn_message_request(client.clone(), session_id.to_string(), content);
@@ -78,9 +114,9 @@ enum PartKind {
 struct OpenCodeEventAdapter {
     target_session_id: String,
     target_user_message_id: Option<String>,
-    message_id_rx: Receiver<Result<String, String>>,
+    message_id_rx: Receiver<MessageRequestResult>,
     target_assistant_message_id: Option<String>,
-    lines: Box<dyn Iterator<Item = Result<String, String>>>,
+    lines: UnifiedStreamSource,
     buffered: VecDeque<String>,
     part_indices: HashMap<String, usize>,
     part_kinds: HashMap<String, PartKind>,
@@ -90,14 +126,14 @@ struct OpenCodeEventAdapter {
     message_stopped: bool,
     stop_reason: Option<String>,
     eof_flushed: bool,
-    upstream_error: Option<String>,
+    upstream_error: Option<TaskExecutorError>,
 }
 
 impl OpenCodeEventAdapter {
     fn new(
         target_session_id: String,
-        message_id_rx: Receiver<Result<String, String>>,
-        lines: Box<dyn Iterator<Item = Result<String, String>>>,
+        message_id_rx: Receiver<MessageRequestResult>,
+        lines: UnifiedStreamSource,
     ) -> Self {
         Self {
             target_session_id,
@@ -136,7 +172,11 @@ impl OpenCodeEventAdapter {
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 self.upstream_error =
-                    Some("streaming protocol error: message sender thread disconnected".into())
+                    Some(RuntimeError::new(
+                        RuntimeErrorKind::TaskExecutionFailed,
+                        RuntimeErrorStage::PlanExecute,
+                        "streaming protocol error: message sender thread disconnected",
+                    ))
             }
         }
     }
@@ -523,16 +563,16 @@ impl Iterator for OpenCodeEventAdapter {
     }
 }
 
-fn open_opencode_event_stream(client: &SdkClient) -> Result<UnifiedStreamSource, String> {
+fn open_opencode_event_stream(client: &SdkClient) -> Result<UnifiedStreamSource, TaskExecutorError> {
     let event_response = messages::subscribe_event_stream(client, None, None)
-        .map_err(|e| e.to_string())?;
+        .map_err(plan_execute_error)?;
     let lines = BufReader::new(event_response)
         .lines()
-        .map(|r| r.map_err(|e| e.to_string()));
+        .map(|r| r.map_err(plan_execute_error));
     Ok(Box::new(lines))
 }
 
-type MessageRequestResult = Result<String, String>;
+type MessageRequestResult = Result<String, TaskExecutorError>;
 
 const MESSAGE_COMPLETION_POLL_ATTEMPTS: usize = 120;
 const MESSAGE_COMPLETION_POLL_INTERVAL_MS: u64 = 250;
@@ -541,10 +581,10 @@ fn wait_for_message_completion(
     client: &SdkClient,
     session_id: &str,
     initial_response: Value,
-) -> Result<Value, String> {
+) -> Result<Value, TaskExecutorError> {
     let message_id = extract_message_id_from_response(&initial_response)?;
     let initial_message = messages::get_message(client, session_id, &message_id, None)
-        .map_err(|err| err.to_string())?;
+        .map_err(plan_execute_error)?;
     if message_has_completed_content(&initial_message) {
         return Ok(initial_message);
     }
@@ -554,15 +594,19 @@ fn wait_for_message_completion(
             MESSAGE_COMPLETION_POLL_INTERVAL_MS,
         ));
         let message = messages::get_message(client, session_id, &message_id, None)
-            .map_err(|err| err.to_string())?;
+            .map_err(plan_execute_error)?;
         if message_has_completed_content(&message) {
             return Ok(message);
         }
     }
 
-    Err(format!(
-        "timed out waiting for completed message {} in session {}",
-        message_id, session_id
+    Err(RuntimeError::new(
+        RuntimeErrorKind::UpstreamTimeout,
+        RuntimeErrorStage::PlanExecute,
+        format!(
+            "timed out waiting for completed message {} in session {}",
+            message_id, session_id
+        ),
     ))
 }
 
@@ -574,10 +618,10 @@ fn message_has_completed_content(value: &Value) -> bool {
         .unwrap_or_default();
     let has_content = parts.iter().any(|part| {
         let part_type = part.get("type").and_then(Value::as_str).unwrap_or_default();
-        match part_type {
-            "text" | "reasoning" | "tool" | "tool_use" | "patch" => true,
-            _ => false,
-        }
+        matches!(
+            part_type,
+            "text" | "reasoning" | "tool" | "tool_use" | "patch"
+        )
     });
     if !has_content {
         return false;
@@ -607,14 +651,14 @@ fn spawn_message_request(
     ) = mpsc::channel();
     thread::spawn(move || {
         let result = messages::send_prompt(&client, &session_id, content, None)
-            .map_err(|e| e.to_string())
+            .map_err(plan_execute_error)
             .and_then(|response| extract_message_id_from_response(&response));
         let _ = message_result_tx.send(result);
     });
     message_result_rx
 }
 
-fn extract_message_id_from_response(value: &Value) -> Result<String, String> {
+fn extract_message_id_from_response(value: &Value) -> Result<String, TaskExecutorError> {
     string_by_pointers(
         value,
         &[
@@ -630,7 +674,11 @@ fn extract_message_id_from_response(value: &Value) -> Result<String, String> {
     )
     .map(ToString::to_string)
     .ok_or_else(|| {
-        format!("streaming protocol error: POST /message response missing message id: {value}")
+        RuntimeError::new(
+            RuntimeErrorKind::TaskExecutionFailed,
+            RuntimeErrorStage::PlanExecute,
+            format!("streaming protocol error: POST /message response missing message id: {value}"),
+        )
     })
 }
 

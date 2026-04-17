@@ -15,11 +15,11 @@ impl TaskExecutor for TestExecutor {
         _client: &SdkClient,
         session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"content": format!("reply[{session_id}]")}))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "test-session-1"}))
     }
 }

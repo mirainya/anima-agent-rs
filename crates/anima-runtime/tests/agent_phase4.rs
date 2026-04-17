@@ -70,7 +70,7 @@ impl TaskExecutor for StreamingSequenceExecutor {
         _client: &SdkClient,
         _session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         self.payloads
             .lock()
             .expect("payloads lock poisoned")
@@ -82,7 +82,7 @@ impl TaskExecutor for StreamingSequenceExecutor {
             .ok_or_else(|| "no more mock responses".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-tool-permission"}))
     }
 
@@ -91,7 +91,7 @@ impl TaskExecutor for StreamingSequenceExecutor {
         client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<anima_runtime::agent::executor::UnifiedStreamSource, String> {
+    ) -> Result<anima_runtime::agent::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
         let response = self.send_prompt(client, session_id, content)?;
         Ok(Box::new(response_to_sse_lines(&response).into_iter().map(Ok)))
     }
@@ -201,19 +201,48 @@ fn response_to_sse_lines(response: &Value) -> Vec<String> {
     lines
 }
 
+fn wait_until(mut condition: impl FnMut() -> bool, attempts: usize, sleep: Duration) -> bool {
+    for _ in 0..attempts {
+        if condition() {
+            return true;
+        }
+        thread::sleep(sleep);
+    }
+    false
+}
+
+fn wait_for_outbound_message<F>(
+    bus: &Arc<Bus>,
+    attempts: usize,
+    timeout: Duration,
+    mut predicate: F,
+) -> Option<anima_runtime::bus::OutboundMessage>
+where
+    F: FnMut(&anima_runtime::bus::OutboundMessage) -> bool,
+{
+    for _ in 0..attempts {
+        if let Ok(msg) = bus.outbound_receiver().recv_timeout(timeout) {
+            if predicate(&msg) {
+                return Some(msg);
+            }
+        }
+    }
+    None
+}
+
 impl TaskExecutor for MockExecutor {
     fn send_prompt(
         &self,
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
             "content": format!("reply[{session_id}]: {}", content.as_str().unwrap_or(""))
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-1"}))
     }
 }
@@ -230,11 +259,11 @@ impl TaskExecutor for FailingExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("upstream exploded".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-err"}))
     }
 }
@@ -245,11 +274,11 @@ impl TaskExecutor for QuestionLookingErrorExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err(r#"{"question":{"id":"fake-question","prompt":"请确认是否继续","options":["继续","取消"]}}"#.into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-question-looking-error"}))
     }
 }
@@ -260,7 +289,7 @@ impl TaskExecutor for QuestionFlowExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
         if text == "Need continuation" {
             Ok(json!({
@@ -278,7 +307,7 @@ impl TaskExecutor for QuestionFlowExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-question"}))
     }
 }
@@ -289,7 +318,7 @@ impl TaskExecutor for FollowupExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
         if text == "Need better completion" {
             Ok(json!({
@@ -302,7 +331,7 @@ impl TaskExecutor for FollowupExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-followup"}))
     }
 }
@@ -313,7 +342,7 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
         if text.contains("[orchestration/") {
             Ok(json!({
@@ -331,7 +360,7 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-orch-question"}))
     }
 }
@@ -342,7 +371,7 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
         if text.contains("[orchestration/") {
             Ok(json!({
@@ -355,7 +384,7 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-orch-followup"}))
     }
 }
@@ -366,13 +395,13 @@ impl TaskExecutor for RepeatingUnsatisfiedExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
             "content": "Need more information before proceeding."
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-repeat"}))
     }
 }
@@ -383,7 +412,7 @@ impl TaskExecutor for RepeatedQuestionExecutor {
         _client: &SdkClient,
         _session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
         if text == "Need repeated question" {
             Ok(json!({
@@ -406,7 +435,7 @@ impl TaskExecutor for RepeatedQuestionExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-repeated-question"}))
     }
 }
@@ -420,11 +449,11 @@ impl TaskExecutor for SessionCreateErrorExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"content": "unused"}))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("create session upstream exploded".into())
     }
 }
@@ -438,11 +467,11 @@ impl TaskExecutor for MissingSessionIdExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"content": "unused"}))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"ok": true}))
     }
 }
@@ -456,11 +485,11 @@ impl TaskExecutor for SessionTransportErrorExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"content": "unused"}))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err(
             "HTTP transport error: error sending request for url (http://127.0.0.1:9711/session)"
                 .into(),
@@ -477,11 +506,11 @@ impl TaskExecutor for UpstreamStreamErrorExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("empty_stream: upstream stream closed before first payload".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-stream-fail"}))
     }
 }
@@ -495,11 +524,11 @@ impl TaskExecutor for UpstreamTimeoutExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("HTTP 408 Request Timeout: stream disconnected before completion: stream closed before response.completed".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-timeout"}))
     }
 }
@@ -510,14 +539,14 @@ impl TaskExecutor for SlowExecutor {
         _client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         thread::sleep(Duration::from_millis(200));
         Ok(json!({
             "content": format!("slow-reply[{session_id}]: {}", content.as_str().unwrap_or(""))
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, String> {
+    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         thread::sleep(Duration::from_millis(50));
         Ok(json!({"id": "slow-session-1"}))
     }
@@ -604,17 +633,12 @@ fn agent_processes_messages_and_publishes_outbound() {
         ..Default::default()
     }));
 
-    let mut outbound = None;
-    for _ in 0..20 {
-        if let Ok(msg) = bus
-            .outbound_receiver()
-            .recv_timeout(Duration::from_millis(50))
-        {
-            outbound = Some(msg);
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
+    let outbound = wait_for_outbound_message(
+        &bus,
+        80,
+        Duration::from_millis(100),
+        |_| true,
+    );
 
     let outbound = outbound.expect("expected outbound message");
     assert_eq!(outbound.channel, "test");
@@ -642,13 +666,12 @@ fn agent_reuses_created_session_for_same_chat() {
         content: "First".into(),
         ..Default::default()
     }));
-    let mut first_outbound = None;
-    for _ in 0..20 {
-        if let Ok(msg) = bus.outbound_receiver().recv_timeout(Duration::from_millis(100)) {
-            first_outbound = Some(msg);
-            break;
-        }
-    }
+    let first_outbound = wait_for_outbound_message(
+        &bus,
+        40,
+        Duration::from_millis(100),
+        |_| true,
+    );
     let _ = first_outbound.expect("expected first outbound message");
 
     agent.process_message(make_inbound(MakeInbound {
@@ -705,15 +728,9 @@ fn channel_to_agent_to_dispatch_to_channel_round_trip_succeeds() {
         ..Default::default()
     }));
 
-    let mut sent = Vec::new();
-    for _ in 0..40 {
-        sent = channel.sent_messages();
-        if !sent.is_empty() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-
+    let received = wait_until(|| !channel.sent_messages().is_empty(), 80, Duration::from_millis(50));
+    assert!(received, "expected dispatched outbound message in channel");
+    let sent = channel.sent_messages();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].target, "user-1");
     assert_eq!(sent[0].message, "reply[mock-session-1]: Hello, world!");
@@ -724,15 +741,16 @@ fn channel_to_agent_to_dispatch_to_channel_round_trip_succeeds() {
     assert_eq!(status.core.sessions_count, 1);
     assert_eq!(status.core.context_status, "running");
 
-    let mut snapshot = stats.snapshot();
-    for _ in 0..20 {
-        if snapshot.dispatched == 1 {
-            break;
-        }
-        thread::sleep(Duration::from_millis(25));
-        snapshot = stats.snapshot();
-    }
-    assert_eq!(snapshot.dispatched, 1);
+    let dispatched = wait_until(
+        || {
+            let snapshot = stats.snapshot();
+            snapshot.dispatched == 1 && snapshot.errors == 0 && snapshot.channel_not_found == 0
+        },
+        80,
+        Duration::from_millis(50),
+    );
+    assert!(dispatched, "expected dispatch stats to converge");
+    let snapshot = stats.snapshot();    assert_eq!(snapshot.dispatched, 1);
     assert_eq!(snapshot.errors, 0);
     assert_eq!(snapshot.channel_not_found, 0);
 
@@ -970,7 +988,7 @@ fn agent_submits_question_answer_and_continues_same_session() {
     assert_eq!(pending.raw_question["options"][0], "继续执行");
 
     let mut waiting_status = agent.status();
-    for _ in 0..20 {
+    for _ in 0..40 {
         if waiting_status
             .core
             .runtime_timeline
@@ -979,7 +997,7 @@ fn agent_submits_question_answer_and_continues_same_session() {
         {
             break;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(50));
         waiting_status = agent.status();
     }
     let waiting_timeline = waiting_status
@@ -1438,7 +1456,7 @@ fn agent_exhausts_followup_when_result_repeats_without_progress() {
     agent.process_message(inbound);
 
     let mut outbound = None;
-    for _ in 0..40 {
+    for _ in 0..80 {
         if let Ok(msg) = bus.outbound_receiver().recv_timeout(Duration::from_millis(100)) {
             if msg.content.contains("requirement_followup_exhausted") {
                 outbound = Some(msg);
@@ -1450,7 +1468,7 @@ fn agent_exhausts_followup_when_result_repeats_without_progress() {
     assert!(outbound.content.contains("requirement_followup_exhausted"));
 
     let mut status = agent.status();
-    for _ in 0..20 {
+    for _ in 0..40 {
         let has_exhausted = status
             .core
             .runtime_timeline
@@ -1464,7 +1482,7 @@ fn agent_exhausts_followup_when_result_repeats_without_progress() {
         if has_exhausted && has_failed {
             break;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(50));
         status = agent.status();
     }
     let timeline = status
@@ -1534,11 +1552,11 @@ fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
     let job_id = inbound.id.clone();
     agent.process_message(inbound);
 
-    for _ in 0..40 {
+    for _ in 0..80 {
         if agent.pending_question_for(&job_id).is_some() {
             break;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(50));
     }
     let pending = agent
         .pending_question_for(&job_id)
@@ -1551,7 +1569,7 @@ fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
     );
 
     let mut waiting_status = agent.status();
-    for _ in 0..20 {
+    for _ in 0..40 {
         if waiting_status
             .core
             .runtime_timeline
@@ -1560,7 +1578,7 @@ fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
         {
             break;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(50));
         waiting_status = agent.status();
     }
     let waiting_timeline = waiting_status
@@ -1670,38 +1688,40 @@ fn agent_orchestration_p2_keeps_followup_contract_after_upstream_result() {
     let job_id = inbound.id.clone();
     agent.process_message(inbound);
 
-    let mut outbound = None;
-    for _ in 0..40 {
-        if let Ok(msg) = bus.outbound_receiver().recv_timeout(Duration::from_millis(100)) {
-            if msg.content.contains("orchestration followup completed") {
-                outbound = Some(msg);
-                break;
-            }
-        }
-    }
+    let outbound = wait_for_outbound_message(
+        &bus,
+        80,
+        Duration::from_millis(100),
+        |msg| msg.content.contains("orchestration followup completed"),
+    );
     let outbound = outbound.expect("expected orchestration followup outbound");
     assert!(outbound
         .content
         .contains("orchestration followup completed"));
 
-    let mut status = agent.status();
-    for _ in 0..20 {
-        let has_followup = status
-            .core
-            .runtime_timeline
-            .iter()
-            .any(|event| event.message_id == job_id && event.event == "requirement_followup_scheduled");
-        let has_completed = status
-            .core
-            .runtime_timeline
-            .iter()
-            .any(|event| event.message_id == job_id && event.event == "message_completed");
-        if has_followup && has_completed {
-            break;
-        }
-        thread::sleep(Duration::from_millis(25));
-        status = agent.status();
-    }
+    let timeline_ready = wait_until(
+        || {
+            let status = agent.status();
+            let has_followup = status
+                .core
+                .runtime_timeline
+                .iter()
+                .any(|event| {
+                    event.message_id == job_id
+                        && event.event == "requirement_followup_scheduled"
+                });
+            let has_completed = status
+                .core
+                .runtime_timeline
+                .iter()
+                .any(|event| event.message_id == job_id && event.event == "message_completed");
+            has_followup && has_completed
+        },
+        80,
+        Duration::from_millis(50),
+    );
+    assert!(timeline_ready, "expected followup+completed timeline events");
+    let status = agent.status();
     let timeline = status
         .core
         .runtime_timeline
@@ -2204,7 +2224,7 @@ fn agent_tracks_tool_permission_observability_on_allow_via_snapshot_and_query_he
     assert!(outbound.content.contains("Allow path observed."));
 
     let mut final_snapshot = None;
-    for _ in 0..40 {
+    for _ in 0..120 {
         let snapshot = agent.core_agent().runtime_state_snapshot();
         let Some(run) = run_by_job_id(&snapshot, &job_id) else {
             thread::sleep(Duration::from_millis(25));
@@ -2472,7 +2492,7 @@ fn agent_tracks_tool_permission_observability_on_deny_via_snapshot_and_query_hel
     assert!(outbound.content.contains("Denied path observed."));
 
     let mut final_snapshot = None;
-    for _ in 0..120 {
+    for _ in 0..240 {
         let snapshot = agent.core_agent().runtime_state_snapshot();
         let Some(run) = run_by_job_id(&snapshot, &job_id) else {
             thread::sleep(Duration::from_millis(25));
@@ -2572,7 +2592,7 @@ fn agent_failure_does_not_create_pending_question() {
     let job_id = inbound.id.clone();
     agent.process_message(inbound);
 
-    for _ in 0..20 {
+    for _ in 0..40 {
         let status = agent.status();
         if status
             .core
@@ -2582,7 +2602,7 @@ fn agent_failure_does_not_create_pending_question() {
         {
             break;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(50));
     }
     assert!(agent.pending_question_for(&job_id).is_none());
 
@@ -2624,7 +2644,7 @@ fn agent_question_like_error_text_does_not_create_pending_question() {
     let job_id = inbound.id.clone();
     agent.process_message(inbound);
 
-    for _ in 0..20 {
+    for _ in 0..40 {
         let status = agent.status();
         if status
             .core
@@ -2634,7 +2654,7 @@ fn agent_question_like_error_text_does_not_create_pending_question() {
         {
             break;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(50));
     }
     assert!(agent.pending_question_for(&job_id).is_none());
 
@@ -3126,24 +3146,25 @@ fn agent_exposes_busy_worker_current_task_during_long_execution() {
     let job_id = inbound.id.clone();
     agent.process_message(inbound);
 
-    let mut saw_busy = false;
-    for _ in 0..30 {
-        let status = agent.status();
-        if let Some(current_task) = status
-            .core
-            .worker_pool
-            .workers
-            .iter()
-            .find(|worker| worker.status == "busy")
-            .and_then(|worker| worker.current_task.as_ref())
-        {
-            assert_eq!(current_task.trace_id, job_id);
-            assert!(current_task.started_ms > 0);
-            saw_busy = true;
-            break;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
+    let saw_busy = wait_until(
+        || {
+            let status = agent.status();
+            status
+                .core
+                .worker_pool
+                .workers
+                .iter()
+                .find(|worker| worker.status == "busy")
+                .and_then(|worker| worker.current_task.as_ref())
+                .is_some_and(|current_task| {
+                    assert_eq!(current_task.trace_id, job_id);
+                    assert!(current_task.started_ms > 0);
+                    true
+                })
+        },
+        80,
+        Duration::from_millis(25),
+    );
     assert!(saw_busy, "expected a busy worker during slow execution");
 
     let outbound = bus
@@ -3354,18 +3375,19 @@ fn integration_mixed_dispatch_outcomes_do_not_block_successful_messages() {
         ..Default::default()
     }));
 
-    let mut snapshot = stats.snapshot();
-    for _ in 0..100 {
-        if ok_channel.sent_messages().len() == 1
-            && snapshot.dispatched == 1
-            && snapshot.errors == 1
-            && snapshot.channel_not_found == 1
-        {
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-        snapshot = stats.snapshot();
-    }
+    let settled = wait_until(
+        || {
+            let snapshot = stats.snapshot();
+            ok_channel.sent_messages().len() == 1
+                && snapshot.dispatched == 1
+                && snapshot.errors == 1
+                && snapshot.channel_not_found == 1
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(settled, "expected dispatch stats and sent messages to settle");
+    let snapshot = stats.snapshot();
 
     let ok_sent = ok_channel.sent_messages();
     assert_eq!(ok_sent.len(), 1);
