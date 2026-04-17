@@ -1,8 +1,8 @@
 use crate::jobs::build_job_views_with_projection;
 use crate::AppState;
 use anima_runtime::messages::types::MessageRole;
-use anima_runtime::runtime::build_projection;
-use anima_runtime::transcript::ContentBlock;
+use anima_runtime::runtime::{build_projection, RuntimeStateSnapshot};
+use anima_runtime::transcript::{value_from_blocks, ContentBlock};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -62,9 +62,14 @@ pub fn transcript_content_preview(blocks: &[ContentBlock]) -> String {
     text.chars().take(80).collect()
 }
 
-pub fn build_session_summaries_from_runtime(
-    snapshot: &anima_runtime::runtime::RuntimeStateSnapshot,
-) -> Vec<SessionListItem> {
+fn transcript_content_value(blocks: &[ContentBlock]) -> Value {
+    match blocks {
+        [ContentBlock::Text { text }] => Value::String(text.clone()),
+        _ => value_from_blocks(blocks),
+    }
+}
+
+pub fn build_session_summaries_from_runtime(snapshot: &RuntimeStateSnapshot) -> Vec<SessionListItem> {
     let mut sessions = HashMap::<String, SessionListItem>::new();
 
     for run in snapshot.runs.values() {
@@ -112,6 +117,77 @@ pub fn build_session_summaries_from_runtime(
     }
 
     sessions.into_values().collect()
+}
+
+pub fn build_session_history_from_runtime(
+    snapshot: &RuntimeStateSnapshot,
+    session_id: &str,
+) -> Option<Vec<SessionHistoryItem>> {
+    let has_session = snapshot
+        .runs
+        .values()
+        .any(|run| run.chat_id.as_deref() == Some(session_id));
+
+    let history = snapshot
+        .transcript
+        .iter()
+        .filter(|message| {
+            snapshot
+                .runs
+                .get(&message.run_id)
+                .and_then(|run| run.chat_id.as_deref())
+                == Some(session_id)
+        })
+        .map(|message| {
+            let role = serde_json::to_value(&message.role)
+                .ok()
+                .and_then(|value| value.as_str().map(ToString::to_string));
+            let content = transcript_content_value(&message.blocks);
+            SessionHistoryItem {
+                role,
+                content: content.clone(),
+                recorded_at: Some(message.appended_at_ms),
+                raw: serde_json::json!({
+                    "message_id": message.message_id,
+                    "run_id": message.run_id,
+                    "turn_id": message.turn_id,
+                    "role": message.role,
+                    "content": content,
+                    "tool_use_id": message.tool_use_id,
+                    "metadata": message.metadata,
+                    "filtered": message.filtered,
+                    "recorded_at_ms": message.appended_at_ms,
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if has_session || !history.is_empty() {
+        Some(history)
+    } else {
+        None
+    }
+}
+
+pub fn build_sessions_snapshot(state: &AppState) -> Vec<SessionListItem> {
+    let runtime = state.runtime.lock();
+    let runtime_snapshot = runtime.agent.core_agent().runtime_state_snapshot();
+    drop(runtime);
+
+    let mut sessions = build_session_summaries_from_runtime(&runtime_snapshot);
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.last_active));
+    sessions
+}
+
+pub fn build_session_history_snapshot(
+    state: &AppState,
+    session_id: &str,
+) -> Option<Vec<SessionHistoryItem>> {
+    let runtime = state.runtime.lock();
+    let runtime_snapshot = runtime.agent.core_agent().runtime_state_snapshot();
+    drop(runtime);
+
+    build_session_history_from_runtime(&runtime_snapshot, session_id)
 }
 
 pub fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
@@ -288,5 +364,71 @@ pub fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
             "recent_events": runtime_snapshot.recent_events,
         }),
         jobs,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_session_history_from_runtime, build_session_summaries_from_runtime};
+    use anima_runtime::messages::types::MessageRole;
+    use anima_runtime::runtime::RuntimeStateSnapshot;
+    use anima_runtime::tasks::{RunRecord, RunStatus};
+    use anima_runtime::transcript::{ContentBlock, MessageRecord};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn runtime_session_builders_use_snapshot_data() {
+        let run = RunRecord {
+            run_id: "run-1".into(),
+            trace_id: "trace-1".into(),
+            job_id: "job-1".into(),
+            chat_id: Some("session-1".into()),
+            channel: "web".into(),
+            status: RunStatus::Running,
+            current_turn_id: None,
+            latest_error: None,
+            created_at_ms: 10,
+            updated_at_ms: 40,
+            completed_at_ms: None,
+        };
+        let message = MessageRecord {
+            message_id: "msg-1".into(),
+            run_id: "run-1".into(),
+            turn_id: None,
+            role: MessageRole::User,
+            blocks: vec![ContentBlock::Text {
+                text: "hello runtime session".into(),
+            }],
+            tool_use_id: None,
+            metadata: json!({}),
+            filtered: false,
+            appended_at_ms: 50,
+        };
+        let snapshot = RuntimeStateSnapshot {
+            runs: HashMap::from([("run-1".into(), run)]),
+            transcript: vec![message],
+            ..RuntimeStateSnapshot::default()
+        };
+
+        let mut sessions = build_session_summaries_from_runtime(&snapshot);
+        sessions.sort_by_key(|item| item.session_id.clone());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "session-1");
+        assert_eq!(sessions[0].history_len, 1);
+        assert_eq!(sessions[0].last_user_message_preview, "hello runtime session");
+        assert_eq!(sessions[0].last_active, 50);
+
+        let history = build_session_history_from_runtime(&snapshot, "session-1")
+            .expect("session history should exist");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role.as_deref(), Some("user"));
+        assert_eq!(history[0].recorded_at, Some(50));
+        assert_eq!(history[0].content, json!("hello runtime session"));
+        assert_eq!(
+            history[0].raw.get("recorded_at_ms").and_then(|value| value.as_u64()),
+            Some(50)
+        );
+        assert!(build_session_history_from_runtime(&snapshot, "missing").is_none());
     }
 }
