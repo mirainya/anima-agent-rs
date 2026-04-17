@@ -34,3 +34,6 @@ opencode.json
 
 /crates/anima-web/tests
 /crates/anima-web/frontend/target
+/crates/anima-web/.opencode/runtime/state.json
+/crates/anima-runtime/.opencode/context/key1.json
+/crates/anima-runtime/.opencode/runtime/state.json
