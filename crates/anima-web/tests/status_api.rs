@@ -2587,6 +2587,7 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
 fn jobs_api_prefers_runtime_payload_hierarchy_for_subtasks() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let mut runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(IdleExecutor))
         .build();
@@ -2693,6 +2694,7 @@ fn jobs_api_prefers_runtime_payload_hierarchy_for_subtasks() {
 fn jobs_api_returns_subtask_hierarchy_from_store_metadata() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(IdleExecutor))
         .build();
@@ -2950,6 +2952,7 @@ fn jobs_and_status_api_share_runtime_projection_semantics() {
 fn status_api_exposes_runtime_summary() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let mut runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(MockExecutor))
         .build();
@@ -3198,6 +3201,7 @@ fn status_api_exposes_runtime_summary() {
 fn status_api_exposes_failure_snapshot_and_counts() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let mut runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(FailingExecutor))
         .build();
@@ -3290,6 +3294,7 @@ fn status_api_exposes_failure_snapshot_and_counts() {
 fn question_answer_api_rejects_job_without_real_pending_question() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let mut runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(FailingExecutor))
         .build();
@@ -3374,6 +3379,7 @@ fn question_answer_api_rejects_job_without_real_pending_question() {
 fn sessions_api_lists_history_and_send_alias_reuses_existing_session() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let mut runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(MockExecutor))
         .build();
@@ -3608,6 +3614,7 @@ fn review_api_rejects_unknown_job() {
 fn send_api_returns_job_id_and_review_records_feedback_only() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let mut runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(MockExecutor))
         .build();
@@ -3734,6 +3741,7 @@ fn send_api_returns_job_id_and_review_records_feedback_only() {
 fn status_api_exposes_orchestration_p2_question_observability() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let mut runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(OrchestrationQuestionExecutor))
         .build();
@@ -3970,6 +3978,7 @@ fn build_job_views_runtime_backed_does_not_fallback_question_or_tool_from_timeli
 fn status_api_exposes_orchestration_p2_followup_observability() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let mut runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(OrchestrationFollowupExecutor))
         .build();
@@ -4075,6 +4084,7 @@ fn status_api_exposes_orchestration_p2_followup_observability() {
 fn status_api_exposes_orchestration_fallback_observability() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
     let mut runtime = RuntimeBootstrapBuilder::new()
+        .with_in_memory_runtime_state()
         .with_cli_enabled(false)
         .with_executor(Arc::new(MockExecutor))
         .build();

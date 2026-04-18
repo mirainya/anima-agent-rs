@@ -223,6 +223,11 @@ impl CoreAgent {
         );
         self.suspension.clear_question(job_id);
         self.suspension.clear_tool_invocation(&pending.question_id);
+        self.emitter.record_job_lifecycle_hint(
+            job_id,
+            "completed",
+            crate::runtime::completed_current_step(),
+        );
         let _ = self.send_response(&suspended.inbound, &loop_result.final_text);
         self.emitter.publish(
             "message_completed",

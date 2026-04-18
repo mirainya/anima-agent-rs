@@ -8,9 +8,14 @@
 //! - control（控制）：生命周期管理信号，使用 Sliding 策略
 
 use crate::bus::bounded::{
-    bounded_channel_with_counter, BoundedReceiver, BoundedSender, BufferStrategy,
+    bounded_channel_full, BoundedReceiver, BoundedSender, BufferStrategy,
 };
-use crate::bus::message::{ControlMessage, InboundMessage, InternalMessage, OutboundMessage};
+use crate::bus::message::{
+    make_internal, ControlMessage, InboundMessage, InternalMessage, InternalMessageType,
+    MakeInternal, OutboundMessage,
+};
+use crate::support::now_ms;
+use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -40,6 +45,11 @@ pub struct BusTelemetrySnapshot {
     pub outbound_queue_depth: usize,
     pub internal_queue_depth: usize,
     pub control_queue_depth: usize,
+    /// 各通道最近一次发生丢弃的时间戳（毫秒），0 表示从未丢弃
+    pub inbound_last_drop_at_ms: u64,
+    pub outbound_last_drop_at_ms: u64,
+    pub internal_last_drop_at_ms: u64,
+    pub control_last_drop_at_ms: u64,
 }
 
 impl Default for BusConfig {
@@ -70,6 +80,10 @@ pub struct Bus {
     outbound_dropped_total: Arc<AtomicU64>,
     internal_dropped_total: Arc<AtomicU64>,
     control_dropped_total: Arc<AtomicU64>,
+    inbound_last_drop_at_ms: Arc<AtomicU64>,
+    outbound_last_drop_at_ms: Arc<AtomicU64>,
+    internal_last_drop_at_ms: Arc<AtomicU64>,
+    control_last_drop_at_ms: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
 }
 
@@ -96,21 +110,36 @@ impl Bus {
         let outbound_dropped_total = Arc::new(AtomicU64::new(0));
         let internal_dropped_total = Arc::new(AtomicU64::new(0));
         let control_dropped_total = Arc::new(AtomicU64::new(0));
-        let (inbound_tx, inbound_rx) = bounded_channel_with_counter(
+        let inbound_last_drop_at_ms = Arc::new(AtomicU64::new(0));
+        let outbound_last_drop_at_ms = Arc::new(AtomicU64::new(0));
+        let internal_last_drop_at_ms = Arc::new(AtomicU64::new(0));
+        let control_last_drop_at_ms = Arc::new(AtomicU64::new(0));
+
+        let make_hook = |stamp: Arc<AtomicU64>| -> crate::bus::bounded::DropHook {
+            Arc::new(move || {
+                stamp.store(now_ms(), Ordering::SeqCst);
+            })
+        };
+
+        let (inbound_tx, inbound_rx) = bounded_channel_full(
             BufferStrategy::Dropping(config.inbound_capacity),
             Some(inbound_dropped_total.clone()),
+            Some(make_hook(inbound_last_drop_at_ms.clone())),
         );
-        let (outbound_tx, outbound_rx) = bounded_channel_with_counter(
+        let (outbound_tx, outbound_rx) = bounded_channel_full(
             BufferStrategy::Sliding(config.outbound_capacity),
             Some(outbound_dropped_total.clone()),
+            Some(make_hook(outbound_last_drop_at_ms.clone())),
         );
-        let (internal_tx, internal_rx) = bounded_channel_with_counter(
+        let (internal_tx, internal_rx) = bounded_channel_full(
             BufferStrategy::Sliding(config.internal_capacity),
             Some(internal_dropped_total.clone()),
+            Some(make_hook(internal_last_drop_at_ms.clone())),
         );
-        let (control_tx, control_rx) = bounded_channel_with_counter(
+        let (control_tx, control_rx) = bounded_channel_full(
             BufferStrategy::Sliding(config.control_capacity),
             Some(control_dropped_total.clone()),
+            Some(make_hook(control_last_drop_at_ms.clone())),
         );
         Self {
             inbound_tx,
@@ -125,6 +154,10 @@ impl Bus {
             outbound_dropped_total,
             internal_dropped_total,
             control_dropped_total,
+            inbound_last_drop_at_ms,
+            outbound_last_drop_at_ms,
+            internal_last_drop_at_ms,
+            control_last_drop_at_ms,
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -135,7 +168,26 @@ impl Bus {
         if self.is_closed() {
             return Err("bus closed".into());
         }
-        self.inbound_tx.send(msg)
+        let before = self.inbound_dropped_total.load(Ordering::SeqCst);
+        let result = self.inbound_tx.send(msg);
+        let after = self.inbound_dropped_total.load(Ordering::SeqCst);
+        if after > before {
+            // 入站丢弃是异常信号（背压），best-effort 发布内部事件便于观测
+            let payload = json!({
+                "channel": "inbound",
+                "dropped_total": after,
+                "queue_depth": self.inbound_tx.len(),
+            });
+            let _ = self.internal_tx.send(make_internal(MakeInternal {
+                source: "bus".into(),
+                target: None,
+                msg_type: Some(InternalMessageType::Event),
+                payload,
+                metadata: Some(json!({ "event": "bus_message_dropped" })),
+                ..Default::default()
+            }));
+        }
+        result
     }
 
     pub fn consume_inbound(&self) -> Option<InboundMessage> {
@@ -217,6 +269,10 @@ impl Bus {
             outbound_queue_depth: self.outbound_tx.len(),
             internal_queue_depth: self.internal_tx.len(),
             control_queue_depth: self.control_tx.len(),
+            inbound_last_drop_at_ms: self.inbound_last_drop_at_ms.load(Ordering::SeqCst),
+            outbound_last_drop_at_ms: self.outbound_last_drop_at_ms.load(Ordering::SeqCst),
+            internal_last_drop_at_ms: self.internal_last_drop_at_ms.load(Ordering::SeqCst),
+            control_last_drop_at_ms: self.control_last_drop_at_ms.load(Ordering::SeqCst),
         }
     }
 

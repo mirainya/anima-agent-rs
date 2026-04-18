@@ -651,11 +651,12 @@ fn agent_processes_messages_and_publishes_outbound() {
 #[test]
 fn agent_reuses_created_session_for_same_chat() {
     let bus = Arc::new(Bus::create());
-    let agent = Agent::create(
+    let agent = Agent::with_runtime_state_store(
         bus.clone(),
         Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
         Some(Arc::new(MockExecutor)),
+        Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
 
@@ -762,11 +763,12 @@ fn channel_to_agent_to_dispatch_to_channel_round_trip_succeeds() {
 #[test]
 fn agent_publishes_error_response_when_worker_execution_fails() {
     let bus = Arc::new(Bus::create());
-    let agent = Agent::create(
+    let agent = Agent::with_runtime_state_store(
         bus.clone(),
         Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
         Some(Arc::new(FailingExecutor)),
+        Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
 
@@ -834,11 +836,12 @@ fn agent_publishes_error_response_when_worker_execution_fails() {
 #[test]
 fn agent_classifies_upstream_stream_error_during_plan_execution() {
     let bus = Arc::new(Bus::create());
-    let agent = Agent::create(
+    let agent = Agent::with_runtime_state_store(
         bus.clone(),
         Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
         Some(Arc::new(UpstreamStreamErrorExecutor)),
+        Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
 
@@ -897,11 +900,12 @@ fn agent_classifies_upstream_stream_error_during_plan_execution() {
 #[test]
 fn agent_classifies_upstream_timeout_during_plan_execution() {
     let bus = Arc::new(Bus::create());
-    let agent = Agent::create(
+    let agent = Agent::with_runtime_state_store(
         bus.clone(),
         Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
         Some(Arc::new(UpstreamTimeoutExecutor)),
+        Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
 
@@ -1341,11 +1345,12 @@ fn agent_continuation_can_return_to_waiting_user_input() {
 #[test]
 fn agent_schedules_followup_before_completion_when_result_is_unsatisfied() {
     let bus = Arc::new(Bus::create());
-    let agent = Agent::create(
+    let agent = Agent::with_runtime_state_store(
         bus.clone(),
         Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
         Some(Arc::new(FollowupExecutor)),
+        Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
 
@@ -2678,11 +2683,12 @@ fn agent_question_like_error_text_does_not_create_pending_question() {
 #[test]
 fn agent_emits_runtime_events_and_recent_sessions_in_status() {
     let bus = Arc::new(Bus::create());
-    let agent = Agent::create(
+    let agent = Agent::with_runtime_state_store(
         bus.clone(),
         Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
         Some(Arc::new(MockExecutor)),
+        Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
 
@@ -3128,11 +3134,12 @@ fn agent_preserves_worker_pool_unavailable_error_during_session_create() {
 #[test]
 fn agent_exposes_busy_worker_current_task_during_long_execution() {
     let bus = Arc::new(Bus::create());
-    let agent = Agent::create(
+    let agent = Agent::with_runtime_state_store(
         bus.clone(),
         Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
         Some(Arc::new(SlowExecutor)),
+        Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
 
@@ -3197,11 +3204,12 @@ fn runtime_timeline_uses_subtask_metadata_as_job_identity() {
     let subtask = plan.subtasks.values().next().unwrap();
 
     let bus = Arc::new(Bus::create());
-    let agent = Agent::create(
+    let agent = Agent::with_runtime_state_store(
         bus.clone(),
         Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
         Some(Arc::new(MockExecutor)),
+        Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
 
@@ -3340,11 +3348,12 @@ fn integration_mixed_dispatch_outcomes_do_not_block_successful_messages() {
 
     let dispatch_handle = start_outbound_dispatch(bus.clone(), registry.clone(), stats.clone());
 
-    let agent = Agent::create(
+    let agent = Agent::with_runtime_state_store(
         bus.clone(),
         Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
         Some(Arc::new(MockExecutor)),
+        Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
 

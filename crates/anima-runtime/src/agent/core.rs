@@ -863,6 +863,34 @@ impl Agent {
         }
     }
 
+    pub fn with_runtime_state_store(
+        bus: Arc<Bus>,
+        client: Option<SdkClient>,
+        session_manager: Option<Arc<SessionStore>>,
+        executor: Option<Arc<dyn TaskExecutor>>,
+        runtime_state_store: SharedRuntimeStateStore,
+    ) -> Self {
+        let opencode_client = client.unwrap_or_else(|| {
+            SdkClient::with_options("http://127.0.0.1:9711", anima_sdk::ClientOptions::default())
+        });
+        let session_manager = session_manager.unwrap_or_else(|| Arc::new(SessionStore::new()));
+        let core_agent = Arc::new(CoreAgent::new_with_runtime_state_store(
+            bus.clone(),
+            opencode_client.clone(),
+            Some(session_manager.clone()),
+            executor.unwrap_or_else(|| Arc::new(SdkTaskExecutor)),
+            None,
+            runtime_state_store,
+        ));
+        Self {
+            bus,
+            opencode_client,
+            session_manager,
+            running: AtomicBool::new(false),
+            core_agent,
+        }
+    }
+
     pub fn start(&self) {
         if !self.running.swap(true, Ordering::SeqCst) {
             self.core_agent.start();

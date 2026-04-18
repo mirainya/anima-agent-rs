@@ -665,6 +665,11 @@ impl CoreAgent {
             ctx.result.duration_ms,
             &branch.completion.response_text,
         );
+        self.emitter.record_job_lifecycle_hint(
+            &ctx.inbound_msg.id,
+            "completed",
+            crate::runtime::completed_current_step(),
+        );
         self.emitter.publish(
             "message_completed",
             ctx.inbound_msg,

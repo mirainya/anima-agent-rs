@@ -25,6 +25,76 @@ fn dropping_buffer_discards_new_messages_when_full() {
 }
 
 #[test]
+fn inbound_drop_updates_last_drop_timestamp_and_emits_internal_event() {
+    let bus = Bus::create_with_config(BusConfig {
+        inbound_capacity: 1,
+        outbound_capacity: 10,
+        internal_capacity: 10,
+        control_capacity: 10,
+    });
+
+    let before = bus.telemetry_snapshot();
+    assert_eq!(before.inbound_last_drop_at_ms, 0);
+
+    for i in 0..3 {
+        bus.publish_inbound(make_inbound(MakeInbound {
+            channel: "t".into(),
+            content: format!("m-{i}"),
+            ..Default::default()
+        }))
+        .unwrap();
+    }
+
+    let after = bus.telemetry_snapshot();
+    assert!(after.inbound_dropped_total >= 1);
+    assert!(after.inbound_last_drop_at_ms > 0);
+
+    let mut seen_drop_event = false;
+    let internal_rx = bus.internal_receiver();
+    while let Some(msg) = internal_rx.try_recv() {
+        if msg.source == "bus"
+            && msg.metadata.get("event").and_then(|v| v.as_str()) == Some("bus_message_dropped")
+        {
+            assert_eq!(msg.payload.get("channel").and_then(|v| v.as_str()), Some("inbound"));
+            seen_drop_event = true;
+            break;
+        }
+    }
+    assert!(seen_drop_event, "expected bus_message_dropped internal event");
+}
+
+#[test]
+fn sliding_drop_updates_last_drop_timestamp_without_internal_event() {
+    let bus = Bus::create_with_config(BusConfig {
+        inbound_capacity: 10,
+        outbound_capacity: 1,
+        internal_capacity: 10,
+        control_capacity: 10,
+    });
+
+    for i in 0..3 {
+        bus.publish_outbound(make_outbound(MakeOutbound {
+            channel: "t".into(),
+            content: format!("m-{i}"),
+            ..Default::default()
+        }))
+        .unwrap();
+    }
+    let snap = bus.telemetry_snapshot();
+    assert!(snap.outbound_dropped_total > 0);
+    assert!(snap.outbound_last_drop_at_ms > 0);
+
+    // outbound/internal/control 使用 Sliding 策略，不应发射 bus_message_dropped 事件
+    let internal_rx = bus.internal_receiver();
+    while let Some(msg) = internal_rx.try_recv() {
+        assert_ne!(
+            msg.metadata.get("event").and_then(|v| v.as_str()),
+            Some("bus_message_dropped")
+        );
+    }
+}
+
+#[test]
 fn bus_telemetry_counts_drops_and_queue_depths() {
     let bus = Bus::create_with_config(BusConfig {
         inbound_capacity: 2,

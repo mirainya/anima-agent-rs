@@ -29,6 +29,9 @@ impl BufferStrategy {
     }
 }
 
+/// 丢弃事件的回调钩子
+pub type DropHook = Arc<dyn Fn() + Send + Sync>;
+
 /// 有界发送端
 ///
 /// 持有发送端和接收端的引用，因为 Sliding 策略需要从接收端弹出旧消息来腾出空间。
@@ -37,9 +40,19 @@ pub struct BoundedSender<T> {
     rx: Receiver<T>,
     strategy: BufferStrategy,
     dropped_total: Option<Arc<AtomicU64>>,
+    on_drop: Option<DropHook>,
 }
 
 impl<T> BoundedSender<T> {
+    fn record_drop(&self) {
+        if let Some(counter) = &self.dropped_total {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        if let Some(hook) = &self.on_drop {
+            hook();
+        }
+    }
+
     /// 根据策略发送消息
     /// - Dropping：满时静默丢弃新消息，返回 Ok
     /// - Sliding：满时先弹出旧消息腾出空间，再发送
@@ -48,9 +61,7 @@ impl<T> BoundedSender<T> {
             BufferStrategy::Dropping(_cap) => {
                 // 满时直接丢弃新消息，不阻塞发送方
                 if self.tx.len() >= self.strategy.capacity() {
-                    if let Some(counter) = &self.dropped_total {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                    }
+                    self.record_drop();
                     return Ok(());
                 }
                 self.tx.send(msg).map_err(|e| e.to_string())
@@ -59,9 +70,7 @@ impl<T> BoundedSender<T> {
                 // 满时从接收端弹出最旧的消息，为新消息腾出空间
                 while self.tx.len() >= self.strategy.capacity() {
                     if self.rx.try_recv().is_ok() {
-                        if let Some(counter) = &self.dropped_total {
-                            counter.fetch_add(1, Ordering::SeqCst);
-                        }
+                        self.record_drop();
                     } else {
                         break;
                     }
@@ -131,6 +140,14 @@ pub fn bounded_channel_with_counter<T>(
     strategy: BufferStrategy,
     dropped_total: Option<Arc<AtomicU64>>,
 ) -> (BoundedSender<T>, BoundedReceiver<T>) {
+    bounded_channel_full(strategy, dropped_total, None)
+}
+
+pub fn bounded_channel_full<T>(
+    strategy: BufferStrategy,
+    dropped_total: Option<Arc<AtomicU64>>,
+    on_drop: Option<DropHook>,
+) -> (BoundedSender<T>, BoundedReceiver<T>) {
     let cap = strategy.capacity();
     let (tx, rx) = bounded(cap + 1);
     let sender = BoundedSender {
@@ -138,6 +155,7 @@ pub fn bounded_channel_with_counter<T>(
         rx: rx.clone(),
         strategy,
         dropped_total,
+        on_drop,
     };
     let receiver = BoundedReceiver { rx };
     (sender, receiver)

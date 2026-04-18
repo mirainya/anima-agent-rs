@@ -3,6 +3,7 @@ use crate::channel::{Channel, ChannelRegistry, SessionStore};
 use crate::cli::CliChannel;
 use crate::dispatcher::{start_dispatcher_outbound_loop, Dispatcher};
 use crate::hooks::{HookRegistry, StopHook};
+use crate::runtime::RuntimeStateStore;
 use anima_sdk::facade::{Client as SdkClient, ClientOptions as SdkClientOptions};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -13,6 +14,7 @@ pub struct RuntimeBootstrapBuilder {
     cli_enabled: bool,
     executor: Option<Arc<dyn TaskExecutor>>,
     sdk_options: SdkClientOptions,
+    runtime_state_store: Option<Arc<RuntimeStateStore>>,
 }
 
 impl Default for RuntimeBootstrapBuilder {
@@ -23,6 +25,7 @@ impl Default for RuntimeBootstrapBuilder {
             cli_enabled: true,
             executor: None,
             sdk_options: SdkClientOptions::default(),
+            runtime_state_store: None,
         }
     }
 }
@@ -57,6 +60,16 @@ impl RuntimeBootstrapBuilder {
         self
     }
 
+    pub fn with_runtime_state_store(mut self, store: Arc<RuntimeStateStore>) -> Self {
+        self.runtime_state_store = Some(store);
+        self
+    }
+
+    pub fn with_in_memory_runtime_state(mut self) -> Self {
+        self.runtime_state_store = Some(Arc::new(RuntimeStateStore::new()));
+        self
+    }
+
     pub fn build(self) -> RuntimeBootstrap {
         let bus = Arc::new(crate::bus::Bus::create());
         let registry = Arc::new(ChannelRegistry::new());
@@ -78,12 +91,22 @@ impl RuntimeBootstrapBuilder {
                 .with_directory(dir.to_string_lossy().to_string()),
             Err(_) => SdkClient::with_options(self.url, self.sdk_options),
         };
-        let mut agent = Agent::create(
-            bus.clone(),
-            Some(client),
-            Some(session_store),
-            self.executor,
-        );
+        let mut agent = if let Some(runtime_state_store) = self.runtime_state_store {
+            Agent::with_runtime_state_store(
+                bus.clone(),
+                Some(client),
+                Some(session_store),
+                self.executor,
+                runtime_state_store,
+            )
+        } else {
+            Agent::create(
+                bus.clone(),
+                Some(client),
+                Some(session_store),
+                self.executor,
+            )
+        };
         agent.register_builtin_tools();
         let mut hook_registry = HookRegistry::new();
         hook_registry.register_post_hook(Arc::new(StopHook));

@@ -322,6 +322,10 @@ pub fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
             gauges.insert("bus_outbound_queue_depth".into(), bus_telemetry.outbound_queue_depth as i64);
             gauges.insert("bus_internal_queue_depth".into(), bus_telemetry.internal_queue_depth as i64);
             gauges.insert("bus_control_queue_depth".into(), bus_telemetry.control_queue_depth as i64);
+            gauges.insert("bus_inbound_last_drop_at_ms".into(), bus_telemetry.inbound_last_drop_at_ms as i64);
+            gauges.insert("bus_outbound_last_drop_at_ms".into(), bus_telemetry.outbound_last_drop_at_ms as i64);
+            gauges.insert("bus_internal_last_drop_at_ms".into(), bus_telemetry.internal_last_drop_at_ms as i64);
+            gauges.insert("bus_control_last_drop_at_ms".into(), bus_telemetry.control_last_drop_at_ms as i64);
 
             serde_json::json!({
                 "counters": counters,
@@ -346,6 +350,14 @@ pub fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
                 + bus_telemetry.outbound_dropped_total
                 + bus_telemetry.internal_dropped_total
                 + bus_telemetry.control_dropped_total,
+            "bus_inbound_dropped_total": bus_telemetry.inbound_dropped_total,
+            "bus_outbound_dropped_total": bus_telemetry.outbound_dropped_total,
+            "bus_internal_dropped_total": bus_telemetry.internal_dropped_total,
+            "bus_control_dropped_total": bus_telemetry.control_dropped_total,
+            "bus_inbound_last_drop_at_ms": bus_telemetry.inbound_last_drop_at_ms,
+            "bus_outbound_last_drop_at_ms": bus_telemetry.outbound_last_drop_at_ms,
+            "bus_internal_last_drop_at_ms": bus_telemetry.internal_last_drop_at_ms,
+            "bus_control_last_drop_at_ms": bus_telemetry.control_last_drop_at_ms,
         }),
         unified_runtime: serde_json::json!({
             "runs": runtime_projection.runs,
@@ -369,13 +381,20 @@ pub fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_session_history_from_runtime, build_session_summaries_from_runtime};
+    use super::{
+        build_session_history_from_runtime, build_session_summaries_from_runtime, build_status_snapshot,
+    };
+    use crate::{jobs::JobStore, web_channel::WebChannel, AppState};
+    use anima_runtime::bootstrap::RuntimeBootstrapBuilder;
+    use anima_runtime::bus::{make_inbound, Bus, BusConfig, MakeInbound};
     use anima_runtime::messages::types::MessageRole;
     use anima_runtime::runtime::RuntimeStateSnapshot;
     use anima_runtime::tasks::{RunRecord, RunStatus};
     use anima_runtime::transcript::{ContentBlock, MessageRecord};
+    use parking_lot::Mutex;
     use serde_json::json;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[test]
     fn runtime_session_builders_use_snapshot_data() {
@@ -430,5 +449,38 @@ mod tests {
             Some(50)
         );
         assert!(build_session_history_from_runtime(&snapshot, "missing").is_none());
+    }
+
+    #[test]
+    fn status_snapshot_warnings_include_bus_drop_timestamps() {
+        let bus = Arc::new(Bus::create_with_config(BusConfig {
+            inbound_capacity: 1,
+            outbound_capacity: 8,
+            internal_capacity: 8,
+            control_capacity: 8,
+        }));
+
+        for i in 0..3 {
+            bus.publish_inbound(make_inbound(MakeInbound {
+                channel: "web".into(),
+                content: format!("msg-{i}"),
+                ..Default::default()
+            }))
+            .unwrap();
+        }
+
+        let runtime = RuntimeBootstrapBuilder::new().with_cli_enabled(false).build();
+        let state = AppState {
+            runtime: Mutex::new(runtime),
+            bus,
+            web_channel: Arc::new(WebChannel::new()),
+            jobs: Mutex::new(JobStore::default()),
+        };
+
+        let snapshot = build_status_snapshot(&state);
+        let warnings = snapshot.warnings;
+        assert!(warnings["bus_drop_total"].as_u64().unwrap_or(0) > 0);
+        assert!(warnings["bus_inbound_last_drop_at_ms"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(warnings["bus_outbound_last_drop_at_ms"].as_u64(), Some(0));
     }
 }

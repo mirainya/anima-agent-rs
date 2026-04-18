@@ -435,14 +435,13 @@ fn derive_job_status_summary(
                 };
             }
             RequirementStatus::WaitingUserInput => {
-                if let Some(question) = pending_question {
-                    let step = question_waiting_step(question);
-                    return ProjectionJobStatusSummary {
-                        status: "waiting_user_input".into(),
-                        status_label: "waiting_user_input".into(),
-                        current_step: step,
-                    };
-                }
+                return ProjectionJobStatusSummary {
+                    status: "waiting_user_input".into(),
+                    status_label: "waiting_user_input".into(),
+                    current_step: pending_question
+                        .map(question_waiting_step)
+                        .unwrap_or_else(waiting_user_input_current_step),
+                };
             }
             RequirementStatus::FollowupScheduled => {
                 return ProjectionJobStatusSummary {
@@ -480,34 +479,15 @@ fn derive_job_status_summary(
         };
     }
 
-    if let Some(value) = lifecycle_hint {
-        if let Ok(summary) = serde_json::from_value::<ProjectionJobStatusSummary>(value.clone()) {
-            return summary;
+    let orchestration_step = orchestration.and_then(|summary| {
+        if let Some(active_subtask_name) = summary.active_subtask_name.as_ref() {
+            Some(format!("正在执行子任务：{active_subtask_name}"))
+        } else if summary.total_subtasks > 0 {
+            Some(format!("orchestration v1：共 {} 个子任务", summary.total_subtasks))
+        } else {
+            None
         }
-        if let Some(status_label) = value.get("status_label").and_then(Value::as_str) {
-            let current_step = value
-                .get("current_step")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-                .unwrap_or_else(|| match status_label {
-                    "queued" => queued_current_step(),
-                    "preparing_context" => preparing_context_current_step(),
-                    "creating_session" => "正在创建上游会话".to_string(),
-                    "planning" => "正在构建计划".to_string(),
-                    "stalled" => planning_stalled_current_step(),
-                    _ => executing_job_current_step(),
-                });
-            return ProjectionJobStatusSummary {
-                status: value
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or(status_label)
-                    .to_string(),
-                status_label: status_label.to_string(),
-                current_step,
-            };
-        }
-    }
+    });
 
     match run.status {
         RunStatus::Completed => ProjectionJobStatusSummary {
@@ -521,47 +501,70 @@ fn derive_job_status_summary(
             current_step: failed_current_step(),
         },
         RunStatus::Running => {
-            let orchestration_step = orchestration.and_then(|summary| {
-                if let Some(active_subtask_name) = summary.active_subtask_name.as_ref() {
-                    Some(format!("正在执行子任务：{active_subtask_name}"))
-                } else if summary.total_subtasks > 0 {
-                    Some(format!(
-                        "orchestration v1：共 {} 个子任务",
-                        summary.total_subtasks
-                    ))
-                } else {
-                    None
-                }
-            });
             if let Some(turn) = current_turn {
                 match turn.status {
-                    TurnStatus::Waiting => ProjectionJobStatusSummary {
-                        status: "waiting_user_input".into(),
-                        status_label: "waiting_user_input".into(),
-                        current_step: waiting_user_input_current_step(),
-                    },
-                    TurnStatus::Completed => ProjectionJobStatusSummary {
-                        status: "completed".into(),
-                        status_label: "completed".into(),
-                        current_step: completed_current_step(),
-                    },
-                    TurnStatus::Failed => ProjectionJobStatusSummary {
-                        status: "failed".into(),
-                        status_label: "failed".into(),
-                        current_step: failed_current_step(),
-                    },
-                    TurnStatus::Running => ProjectionJobStatusSummary {
-                        status: "executing".into(),
-                        status_label: "executing".into(),
-                        current_step: orchestration_step.unwrap_or_else(executing_job_current_step),
-                    },
+                    TurnStatus::Waiting => {
+                        return ProjectionJobStatusSummary {
+                            status: "waiting_user_input".into(),
+                            status_label: "waiting_user_input".into(),
+                            current_step: pending_question
+                                .map(question_waiting_step)
+                                .unwrap_or_else(waiting_user_input_current_step),
+                        };
+                    }
+                    TurnStatus::Completed => {
+                        return ProjectionJobStatusSummary {
+                            status: "completed".into(),
+                            status_label: "completed".into(),
+                            current_step: completed_current_step(),
+                        };
+                    }
+                    TurnStatus::Failed => {
+                        return ProjectionJobStatusSummary {
+                            status: "failed".into(),
+                            status_label: "failed".into(),
+                            current_step: failed_current_step(),
+                        };
+                    }
+                    TurnStatus::Running => {}
                 }
-            } else {
-                ProjectionJobStatusSummary {
-                    status: "executing".into(),
-                    status_label: "executing".into(),
-                    current_step: orchestration_step.unwrap_or_else(executing_job_current_step),
+            }
+
+            if let Some(value) = lifecycle_hint {
+                if let Ok(summary) = serde_json::from_value::<ProjectionJobStatusSummary>(value.clone()) {
+                    return summary;
                 }
+                if let Some(status_label) = value.get("status_label").and_then(Value::as_str) {
+                    let current_step = value
+                        .get("current_step")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| match status_label {
+                            "queued" => queued_current_step(),
+                            "preparing_context" => preparing_context_current_step(),
+                            "creating_session" => "正在创建上游会话".to_string(),
+                            "planning" => "正在构建计划".to_string(),
+                            "stalled" => planning_stalled_current_step(),
+                            _ => orchestration_step
+                                .clone()
+                                .unwrap_or_else(executing_job_current_step),
+                        });
+                    return ProjectionJobStatusSummary {
+                        status: value
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or(status_label)
+                            .to_string(),
+                        status_label: status_label.to_string(),
+                        current_step,
+                    };
+                }
+            }
+
+            ProjectionJobStatusSummary {
+                status: "executing".into(),
+                status_label: "executing".into(),
+                current_step: orchestration_step.unwrap_or_else(executing_job_current_step),
             }
         }
     }
