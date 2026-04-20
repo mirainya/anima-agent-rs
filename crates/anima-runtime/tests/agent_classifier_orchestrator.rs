@@ -1,7 +1,7 @@
 use anima_runtime::agent::{TaskExecutor, WorkerPool};
-use anima_runtime::agent_classifier::{AgentClassifier, ClassificationKind};
-use anima_runtime::agent_orchestrator::AgentOrchestrator;
-use anima_runtime::agent_types::ExecutionPlanKind;
+use anima_runtime::classifier::rule::{AgentClassifier, ClassificationKind};
+use anima_runtime::orchestrator::core::AgentOrchestrator;
+use anima_runtime::agent::types::ExecutionPlanKind;
 use anima_runtime::bus::{make_inbound, MakeInbound};
 use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};

@@ -1,5 +1,5 @@
-use anima_runtime::agent_classifier::ClassificationKind;
-use anima_runtime::ai_classifier::*;
+use anima_runtime::classifier::rule::ClassificationKind;
+use anima_runtime::classifier::ai::*;
 use anima_runtime::bus::{make_inbound, MakeInbound};
 use anima_runtime::cache::LruCache;
 use serde_json::json;

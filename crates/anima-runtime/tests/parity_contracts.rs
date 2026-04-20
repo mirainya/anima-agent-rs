@@ -4,7 +4,8 @@ use anima_runtime::dispatcher::{
     Balancer, BalancerMissReason, BalancerOptions, BalancerRuntimeConfig, BalancerStrategy,
     CircuitBreakerConfig, Dispatcher, HealthPolicy, Target, TargetStatus,
 };
-use anima_runtime::{ContextManager, MetricsCollector};
+use anima_runtime::context::ContextManager;
+use anima_runtime::metrics::MetricsCollector;
 use serde_json::json;
 use std::sync::Arc;
 

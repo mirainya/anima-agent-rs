@@ -1,9 +1,8 @@
 use anima_runtime::bus::{make_outbound, MakeOutbound};
 use anima_runtime::channel::{
-    dispatch_outbound_message, ChannelLookupReason, ChannelRegistry, DispatchStats,
+    dispatch_outbound_message, Channel, ChannelLookupReason, ChannelRegistry, DispatchStats,
     FindSessionOptions, SessionCreateOptions, SessionStore, TestChannel,
 };
-use anima_runtime::Channel;
 use serde_json::json;
 use std::sync::Arc;
 

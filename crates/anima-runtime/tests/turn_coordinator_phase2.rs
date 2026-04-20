@@ -2,13 +2,13 @@ use anima_runtime::agent::{
     ExecutionStageDurations, ExecutionSummary, PendingQuestion, PendingQuestionSourceKind,
     QuestionDecisionMode, QuestionKind, QuestionRiskLevel,
 };
-use anima_runtime::context_assembly::{
+use anima_runtime::execution::context_assembly::{
     assemble_context, ContextAssemblyMode, ContextAssemblyRequest,
 };
-use anima_runtime::requirement_judge::{
+use anima_runtime::execution::requirement_judge::{
     AgentFollowupPlan, RequirementJudgement, UserInputRequirement,
 };
-use anima_runtime::turn_coordinator::{
+use anima_runtime::execution::turn_coordinator::{
     plan_turn_outcome, prepare_completion_data, prepare_followup_exhausted_payload,
     prepare_followup_scheduled_payload, prepare_message_completed_payload,
     prepare_question_asked_payload, prepare_requirement_evaluation,

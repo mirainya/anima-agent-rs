@@ -2,7 +2,7 @@ use anima_runtime::agent::{
     ExecutionStageDurations, ExecutionSummary, PendingQuestion, PendingQuestionSourceKind,
     QuestionDecisionMode, QuestionKind, QuestionRiskLevel,
 };
-use anima_runtime::context_assembly::{
+use anima_runtime::execution::context_assembly::{
     assemble_context, ContextAssemblyMode, ContextAssemblyRequest,
 };
 use serde_json::json;

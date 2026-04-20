@@ -17,11 +17,24 @@ pub mod types;
 pub mod upstream_resolution;
 pub mod worker;
 
-pub use self::core::*;
-pub use event_emitter::*;
-pub use executor::*;
-pub use requirement::*;
-pub(crate) use runtime_helpers::*;
-pub use suspension::*;
+pub use self::core::{
+    Agent, AgentStatus, CoreAgent, CoreAgentStatus, ExecutionStageDurations, ExecutionSummary,
+    RuntimeFailureSnapshot, RuntimeFailureStatus, RuntimeTimelineEvent, SessionContext,
+};
+pub use executor::{
+    SdkTaskExecutor, TaskExecutor, TaskExecutorError, UnifiedStreamLine, UnifiedStreamSource,
+};
+pub use suspension::{
+    PendingQuestion, PendingQuestionSourceKind, QuestionAnswerInput, QuestionDecisionMode,
+    QuestionKind, QuestionRiskLevel,
+};
 pub use types::*;
-pub use worker::*;
+pub use worker::{
+    CurrentTaskInfo, RuntimeEventPublisher, WorkerAgent, WorkerMetrics, WorkerPool,
+    WorkerPoolStatus, WorkerStatus,
+};
+
+pub(crate) use runtime_helpers::*;
+pub(crate) use suspension::{
+    classify_question_requires_user_confirmation, detect_pending_question,
+};

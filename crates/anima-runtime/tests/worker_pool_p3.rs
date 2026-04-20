@@ -1,6 +1,6 @@
-use anima_runtime::agent_executor::TaskExecutor;
-use anima_runtime::agent_types::{make_task, MakeTask};
-use anima_runtime::agent_worker::WorkerPool;
+use anima_runtime::agent::executor::TaskExecutor;
+use anima_runtime::agent::types::{make_task, MakeTask};
+use anima_runtime::agent::worker::WorkerPool;
 use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -34,7 +34,7 @@ fn make_pool_with_bounds(size: usize, min: usize, max: usize) -> WorkerPool {
     WorkerPool::new(client, executor, Some(size), None, Some(100)).with_bounds(min, max)
 }
 
-fn test_task() -> anima_runtime::agent_types::Task {
+fn test_task() -> anima_runtime::agent::types::Task {
     make_task(MakeTask {
         task_type: "session-create".into(),
         ..Default::default()

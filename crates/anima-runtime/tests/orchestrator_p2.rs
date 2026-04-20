@@ -1,8 +1,8 @@
-use anima_runtime::agent_executor::TaskExecutor;
-use anima_runtime::agent_orchestrator::*;
-use anima_runtime::agent_specialist_pool::SpecialistPool;
-use anima_runtime::agent_types::*;
-use anima_runtime::agent_worker::WorkerPool;
+use anima_runtime::agent::executor::TaskExecutor;
+use anima_runtime::orchestrator::core::*;
+use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
+use anima_runtime::agent::types::*;
+use anima_runtime::agent::worker::WorkerPool;
 use anima_runtime::runtime::RuntimeStateStore;
 use anima_runtime::tasks::{TaskKind, TaskStatus};
 use anima_sdk::facade::Client as SdkClient;

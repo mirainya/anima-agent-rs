@@ -1,4 +1,4 @@
-use anima_runtime::task_classifier::*;
+use anima_runtime::classifier::task::*;
 
 // ── Code Generation ─────────────────────────────────────────────────
 

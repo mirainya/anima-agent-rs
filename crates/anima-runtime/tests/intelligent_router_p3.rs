@@ -1,7 +1,7 @@
-use anima_runtime::agent_executor::TaskExecutor;
-use anima_runtime::agent_intelligent_router::*;
-use anima_runtime::agent_specialist_pool::SpecialistPool;
-use anima_runtime::agent_worker::WorkerPool;
+use anima_runtime::agent::executor::TaskExecutor;
+use anima_runtime::classifier::router::*;
+use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
+use anima_runtime::agent::worker::WorkerPool;
 use anima_runtime::bus::message::{make_inbound, MakeInbound};
 use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
@@ -278,7 +278,7 @@ fn format_response_timeout() {
 
 #[test]
 fn context_trims_message_history_to_max() {
-    use anima_runtime::task_classifier::classify_task;
+    use anima_runtime::classifier::task::classify_task;
 
     let mut ctx = DialogContext::new("s1", "cli", "user1");
     let classification = classify_task("hello");

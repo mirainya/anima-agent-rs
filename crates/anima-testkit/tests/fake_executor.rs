@@ -1,4 +1,4 @@
-use anima_runtime::agent_executor::TaskExecutor;
+use anima_runtime::agent::executor::TaskExecutor;
 use anima_sdk::facade::Client as SdkClient;
 use anima_testkit::{fake_prompt_response, FakeExecutor};
 use serde_json::json;
