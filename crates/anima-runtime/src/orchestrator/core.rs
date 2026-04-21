@@ -1551,7 +1551,7 @@ impl AgentOrchestrator {
             })
     }
 
-    fn extract_result_text(value: Option<&Value>) -> String {
+    pub(crate) fn extract_result_text(value: Option<&Value>) -> String {
         let Some(value) = value else {
             return String::new();
         };
@@ -1652,6 +1652,20 @@ impl AgentOrchestrator {
         lowered_tasks: &[LoweredTask],
         execution_context: &OrchestrationExecutionContext,
     ) -> Option<Value> {
+        if let (Some(executor), Some(client)) = (&self.executor, &self.client) {
+            if let Some(question) = super::llm_context_infer::try_llm_infer_missing_context(
+                executor,
+                client,
+                &execution_context.session_id,
+                plan,
+                lowered_tasks,
+                &execution_context.subtask_results,
+            ) {
+                return Some(question);
+            }
+        }
+
+        // fallback: 硬编码关键词匹配
         let mut missing_context_count = 0usize;
         let mut prompts = Vec::new();
 

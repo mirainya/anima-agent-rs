@@ -915,3 +915,187 @@ fn llm_decompose_skipped_without_session_id() {
     let plan = orch.decompose_task("build a web app", "trace-llm-3", "job-llm-3", None);
     assert_eq!(plan.matched_rule.as_deref(), Some("web-app"));
 }
+
+// ── LLM context inference tests ──────────────────────────────────────
+
+struct ContextInferExecutor;
+
+impl TaskExecutor for ContextInferExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        _session_id: &str,
+        content: Value,
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        let text = content
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|b| b.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if text.contains("上下文完整性分析器") {
+            Ok(json!({
+                "content": [{"type": "text", "text": r#"{"needs_question": true, "prompt": "请问您的目标用户群体是什么？", "options": ["企业用户", "个人用户", "开发者"]}"#}]
+            }))
+        } else if text.contains("任务分解引擎") {
+            Ok(json!({
+                "content": [{"type": "text", "text": r#"[
+                    {"name": "task-a", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "A"},
+                    {"name": "task-b", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "B"}
+                ]"#}]
+            }))
+        } else {
+            Ok(json!({"content": format!("echo: {text}")}))
+        }
+    }
+
+    fn create_session(
+        &self,
+        _client: &SdkClient,
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        Ok(json!({"id": "ctx-session"}))
+    }
+}
+
+struct ContextInferFailExecutor;
+
+impl TaskExecutor for ContextInferFailExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        _session_id: &str,
+        content: Value,
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        let text = content
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|b| b.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if text.contains("任务分解引擎") {
+            Ok(json!({
+                "content": [{"type": "text", "text": r#"[
+                    {"name": "task-a", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "A"},
+                    {"name": "task-b", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "B"}
+                ]"#}]
+            }))
+        } else {
+            Ok(json!({"content": [{"type": "text", "text": "无法分析"}]}))
+        }
+    }
+
+    fn create_session(
+        &self,
+        _client: &SdkClient,
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        Ok(json!({"id": "ctx-fail-session"}))
+    }
+}
+
+#[test]
+fn llm_context_infer_generates_question() {
+    use anima_runtime::orchestrator::llm_context_infer::try_llm_infer_missing_context;
+
+    let client = SdkClient::new("http://127.0.0.1:9711");
+    let executor: Arc<dyn TaskExecutor> = Arc::new(ContextInferExecutor);
+    let wp = make_pool();
+    let sp = Arc::new(SpecialistPool::new(wp.clone()));
+    let orch = AgentOrchestrator::new(
+        wp,
+        sp,
+        Arc::new(RuntimeStateStore::new()),
+        OrchestratorConfig::default(),
+    )
+    .with_llm(executor.clone(), client.clone());
+
+    let plan = orch.decompose_task("build a complex system", "t1", "j1", Some("s1"));
+
+    let subtask_results = json!({
+        "task-a": {"status": "success", "result": {"content": "需要了解核心用户流程"}},
+        "task-b": {"status": "success", "result": {"content": "需要了解业务类型"}}
+    });
+
+    let lowered: Vec<LoweredTask> = plan
+        .execution_order
+        .iter()
+        .filter_map(|name| {
+            plan.subtasks.get(name).map(|st| LoweredTask {
+                name: st.name.clone(),
+                original_task_type: st.task_type.clone(),
+                lowered_task_type: st.task_type.clone(),
+                primitive: LoweringPrimitive::ApiCall,
+                parallel_safe: true,
+                task: anima_runtime::agent::types::make_task(anima_runtime::agent::types::MakeTask {
+                    task_type: st.task_type.clone(),
+                    ..Default::default()
+                }),
+            })
+        })
+        .collect();
+
+    let result = try_llm_infer_missing_context(
+        &executor, &client, "s1", &plan, &lowered, &subtask_results,
+    );
+
+    assert!(result.is_some());
+    let q = result.unwrap();
+    assert_eq!(q.get("type").and_then(Value::as_str), Some("question"));
+    let question = q.get("question").unwrap();
+    assert!(question.get("prompt").and_then(Value::as_str).unwrap().contains("用户"));
+    assert_eq!(
+        question
+            .get("orchestration")
+            .and_then(|o| o.get("reason"))
+            .and_then(Value::as_str),
+        Some("llm_inferred_missing_context")
+    );
+}
+
+#[test]
+fn llm_context_infer_fallback_on_invalid_response() {
+    use anima_runtime::orchestrator::llm_context_infer::try_llm_infer_missing_context;
+
+    let client = SdkClient::new("http://127.0.0.1:9711");
+    let executor: Arc<dyn TaskExecutor> = Arc::new(ContextInferFailExecutor);
+    let wp = make_pool();
+    let sp = Arc::new(SpecialistPool::new(wp.clone()));
+    let orch = AgentOrchestrator::new(
+        wp,
+        sp,
+        Arc::new(RuntimeStateStore::new()),
+        OrchestratorConfig::default(),
+    )
+    .with_llm(executor.clone(), client.clone());
+
+    let plan = orch.decompose_task("build a complex system", "t2", "j2", Some("s2"));
+
+    let subtask_results = json!({
+        "task-a": {"status": "success", "result": {"content": "需要了解核心用户流程"}},
+        "task-b": {"status": "success", "result": {"content": "需要了解业务类型"}}
+    });
+
+    let lowered: Vec<LoweredTask> = plan
+        .execution_order
+        .iter()
+        .filter_map(|name| {
+            plan.subtasks.get(name).map(|st| LoweredTask {
+                name: st.name.clone(),
+                original_task_type: st.task_type.clone(),
+                lowered_task_type: st.task_type.clone(),
+                primitive: LoweringPrimitive::ApiCall,
+                parallel_safe: true,
+                task: anima_runtime::agent::types::make_task(anima_runtime::agent::types::MakeTask {
+                    task_type: st.task_type.clone(),
+                    ..Default::default()
+                }),
+            })
+        })
+        .collect();
+
+    let result = try_llm_infer_missing_context(
+        &executor, &client, "s2", &plan, &lowered, &subtask_results,
+    );
+
+    // LLM returned invalid JSON → None (fallback path)
+    assert!(result.is_none());
+}
