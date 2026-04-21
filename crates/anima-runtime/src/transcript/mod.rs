@@ -1,7 +1,7 @@
-pub mod append;
-pub mod model;
-pub mod normalizer;
-pub mod pairing;
+pub(crate) mod append;
+pub(crate) mod model;
+pub(crate) mod normalizer;
+pub(crate) mod pairing;
 
 pub use append::append_internal_message;
 pub use model::{

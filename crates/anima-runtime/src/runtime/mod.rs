@@ -1,8 +1,8 @@
-pub mod events;
-pub mod projection;
-pub mod reducer;
-pub mod snapshot;
-pub mod state_store;
+pub(crate) mod events;
+pub(crate) mod projection;
+pub(crate) mod reducer;
+pub(crate) mod snapshot;
+pub(crate) mod state_store;
 
 pub use events::RuntimeDomainEvent;
 pub use projection::{

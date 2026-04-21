@@ -6,8 +6,10 @@ use crate::support::now_ms;
 use serde_json::json;
 use uuid::Uuid;
 
-// Re-export 所有消息数据结构
-pub use anima_types::message::*;
+pub use anima_types::message::{
+    ControlMessage, ControlSignal, InboundMessage, InternalMessage, InternalMessageType,
+    OutboundMessage,
+};
 
 /// 构建入站消息的参数
 #[derive(Debug, Default)]

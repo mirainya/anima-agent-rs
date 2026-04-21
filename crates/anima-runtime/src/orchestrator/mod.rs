@@ -2,7 +2,7 @@
 
 pub mod core;
 pub mod llm_context_infer;
-pub mod llm_decompose;
+pub(crate) mod llm_decompose;
 pub mod parallel_pool;
 pub mod specialist_pool;
 

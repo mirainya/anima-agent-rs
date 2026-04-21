@@ -1,4 +1,4 @@
-pub mod manager;
+pub(crate) mod manager;
 pub mod storage;
 pub mod utils;
 

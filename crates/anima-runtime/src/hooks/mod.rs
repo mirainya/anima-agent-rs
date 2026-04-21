@@ -2,10 +2,10 @@
 //!
 //! 对标 claude-code-main 的 hook 系统。
 
-pub mod registry;
-pub mod runner;
-pub mod stop_hook;
-pub mod types;
+pub(crate) mod registry;
+pub(crate) mod runner;
+pub(crate) mod stop_hook;
+pub(crate) mod types;
 
 pub use registry::HookRegistry;
 pub use runner::{HookHandler, LoggingHook};

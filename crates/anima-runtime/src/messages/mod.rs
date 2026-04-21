@@ -3,9 +3,9 @@
 //! 对标 claude-code-main 的 `messages.ts`（normalize + lookup + pairing）。
 
 pub mod compact;
-pub mod lookup;
-pub mod normalize;
-pub mod pairing;
+pub(crate) mod lookup;
+pub(crate) mod normalize;
+pub(crate) mod pairing;
 pub mod types;
 
 pub use compact::{

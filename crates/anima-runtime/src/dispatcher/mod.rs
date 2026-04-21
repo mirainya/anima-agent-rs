@@ -1,11 +1,11 @@
-pub mod balancer;
+pub(crate) mod balancer;
 pub mod circuit_breaker;
-pub mod control;
-pub mod core;
-pub mod diagnostics;
-pub mod message;
-pub mod queue;
-pub mod router;
+pub(crate) mod control;
+pub(crate) mod core;
+pub(crate) mod diagnostics;
+pub(crate) mod message;
+pub(crate) mod queue;
+pub(crate) mod router;
 
 pub use balancer::{
     make_target, Balancer, BalancerDiagnosticsSnapshot, BalancerMetrics, BalancerMissReason,

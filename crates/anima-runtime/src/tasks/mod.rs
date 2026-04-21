@@ -1,7 +1,7 @@
-pub mod lifecycle;
-pub mod model;
-pub mod query;
-pub mod scheduler;
+pub(crate) mod lifecycle;
+pub(crate) mod model;
+pub(crate) mod query;
+pub(crate) mod scheduler;
 
 pub use lifecycle::{mark_task_completed, mark_task_failed, mark_task_running, mark_task_suspended};
 pub use model::{
