@@ -9,7 +9,11 @@ pub mod execution;
 pub mod registry;
 pub mod result;
 
-pub use definition::*;
-pub use execution::*;
-pub use registry::*;
-pub use result::*;
+pub use definition::{Tool, ToolContext};
+pub use execution::{
+    execute_tool_after_permission, run_tool_use, AwaitingToolPermission, RunToolOptions,
+    RunToolUseOutcome, ToolInvocationPhase, ToolInvocationRecord, ToolLifecycleEventCallback,
+    ToolPermissionState,
+};
+pub use registry::ToolRegistry;
+pub use result::{ToolError, ToolResult, ToolResultBlock};

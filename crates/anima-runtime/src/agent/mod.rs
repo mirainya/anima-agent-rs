@@ -33,13 +33,16 @@ pub use suspension::{
     PendingQuestion, PendingQuestionSourceKind, QuestionAnswerInput, QuestionDecisionMode,
     QuestionKind, QuestionRiskLevel,
 };
-pub use types::*;
+pub use types::{
+    make_task, make_task_result, ExecutionPlan, ExecutionPlanKind, MakeTask, MakeTaskResult, Task,
+    TaskResult,
+};
 pub use worker::{
     CurrentTaskInfo, RuntimeEventPublisher, WorkerAgent, WorkerMetrics, WorkerPool,
     WorkerPoolStatus, WorkerStatus,
 };
 
-pub(crate) use runtime_helpers::*;
+pub(crate) use runtime_helpers::extract_response_text;
 pub(crate) use suspension::{
     classify_question_requires_user_confirmation, detect_pending_question,
 };

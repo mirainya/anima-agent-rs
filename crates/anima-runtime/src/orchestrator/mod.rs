@@ -6,6 +6,14 @@ pub mod llm_decompose;
 pub mod parallel_pool;
 pub mod specialist_pool;
 
-pub use self::core::*;
-pub use parallel_pool::*;
-pub use specialist_pool::*;
+pub use self::core::{
+    AgentOrchestrator, LoweredTask, LoweringPrimitive, OrchestrationExecutionResult,
+    OrchestrationPlan, OrchestratorConfig, OrchestratorMetrics, PlanProgress, SubTask,
+};
+pub use parallel_pool::{
+    ParallelPool, ParallelPoolConfig, ParallelPoolMetrics, ParallelResult, ParallelTask,
+};
+pub use specialist_pool::{
+    LoadBalanceStrategy, RegisterSpecialistOpts, Specialist, SpecialistInfo, SpecialistMetrics,
+    SpecialistPool, SpecialistPoolConfig, SpecialistPoolMetrics, SpecialistStatus,
+};

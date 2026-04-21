@@ -6,6 +6,8 @@ pub mod checker;
 pub mod policy;
 pub mod types;
 
-pub use checker::*;
-pub use policy::*;
-pub use types::*;
+pub use checker::PermissionChecker;
+pub use policy::{AllowAllPolicy, DenyAllPolicy, PermissionPolicy};
+pub use types::{
+    PermissionDecision, PermissionMode, PermissionRequest, PermissionRiskLevel, PermissionRule,
+};

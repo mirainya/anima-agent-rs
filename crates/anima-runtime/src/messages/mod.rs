@@ -8,8 +8,11 @@ pub mod normalize;
 pub mod pairing;
 pub mod types;
 
-pub use compact::*;
-pub use lookup::*;
-pub use normalize::*;
-pub use pairing::*;
-pub use types::*;
+pub use compact::{
+    clear_old_tool_results, compact_if_needed, estimate_msg_tokens, estimate_total_tokens,
+    filter_oldest_messages, CompactConfig, CompactResult,
+};
+pub use lookup::{build_message_lookups, MessageLookups};
+pub use normalize::normalize_messages_for_api;
+pub use pairing::ensure_tool_result_pairing;
+pub use types::{ApiMsg, InternalMsg, MessageRole, SdkMsg};

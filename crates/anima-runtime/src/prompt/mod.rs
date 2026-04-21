@@ -6,5 +6,5 @@ pub mod assembly;
 pub mod sections;
 pub mod types;
 
-pub use assembly::*;
-pub use types::*;
+pub use assembly::PromptAssembler;
+pub use types::{EnvironmentInfo, PromptSection, SystemPrompt};

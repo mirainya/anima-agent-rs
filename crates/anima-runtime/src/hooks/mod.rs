@@ -7,7 +7,7 @@ pub mod runner;
 pub mod stop_hook;
 pub mod types;
 
-pub use registry::*;
-pub use runner::*;
-pub use stop_hook::*;
-pub use types::*;
+pub use registry::HookRegistry;
+pub use runner::{HookHandler, LoggingHook};
+pub use stop_hook::StopHook;
+pub use types::{HookConfig, HookEvent, HookResult, PostToolHookResult};
