@@ -200,7 +200,7 @@ fn orchestrator_lifecycle() {
 #[test]
 fn orchestrator_decompose_web_app() {
     let orch = make_orchestrator();
-    let plan = orch.decompose_task("build a web app", "trace-1", "job-main-1");
+    let plan = orch.decompose_task("build a web app", "trace-1", "job-main-1", None);
     assert!(!plan.subtasks.is_empty());
     assert!(!plan.parallel_groups.is_empty());
     assert!(plan.created_at > 0);
@@ -211,28 +211,28 @@ fn orchestrator_decompose_web_app() {
 #[test]
 fn orchestrator_decompose_api() {
     let orch = make_orchestrator();
-    let plan = orch.decompose_task("create REST API endpoint", "trace-2", "trace-2");
+    let plan = orch.decompose_task("create REST API endpoint", "trace-2", "trace-2", None);
     assert!(!plan.subtasks.is_empty());
 }
 
 #[test]
 fn orchestrator_decompose_data_analysis() {
     let orch = make_orchestrator();
-    let plan = orch.decompose_task("data analysis report", "trace-3", "trace-3");
+    let plan = orch.decompose_task("data analysis report", "trace-3", "trace-3", None);
     assert!(!plan.subtasks.is_empty());
 }
 
 #[test]
 fn orchestrator_decompose_refactoring() {
     let orch = make_orchestrator();
-    let plan = orch.decompose_task("refactor the auth module", "trace-4", "trace-4");
+    let plan = orch.decompose_task("refactor the auth module", "trace-4", "trace-4", None);
     assert!(!plan.subtasks.is_empty());
 }
 
 #[test]
 fn orchestrator_decompose_unknown_creates_single_task() {
     let orch = make_orchestrator();
-    let plan = orch.decompose_task("something random", "trace-5", "trace-5");
+    let plan = orch.decompose_task("something random", "trace-5", "trace-5", None);
     assert_eq!(plan.subtasks.len(), 1);
     assert_eq!(plan.parallel_groups.len(), 1);
 }
@@ -785,4 +785,133 @@ fn execute_plan_parallel_runs_truly_concurrently() {
         "parallel plan completed too slowly, expected true concurrency: {:?}",
         elapsed
     );
+}
+
+// ── Phase: LLM Decompose ─────────────────────────────────────────
+
+struct LlmDecomposeExecutor;
+
+impl TaskExecutor for LlmDecomposeExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        _session_id: &str,
+        content: Value,
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        let text = content
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|b| b.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if text.contains("任务分解引擎") {
+            Ok(json!({
+                "content": [{"type": "text", "text": r#"[
+                    {"name": "design-schema", "task_type": "design", "specialist_type": "designer", "dependencies": [], "description": "设计数据库 schema"},
+                    {"name": "implement-api", "task_type": "backend", "specialist_type": "backend-dev", "dependencies": ["design-schema"], "description": "实现 REST API"},
+                    {"name": "write-tests", "task_type": "testing", "specialist_type": "tester", "dependencies": ["implement-api"], "description": "编写集成测试"}
+                ]"#}]
+            }))
+        } else {
+            Ok(json!({"content": format!("echo: {text}")}))
+        }
+    }
+
+    fn create_session(
+        &self,
+        _client: &SdkClient,
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        Ok(json!({"id": "llm-session"}))
+    }
+}
+
+struct LlmDecomposeFailExecutor;
+
+impl TaskExecutor for LlmDecomposeFailExecutor {
+    fn send_prompt(
+        &self,
+        _client: &SdkClient,
+        _session_id: &str,
+        _content: Value,
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        Ok(json!({"content": [{"type": "text", "text": "抱歉，我无法理解这个请求"}]}))
+    }
+
+    fn create_session(
+        &self,
+        _client: &SdkClient,
+    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        Ok(json!({"id": "llm-session"}))
+    }
+}
+
+#[test]
+fn llm_decompose_produces_valid_plan() {
+    let client = SdkClient::new("http://127.0.0.1:9711");
+    let executor: Arc<dyn TaskExecutor> = Arc::new(LlmDecomposeExecutor);
+    let wp = make_pool();
+    let sp = Arc::new(SpecialistPool::new(wp.clone()));
+    let orch = AgentOrchestrator::new(
+        wp,
+        sp,
+        Arc::new(RuntimeStateStore::new()),
+        OrchestratorConfig::default(),
+    )
+    .with_llm(executor, client);
+
+    let plan = orch.decompose_task("创建用户管理 API", "trace-llm-1", "job-llm-1", Some("sess-1"));
+
+    assert_eq!(plan.matched_rule.as_deref(), Some("llm-decompose"));
+    assert_eq!(plan.subtasks.len(), 3);
+    assert!(plan.subtasks.contains_key("design-schema"));
+    assert!(plan.subtasks.contains_key("implement-api"));
+    assert!(plan.subtasks.contains_key("write-tests"));
+
+    let implement = plan.subtasks.get("implement-api").unwrap();
+    assert!(implement.dependencies.contains("design-schema"));
+
+    let tests = plan.subtasks.get("write-tests").unwrap();
+    assert!(tests.dependencies.contains("implement-api"));
+
+    assert!(!plan.parallel_groups.is_empty());
+}
+
+#[test]
+fn llm_decompose_fallback_to_regex_on_invalid_response() {
+    let client = SdkClient::new("http://127.0.0.1:9711");
+    let executor: Arc<dyn TaskExecutor> = Arc::new(LlmDecomposeFailExecutor);
+    let wp = make_pool();
+    let sp = Arc::new(SpecialistPool::new(wp.clone()));
+    let orch = AgentOrchestrator::new(
+        wp,
+        sp,
+        Arc::new(RuntimeStateStore::new()),
+        OrchestratorConfig::default(),
+    )
+    .with_llm(executor, client);
+
+    let plan = orch.decompose_task("build a web app", "trace-llm-2", "job-llm-2", Some("sess-2"));
+
+    // LLM failed → falls back to regex "web-app" rule
+    assert_eq!(plan.matched_rule.as_deref(), Some("web-app"));
+    assert_eq!(plan.subtasks.len(), 4);
+}
+
+#[test]
+fn llm_decompose_skipped_without_session_id() {
+    let client = SdkClient::new("http://127.0.0.1:9711");
+    let executor: Arc<dyn TaskExecutor> = Arc::new(LlmDecomposeExecutor);
+    let wp = make_pool();
+    let sp = Arc::new(SpecialistPool::new(wp.clone()));
+    let orch = AgentOrchestrator::new(
+        wp,
+        sp,
+        Arc::new(RuntimeStateStore::new()),
+        OrchestratorConfig::default(),
+    )
+    .with_llm(executor, client);
+
+    // session_id = None → LLM skipped, falls back to regex
+    let plan = orch.decompose_task("build a web app", "trace-llm-3", "job-llm-3", None);
+    assert_eq!(plan.matched_rule.as_deref(), Some("web-app"));
 }

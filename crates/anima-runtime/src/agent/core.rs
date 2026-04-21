@@ -343,7 +343,7 @@ impl CoreAgent {
             specialist_pool,
             runtime_state_store.clone(),
             OrchestratorConfig::default(),
-        ));
+        ).with_llm(executor.clone(), client.clone()));
         let emitter = Arc::new(RuntimeEventEmitter::new(
             bus.clone(),
             worker_timeline.clone(),

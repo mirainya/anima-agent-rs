@@ -7,6 +7,7 @@
 //! - 同时提供静态方法 `execute_plan` / `execute_single_task` 用于直接执行 ExecutionPlan
 
 use crate::agent::detect_pending_question;
+use crate::agent::executor::TaskExecutor;
 use crate::agent::types::{
     make_task, make_task_result, ExecutionPlan, ExecutionPlanKind, MakeTask, MakeTaskResult, Task,
     TaskResult,
@@ -19,6 +20,7 @@ use crate::support::now_ms;
 use crate::tasks::query::{plan_task, subtasks_for_plan};
 use crate::tasks::{TaskKind, TaskRecord, TaskStatus};
 use indexmap::IndexMap;
+use anima_sdk::facade::Client as SdkClient;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -339,6 +341,8 @@ pub struct AgentOrchestrator {
     config: OrchestratorConfig,
     running: AtomicBool,
     metrics: Mutex<OrchestratorMetrics>,
+    pub(crate) executor: Option<Arc<dyn TaskExecutor>>,
+    pub(crate) client: Option<SdkClient>,
 }
 
 impl AgentOrchestrator {
@@ -356,7 +360,15 @@ impl AgentOrchestrator {
             config,
             running: AtomicBool::new(false),
             metrics: Mutex::new(OrchestratorMetrics::default()),
+            executor: None,
+            client: None,
         }
+    }
+
+    pub fn with_llm(mut self, executor: Arc<dyn TaskExecutor>, client: SdkClient) -> Self {
+        self.executor = Some(executor);
+        self.client = Some(client);
+        self
     }
 
     fn runtime_run_id(job_id: &str) -> String {
@@ -630,7 +642,19 @@ impl AgentOrchestrator {
         request: &str,
         trace_id: &str,
         parent_job_id: &str,
+        session_id: Option<&str>,
     ) -> OrchestrationPlan {
+        if let Some(sid) = session_id {
+            if let Some(specs) = self.try_llm_decompose(request, sid) {
+                return self.build_plan_from_llm_specs(
+                    specs,
+                    request,
+                    trace_id,
+                    parent_job_id,
+                );
+            }
+        }
+
         let plan_id = Uuid::new_v4().to_string();
         let matched_rule = TASK_DECOMPOSITION_RULES
             .iter()
@@ -713,7 +737,7 @@ impl AgentOrchestrator {
         }
     }
     /// 拓扑排序：基于子任务依赖关系生成线性执行顺序（DFS 后序）
-    fn topological_sort(subtasks: &IndexMap<String, Arc<SubTask>>) -> Vec<String> {
+    pub(crate) fn topological_sort(subtasks: &IndexMap<String, Arc<SubTask>>) -> Vec<String> {
         let mut order: Vec<String> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         let mut visiting: HashSet<String> = HashSet::new();
@@ -746,7 +770,7 @@ impl AgentOrchestrator {
     }
 
     /// 计算并行分组：将拓扑序列划分为多个批次，同批次内的子任务无相互依赖可并行执行
-    fn compute_parallel_groups(
+    pub(crate) fn compute_parallel_groups(
         subtasks: &IndexMap<String, Arc<SubTask>>,
         execution_order: &[String],
     ) -> Vec<Vec<String>> {
@@ -898,7 +922,7 @@ impl AgentOrchestrator {
             return Err("forced orchestration fallback".into());
         }
 
-        let plan = Arc::new(self.decompose_task(request, trace_id, parent_job_id));
+        let plan = Arc::new(self.decompose_task(request, trace_id, parent_job_id, Some(session_id)));
         let lowered_tasks = plan
             .execution_order
             .iter()
@@ -1748,7 +1772,7 @@ impl AgentOrchestrator {
         let started = now_ms();
 
         // Decompose
-        let plan = Arc::new(self.decompose_task(request, &trace_id, &trace_id));
+        let plan = Arc::new(self.decompose_task(request, &trace_id, &trace_id, None));
 
         {
             let mut m = self.metrics.lock();

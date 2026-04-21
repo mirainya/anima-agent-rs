@@ -3647,7 +3647,7 @@ fn runtime_timeline_uses_subtask_metadata_as_job_identity() {
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
     );
-    let plan = orchestrator.decompose_task("build a web app", "main-job-1", "main-job-1");
+    let plan = orchestrator.decompose_task("build a web app", "main-job-1", "main-job-1", None);
     let subtask = plan.subtasks.values().next().unwrap();
 
     let bus = Arc::new(Bus::create());
