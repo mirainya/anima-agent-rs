@@ -5,6 +5,7 @@ use anima_sdk::runtime::{
     RuntimeBootstrapOptionsBuilder, RuntimeFacadeDispatcherStatus, RuntimeFacadeRouteReport,
     RuntimeFacadeStatus,
 };
+use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Clone, PartialEq)]
 struct CliOptions {
@@ -224,6 +225,10 @@ fn start_cli(opts: &CliOptions) -> std::io::Result<()> {
 }
 
 fn main() -> std::io::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .init();
+
     let opts = parse_args(std::env::args().skip(1));
     if opts.help {
         print_help();

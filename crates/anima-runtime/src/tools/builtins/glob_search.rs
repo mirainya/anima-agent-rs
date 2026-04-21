@@ -86,7 +86,7 @@ impl Tool for GlobSearchTool {
                 }
                 Err(e) => {
                     // 跳过无法访问的路径
-                    eprintln!("glob entry error: {e}");
+                    tracing::warn!(error = %e, "glob entry error");
                 }
             }
         }

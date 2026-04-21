@@ -4,8 +4,12 @@ use axum::Router;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tracing_subscriber::EnvFilter;
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .init();
     let web_channel = Arc::new(web_channel::WebChannel::new());
 
     let builder = RuntimeBootstrapBuilder::new()
@@ -47,7 +51,7 @@ fn main() {
             .with_state(state.clone());
 
         let addr = "0.0.0.0:3000";
-        println!("anima-web 启动在 http://localhost:3000");
+        tracing::info!("anima-web 启动在 http://localhost:3000");
 
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         axum::serve(listener, app).await.unwrap();

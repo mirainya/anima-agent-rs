@@ -13,3 +13,5 @@ anima-sdk = { path = "../anima-sdk" }
 anima-runtime = { path = "../anima-runtime" }
 anima-types = { path = "../anima-types" }
 serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

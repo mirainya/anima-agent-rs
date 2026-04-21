@@ -876,16 +876,8 @@ fn is_text_field(field: &str) -> bool {
     field.eq_ignore_ascii_case("text")
 }
 
-fn adapter_debug_enabled() -> bool {
-    std::env::var("ANIMA_STREAM_ADAPTER_DEBUG")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
-}
-
 fn adapter_debug(label: &str, detail: &str) {
-    if adapter_debug_enabled() {
-        eprintln!("[anima-runtime/stream-adapter] {label}: {detail}");
-    }
+    tracing::debug!(target: "anima_runtime::stream_adapter", label, detail);
 }
 
 fn is_terminal_status(status: &str) -> bool {

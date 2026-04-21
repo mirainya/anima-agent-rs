@@ -20,20 +20,20 @@ impl HookHandler for LoggingHook {
     fn handle(&self, event: &HookEvent) -> HookResult {
         match event {
             HookEvent::PreToolUse { tool_name, .. } => {
-                eprintln!("[{}] pre-tool-use: {}", self.prefix, tool_name);
+                tracing::debug!(prefix = %self.prefix, tool = %tool_name, "pre-tool-use");
             }
             HookEvent::PostToolUse { tool_name, .. } => {
-                eprintln!("[{}] post-tool-use: {}", self.prefix, tool_name);
+                tracing::debug!(prefix = %self.prefix, tool = %tool_name, "post-tool-use");
             }
             HookEvent::PreSendMessage { content } => {
-                eprintln!(
-                    "[{}] pre-send: {}...",
-                    self.prefix,
-                    &content[..content.len().min(50)]
+                tracing::debug!(
+                    prefix = %self.prefix,
+                    preview = &content[..content.len().min(50)],
+                    "pre-send"
                 );
             }
             HookEvent::PostSendMessage { .. } => {
-                eprintln!("[{}] post-send", self.prefix);
+                tracing::debug!(prefix = %self.prefix, "post-send");
             }
         }
         HookResult::Continue

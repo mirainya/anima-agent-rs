@@ -172,6 +172,11 @@ impl Bus {
         let result = self.inbound_tx.send(msg);
         let after = self.inbound_dropped_total.load(Ordering::SeqCst);
         if after > before {
+            tracing::warn!(
+                dropped_total = after,
+                queue_depth = self.inbound_tx.len(),
+                "bus inbound message dropped"
+            );
             // 入站丢弃是异常信号（背压），best-effort 发布内部事件便于观测
             let payload = json!({
                 "event": "bus_message_dropped",

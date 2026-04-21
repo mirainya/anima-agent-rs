@@ -34,6 +34,7 @@ impl CoreAgent {
         if self.running.swap(true, Ordering::SeqCst) {
             return;
         }
+        tracing::info!("CoreAgent starting");
         self.worker_pool.start();
         self.orchestrator.start();
 
@@ -70,7 +71,15 @@ impl CoreAgent {
             let inbound_rx = agent.bus.inbound_receiver();
             while agent.running.load(Ordering::SeqCst) {
                 match inbound_rx.recv_timeout(Duration::from_millis(25)) {
-                    Ok(msg) => agent.process_inbound_message(msg),
+                    Ok(msg) => {
+                        let _span = tracing::info_span!(
+                            "process_inbound",
+                            channel = %msg.channel,
+                            msg_id = %msg.id,
+                        )
+                        .entered();
+                        agent.process_inbound_message(msg);
+                    }
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                         if agent.bus.is_closed() {
                             break;
@@ -88,6 +97,7 @@ impl CoreAgent {
         if !self.running.swap(false, Ordering::SeqCst) {
             return;
         }
+        tracing::info!("CoreAgent stopping");
         self.worker_pool.stop();
         self.orchestrator.stop();
         if let Some(handle) = self.loop_handle.lock().take() {

@@ -195,6 +195,12 @@ impl Dispatcher {
     /// 核心分发逻辑：选择目标 → 查找通道 → 发送消息
     /// 每个阶段的失败都会记录诊断信息
     pub fn dispatch(&self, message: &DispatchMessage) -> SendResult {
+        let _span = tracing::info_span!(
+            "dispatch",
+            msg_id = %message.id,
+            channel = %message.channel,
+        )
+        .entered();
         self.runtime.set_state(DispatcherState::Running);
 
         let selection = self.select_target(message);
