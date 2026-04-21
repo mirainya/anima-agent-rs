@@ -878,7 +878,13 @@ impl WorkerAgent {
                     metrics.errors += 1;
                 }
             }
-            let _ = tx.send(make_task_result(MakeTaskResult {
+            let blocked_reason = result
+                .result
+                .as_ref()
+                .and_then(|v| v.get("blocked_reason"))
+                .filter(|v| !v.is_null())
+                .cloned();
+            let mut task_result = make_task_result(MakeTaskResult {
                 task_id: task.id,
                 trace_id: task.trace_id,
                 status: result.status,
@@ -886,7 +892,9 @@ impl WorkerAgent {
                 error: result.error,
                 duration_ms,
                 worker_id: Some(worker.id.clone()),
-            }));
+            });
+            task_result.blocked_reason = blocked_reason;
+            let _ = tx.send(task_result);
             // _guard drops here: clears busy + notifies condvar
         });
 

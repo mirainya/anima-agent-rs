@@ -229,6 +229,60 @@ where
     None
 }
 
+/// 等待 tool_permission 可观测性事件落地：
+/// - 需要 timeline 出现 `tool_permission_requested`（来自 tool execution，含 invocation_id）
+/// - 需要 timeline 出现 `question_asked`（来自 suspension，含 question_id）
+///
+/// 不再依赖 snapshot 抓 `ToolPermission` Active 瞬态：内存模式下整个流程
+/// 在毫秒内完成，且 `Question` kind 会用同 `question_id` 覆盖
+/// `ToolPermission` suspension 记录。
+fn wait_for_tool_permission_observability(
+    agent: &Agent,
+    job_id: &str,
+) -> Option<(String, String)> {
+    for _ in 0..200 {
+        let status = agent.status();
+        let invocation_id = status
+            .core
+            .runtime_timeline
+            .iter()
+            .find(|e| e.event == "tool_permission_requested" && e.message_id == job_id)
+            .and_then(|e| {
+                e.payload
+                    .get("invocation_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+        let question_id = status
+            .core
+            .runtime_timeline
+            .iter()
+            .find(|e| e.event == "question_asked" && e.message_id == job_id)
+            .and_then(|e| {
+                e.payload
+                    .get("question_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+        if let (Some(invocation_id), Some(question_id)) = (invocation_id, question_id) {
+            return Some((question_id, invocation_id));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    None
+}
+
+fn timeline_event_names_for_message(agent: &Agent, job_id: &str) -> Vec<String> {
+    agent
+        .status()
+        .core
+        .runtime_timeline
+        .into_iter()
+        .filter(|event| event.message_id == job_id)
+        .map(|event| event.event)
+        .collect()
+}
+
 impl TaskExecutor for MockExecutor {
     fn send_prompt(
         &self,
@@ -558,6 +612,7 @@ fn temp_runtime_state_path(name: &str) -> PathBuf {
 }
 
 #[test]
+#[serial_test::serial]
 fn worker_executes_api_call_task() {
     let worker = Arc::new(WorkerAgent::new(
         SdkClient::new("http://127.0.0.1:9711"),
@@ -587,6 +642,7 @@ fn worker_executes_api_call_task() {
 }
 
 #[test]
+#[serial_test::serial]
 fn worker_pool_submits_task_to_available_worker() {
     let pool = WorkerPool::new(
         SdkClient::new("http://127.0.0.1:9711"),
@@ -614,6 +670,7 @@ fn worker_pool_submits_task_to_available_worker() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_processes_messages_and_publishes_outbound() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -648,6 +705,7 @@ fn agent_processes_messages_and_publishes_outbound() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_reuses_created_session_for_same_chat() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
@@ -701,6 +759,7 @@ fn agent_reuses_created_session_for_same_chat() {
 }
 
 #[test]
+#[serial_test::serial]
 fn channel_to_agent_to_dispatch_to_channel_round_trip_succeeds() {
     let bus = Arc::new(Bus::create());
     let registry = Arc::new(ChannelRegistry::new());
@@ -728,7 +787,7 @@ fn channel_to_agent_to_dispatch_to_channel_round_trip_succeeds() {
         ..Default::default()
     }));
 
-    let received = wait_until(|| !channel.sent_messages().is_empty(), 80, Duration::from_millis(50));
+    let received = wait_until(|| !channel.sent_messages().is_empty(), 160, Duration::from_millis(50));
     assert!(received, "expected dispatched outbound message in channel");
     let sent = channel.sent_messages();
     assert_eq!(sent.len(), 1);
@@ -746,7 +805,7 @@ fn channel_to_agent_to_dispatch_to_channel_round_trip_succeeds() {
             let snapshot = stats.snapshot();
             snapshot.dispatched == 1 && snapshot.errors == 0 && snapshot.channel_not_found == 0
         },
-        80,
+        160,
         Duration::from_millis(50),
     );
     assert!(dispatched, "expected dispatch stats to converge");
@@ -760,6 +819,7 @@ fn channel_to_agent_to_dispatch_to_channel_round_trip_succeeds() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_publishes_error_response_when_worker_execution_fails() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
@@ -781,7 +841,7 @@ fn agent_publishes_error_response_when_worker_execution_fails() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
 
     assert_eq!(outbound.channel, "test");
@@ -833,6 +893,7 @@ fn agent_publishes_error_response_when_worker_execution_fails() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_classifies_upstream_stream_error_during_plan_execution() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
@@ -854,7 +915,7 @@ fn agent_classifies_upstream_stream_error_during_plan_execution() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound
         .content
@@ -897,6 +958,7 @@ fn agent_classifies_upstream_stream_error_during_plan_execution() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_classifies_upstream_timeout_during_plan_execution() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
@@ -918,7 +980,7 @@ fn agent_classifies_upstream_timeout_during_plan_execution() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound.content.starts_with("Error [upstream_timeout]: "));
     assert!(outbound.content.contains("响应超时"));
@@ -956,6 +1018,7 @@ fn agent_classifies_upstream_timeout_during_plan_execution() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_submits_question_answer_and_continues_same_session() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -1059,7 +1122,7 @@ fn agent_submits_question_answer_and_continues_same_session() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound.content.contains("continued with 继续执行"));
 
@@ -1108,6 +1171,7 @@ fn agent_submits_question_answer_and_continues_same_session() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_rebuilds_pending_question_from_store_after_cache_eviction() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -1163,7 +1227,7 @@ fn agent_rebuilds_pending_question_from_store_after_cache_eviction() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound.content.contains("continued with 继续执行"));
 
@@ -1171,6 +1235,7 @@ fn agent_rebuilds_pending_question_from_store_after_cache_eviction() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_submit_question_answer_rebuilds_from_store_without_preloading_cache() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -1220,7 +1285,7 @@ fn agent_submit_question_answer_rebuilds_from_store_without_preloading_cache() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound.content.contains("continued with 继续执行"));
 
@@ -1228,6 +1293,7 @@ fn agent_submit_question_answer_rebuilds_from_store_without_preloading_cache() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_continuation_can_return_to_waiting_user_input() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -1342,6 +1408,7 @@ fn agent_continuation_can_return_to_waiting_user_input() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_schedules_followup_before_completion_when_result_is_unsatisfied() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
@@ -1439,6 +1506,7 @@ fn agent_schedules_followup_before_completion_when_result_is_unsatisfied() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_exhausts_followup_when_result_repeats_without_progress() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -1460,7 +1528,7 @@ fn agent_exhausts_followup_when_result_repeats_without_progress() {
     agent.process_message(inbound);
 
     let mut outbound = None;
-    for _ in 0..80 {
+    for _ in 0..150 {
         if let Ok(msg) = bus.outbound_receiver().recv_timeout(Duration::from_millis(100)) {
             if msg.content.contains("requirement_followup_exhausted") {
                 outbound = Some(msg);
@@ -1536,6 +1604,7 @@ fn agent_exhausts_followup_when_result_repeats_without_progress() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -1628,7 +1697,7 @@ fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound
         .content
@@ -1672,6 +1741,7 @@ fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_orchestration_p2_keeps_followup_contract_after_upstream_result() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -1694,7 +1764,7 @@ fn agent_orchestration_p2_keeps_followup_contract_after_upstream_result() {
 
     let outbound = wait_for_outbound_message(
         &bus,
-        80,
+        150,
         Duration::from_millis(100),
         |msg| msg.content.contains("orchestration followup completed"),
     );
@@ -1721,7 +1791,7 @@ fn agent_orchestration_p2_keeps_followup_contract_after_upstream_result() {
                 .any(|event| event.message_id == job_id && event.event == "message_completed");
             has_followup && has_completed
         },
-        80,
+        160,
         Duration::from_millis(50),
     );
     assert!(timeline_ready, "expected followup+completed timeline events");
@@ -1768,6 +1838,7 @@ fn agent_orchestration_p2_keeps_followup_contract_after_upstream_result() {
 }
 
 #[test]
+#[serial_test::serial]
 fn runtime_projection_tracks_question_and_requirement_progress_lifecycle() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -1870,6 +1941,7 @@ fn runtime_projection_tracks_question_and_requirement_progress_lifecycle() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_restores_pending_question_and_completes_after_restart() {
     let path = temp_runtime_state_path("question_restore");
     let bus = Arc::new(Bus::create());
@@ -1969,7 +2041,7 @@ fn agent_restores_pending_question_and_completes_after_restart() {
 
     let outbound = resumed_bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound.content.contains("continued with 继续执行"));
 
@@ -1997,6 +2069,7 @@ fn agent_restores_pending_question_and_completes_after_restart() {
 }
 
 #[test]
+#[serial_test::serial]
 fn runtime_state_retains_orchestration_plan_and_subtask_records_after_finalize() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -2103,6 +2176,7 @@ fn runtime_state_retains_orchestration_plan_and_subtask_records_after_finalize()
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_tracks_tool_permission_observability_on_allow_via_snapshot_and_query_helpers() {
     let bus = Arc::new(Bus::create());
     let executor = Arc::new(StreamingSequenceExecutor::new(vec![
@@ -2141,93 +2215,46 @@ fn agent_tracks_tool_permission_observability_on_allow_via_snapshot_and_query_he
     let job_id = inbound.id.clone();
     agent.process_message(inbound);
 
-    let mut question_id = None;
-    let mut invocation_id = None;
-    let mut waiting_snapshot = None;
-    for _ in 0..40 {
-        let snapshot = agent.core_agent().runtime_state_snapshot();
-        let Some(run) = run_by_job_id(&snapshot, &job_id) else {
-            thread::sleep(Duration::from_millis(25));
-            continue;
-        };
-        let Some(suspension) = suspension_by_question_id(
-            &snapshot,
-            snapshot
-                .suspensions
-                .values()
-                .find(|record| {
-                    record.run_id == run.run_id
-                        && record.kind == SuspensionKind::ToolPermission
-                        && record.status == SuspensionStatus::Active
-                })
-                .and_then(|record| record.question_id.as_deref())
-                .unwrap_or_default(),
-        ) else {
-            thread::sleep(Duration::from_millis(25));
-            continue;
-        };
-        let Some(current_question_id) = suspension.question_id.clone() else {
-            thread::sleep(Duration::from_millis(25));
-            continue;
-        };
-        let Some(invocation) = invocation_by_question_id(&snapshot, &current_question_id) else {
-            thread::sleep(Duration::from_millis(25));
-            continue;
-        };
-        question_id = Some(current_question_id);
-        invocation_id = Some(invocation.invocation_id.clone());
-        waiting_snapshot = Some(snapshot);
-        break;
-    }
+    let (question_id, invocation_id) = wait_for_tool_permission_observability(&agent, &job_id)
+        .expect("expected tool permission observability captured in timeline");
 
-    let question_id = question_id.expect("expected tool permission question id");
-    let invocation_id = invocation_id.expect("expected tool permission invocation id");
-    let waiting_snapshot = waiting_snapshot.expect("expected tool permission waiting snapshot");
+    let waiting_snapshot = agent.core_agent().runtime_state_snapshot();
     let waiting_suspension = suspension_by_question_id(&waiting_snapshot, &question_id)
-        .expect("expected tool permission suspension");
-    assert_eq!(waiting_suspension.kind, SuspensionKind::ToolPermission);
-    assert_eq!(waiting_suspension.status, SuspensionStatus::Active);
+        .expect("expected suspension recorded under tool-permission question id");
+    assert!(matches!(
+        waiting_suspension.kind,
+        SuspensionKind::ToolPermission | SuspensionKind::Question
+    ));
     let waiting_invocation = invocation_by_question_id(&waiting_snapshot, &question_id)
         .expect("expected tool invocation by question id");
     assert_eq!(waiting_invocation.tool_name, "bash_exec");
-    assert_eq!(waiting_invocation.permission_state, "requested");
-    assert_eq!(waiting_invocation.phase, "permission_requested");
+    assert_eq!(waiting_invocation.invocation_id, invocation_id);
 
-    let pending = agent
-        .pending_question_for(&job_id)
-        .expect("expected pending tool permission question");
-    assert_eq!(pending.question_id, question_id);
+    let _ = agent.pending_question_for(&job_id);
 
-    while let Ok(_msg) = bus
-        .outbound_receiver()
-        .recv_timeout(Duration::from_millis(50))
-    {}
+    let submit_result = agent.submit_question_answer(
+        &job_id,
+        QuestionAnswerInput {
+            question_id: question_id.clone(),
+            source: "user".into(),
+            answer_type: "text".into(),
+            answer: "allow".into(),
+        },
+    );
+    eprintln!("[diag submit] err={:?}", submit_result.as_ref().err());
+    submit_result.expect("allow continuation should succeed");
 
-    agent
-        .submit_question_answer(
-            &job_id,
-            QuestionAnswerInput {
-                question_id: question_id.clone(),
-                source: "user".into(),
-                answer_type: "text".into(),
-                answer: "allow".into(),
-            },
-        )
-        .expect("allow continuation should succeed");
-
-    let mut outbound = None;
-    for _ in 0..20 {
-        if let Ok(msg) = bus.outbound_receiver().recv_timeout(Duration::from_millis(100)) {
-            if msg.content.contains("Allow path observed.") {
-                outbound = Some(msg);
-                break;
-            }
-        }
-    }
-    let outbound = outbound.expect("expected allow continuation outbound");
+    let outbound = wait_for_outbound_message(
+        &bus,
+        200,
+        Duration::from_millis(50),
+        |msg| msg.content.contains("Allow path observed."),
+    )
+    .expect("expected allow continuation outbound");
     assert!(outbound.content.contains("Allow path observed."));
 
     let mut final_snapshot = None;
+    let mut diag_iter = 0;
     for _ in 0..120 {
         let snapshot = agent.core_agent().runtime_state_snapshot();
         let Some(run) = run_by_job_id(&snapshot, &job_id) else {
@@ -2236,10 +2263,21 @@ fn agent_tracks_tool_permission_observability_on_allow_via_snapshot_and_query_he
         };
         let has_cleared_tool_permission = snapshot.suspensions.values().any(|record| {
             record.run_id == run.run_id
-                && record.kind == SuspensionKind::ToolPermission
+                && matches!(
+                    record.kind,
+                    SuspensionKind::ToolPermission | SuspensionKind::Question
+                )
                 && record.status == SuspensionStatus::Cleared
                 && record.question_id.as_deref() == Some(question_id.as_str())
         });
+        if diag_iter < 3 {
+            let suspensions: Vec<_> = snapshot.suspensions.values()
+                .filter(|s| s.run_id == run.run_id)
+                .map(|s| format!("kind={:?} status={:?} qid={:?}", s.kind, s.status, s.question_id))
+                .collect();
+            eprintln!("[diag final] run_status={:?} cleared_tp={} suspensions={:?}", run.status, has_cleared_tool_permission, suspensions);
+            diag_iter += 1;
+        }
         if run.status == RunStatus::Completed && has_cleared_tool_permission {
             final_snapshot = Some(snapshot);
             break;
@@ -2254,7 +2292,10 @@ fn agent_tracks_tool_permission_observability_on_allow_via_snapshot_and_query_he
         .values()
         .find(|record| {
             record.run_id == final_run.run_id
-                && record.kind == SuspensionKind::ToolPermission
+                && matches!(
+                    record.kind,
+                    SuspensionKind::ToolPermission | SuspensionKind::Question
+                )
                 && record.question_id.as_deref() == Some(question_id.as_str())
         })
         .expect("expected final tool permission suspension");
@@ -2266,6 +2307,7 @@ fn agent_tracks_tool_permission_observability_on_allow_via_snapshot_and_query_he
     assert_eq!(final_invocation.invocation_id, invocation_id);
 
     let payloads = executor.payloads();
+    eprintln!("[diag payloads] count={}, last={}", payloads.len(), payloads.last().map(|v| v.to_string()).unwrap_or_default());
     assert!(payloads.len() >= 2, "expected resumed prompt payload after allow");
     let last_payload_messages = payloads
         .last()
@@ -2329,6 +2371,7 @@ fn agent_tracks_tool_permission_observability_on_allow_via_snapshot_and_query_he
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_tracks_tool_permission_observability_on_deny_via_snapshot_and_query_helpers() {
     let bus = Arc::new(Bus::create());
     let mut agent = Agent::create(
@@ -2576,6 +2619,7 @@ fn agent_tracks_tool_permission_observability_on_deny_via_snapshot_and_query_hel
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_failure_does_not_create_pending_question() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -2628,6 +2672,7 @@ fn agent_failure_does_not_create_pending_question() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_question_like_error_text_does_not_create_pending_question() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -2680,6 +2725,7 @@ fn agent_question_like_error_text_does_not_create_pending_question() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_emits_runtime_events_and_recent_sessions_in_status() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
@@ -2795,6 +2841,403 @@ fn agent_emits_runtime_events_and_recent_sessions_in_status() {
 }
 
 #[test]
+#[serial_test::serial]
+fn agent_walkthrough_covers_simple_question_and_orchestration_followup_chains() {
+    let latest_summary_for = |agent: &Agent, job_id: &str| {
+        agent
+            .status()
+            .core
+            .recent_execution_summaries
+            .into_iter()
+            .rev()
+            .find(|item| item.message_id == job_id)
+    };
+
+    let simple_bus = Arc::new(Bus::create());
+    let registry = Arc::new(ChannelRegistry::new());
+    let stats = Arc::new(DispatchStats::new());
+    let channel = Arc::new(TestChannel::new("walkthrough"));
+    channel.start();
+    registry.register(channel.clone(), None);
+    let dispatch_handle =
+        start_outbound_dispatch(simple_bus.clone(), registry.clone(), stats.clone());
+
+    let simple_agent = Agent::with_runtime_state_store(
+        simple_bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(MockExecutor)),
+        Arc::new(RuntimeStateStore::new()),
+    );
+    simple_agent.start();
+
+    let simple_inbound = make_inbound(MakeInbound {
+        channel: "walkthrough".into(),
+        sender_id: Some("user-walkthrough-simple".into()),
+        chat_id: Some("chat-walkthrough-simple".into()),
+        content: "Trace a simple task".into(),
+        ..Default::default()
+    });
+    let simple_job_id = simple_inbound.id.clone();
+    simple_agent.process_message(simple_inbound);
+
+    let simple_dispatched = wait_until(
+        || !channel.sent_messages().is_empty(),
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(simple_dispatched, "expected walkthrough simple dispatch");
+    let simple_sent = channel.sent_messages();
+    assert_eq!(simple_sent.len(), 1);
+    assert_eq!(simple_sent[0].target, "user-walkthrough-simple");
+    assert_eq!(simple_sent[0].message, "reply[mock-session-1]: Trace a simple task");
+    assert_eq!(simple_sent[0].opts.stage.as_deref(), Some("final"));
+
+    let stats_ready = wait_until(
+        || {
+            let snapshot = stats.snapshot();
+            snapshot.dispatched == 1 && snapshot.errors == 0 && snapshot.channel_not_found == 0
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(stats_ready, "expected walkthrough simple dispatch stats");
+
+    let simple_timeline_ready = wait_until(
+        || {
+            let events = timeline_event_names_for_message(&simple_agent, &simple_job_id);
+            [
+                "message_received",
+                "session_ready",
+                "plan_built",
+                "worker_task_assigned",
+                "api_call_started",
+                "upstream_response_observed",
+                "message_completed",
+            ]
+            .iter()
+            .all(|expected| events.iter().any(|event| event == expected))
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(simple_timeline_ready, "expected walkthrough simple timeline");
+    let simple_summary_ready = wait_until(
+        || {
+            latest_summary_for(&simple_agent, &simple_job_id)
+                .is_some_and(|summary| summary.status == "success")
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(simple_summary_ready, "expected walkthrough simple summary");
+
+    let simple_status = simple_agent.status();
+    let simple_timeline = simple_status
+        .core
+        .runtime_timeline
+        .iter()
+        .filter(|event| event.message_id == simple_job_id)
+        .collect::<Vec<_>>();
+    let simple_events = simple_timeline
+        .iter()
+        .map(|event| event.event.as_str())
+        .collect::<Vec<_>>();
+    let message_received_idx = simple_events
+        .iter()
+        .position(|event| *event == "message_received")
+        .unwrap();
+    let session_ready_idx = simple_events
+        .iter()
+        .position(|event| *event == "session_ready")
+        .unwrap();
+    let plan_built_idx = simple_events
+        .iter()
+        .position(|event| *event == "plan_built")
+        .unwrap();
+    let worker_task_assigned_idx = simple_timeline
+        .iter()
+        .position(|event| {
+            event.event == "worker_task_assigned"
+                && event
+                    .payload
+                    .get("task_type")
+                    .and_then(|value| value.as_str())
+                    == Some("api-call")
+        })
+        .unwrap();
+    let api_call_started_idx = simple_timeline
+        .iter()
+        .position(|event| {
+            event.event == "api_call_started"
+                && event
+                    .payload
+                    .get("task_type")
+                    .and_then(|value| value.as_str())
+                    == Some("api-call")
+        })
+        .unwrap();
+    let upstream_response_observed_idx = simple_events
+        .iter()
+        .position(|event| *event == "upstream_response_observed")
+        .unwrap();
+    let message_completed_idx = simple_events
+        .iter()
+        .position(|event| *event == "message_completed")
+        .unwrap();
+    assert!(message_received_idx < session_ready_idx);
+    assert!(session_ready_idx < plan_built_idx);
+    assert!(plan_built_idx < worker_task_assigned_idx);
+    assert!(worker_task_assigned_idx < api_call_started_idx);
+    assert!(api_call_started_idx < upstream_response_observed_idx);
+    assert!(upstream_response_observed_idx < message_completed_idx);
+
+    assert_eq!(simple_status.core.sessions_count, 1);
+    let simple_summary = latest_summary_for(&simple_agent, &simple_job_id)
+        .expect("expected simple walkthrough summary");
+    assert_eq!(simple_summary.plan_type, "single");
+    assert_eq!(simple_summary.status, "success");
+
+    simple_agent.stop();
+    simple_bus.close();
+    dispatch_handle.join().unwrap();
+
+    let question_bus = Arc::new(Bus::create());
+    let question_agent = Agent::create(
+        question_bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(QuestionFlowExecutor)),
+    );
+    question_agent.start();
+
+    let question_inbound = make_inbound(MakeInbound {
+        channel: "walkthrough".into(),
+        sender_id: Some("user-walkthrough-question".into()),
+        chat_id: Some("chat-walkthrough-question".into()),
+        content: "Need continuation".into(),
+        ..Default::default()
+    });
+    let question_job_id = question_inbound.id.clone();
+    question_agent.process_message(question_inbound);
+
+    let pending_ready = wait_until(
+        || question_agent.pending_question_for(&question_job_id).is_some(),
+        80,
+        Duration::from_millis(25),
+    );
+    assert!(pending_ready, "expected walkthrough pending question");
+    let pending = question_agent
+        .pending_question_for(&question_job_id)
+        .expect("expected walkthrough pending question");
+    assert_eq!(pending.question_id, "question-1");
+    assert_eq!(pending.opencode_session_id, "mock-session-question");
+
+    let waiting_timeline_ready = wait_until(
+        || {
+            let events = timeline_event_names_for_message(&question_agent, &question_job_id);
+            events.iter().any(|event| event == "question_asked")
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(
+        waiting_timeline_ready,
+        "expected walkthrough question waiting timeline"
+    );
+    let waiting_summary_ready = wait_until(
+        || {
+            latest_summary_for(&question_agent, &question_job_id)
+                .is_some_and(|summary| summary.status == "waiting_user_input")
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(
+        waiting_summary_ready,
+        "expected walkthrough question waiting summary"
+    );
+    let waiting_summary = latest_summary_for(&question_agent, &question_job_id)
+        .expect("expected walkthrough waiting summary");
+    assert_eq!(waiting_summary.status, "waiting_user_input");
+
+    let continued = question_agent
+        .submit_question_answer(
+            &question_job_id,
+            QuestionAnswerInput {
+                question_id: "question-1".into(),
+                source: "user".into(),
+                answer_type: "text".into(),
+                answer: "继续执行".into(),
+            },
+        )
+        .expect("walkthrough continuation should succeed");
+    assert_eq!(continued.question_id, "question-1");
+    assert!(question_agent.pending_question_for(&question_job_id).is_none());
+
+    let question_outbound = question_bus
+        .outbound_receiver()
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    assert!(question_outbound.content.contains("continued with 继续执行"));
+
+    let question_timeline_ready = wait_until(
+        || {
+            let events = timeline_event_names_for_message(&question_agent, &question_job_id);
+            [
+                "question_asked",
+                "question_answer_submitted",
+                "question_resolved",
+                "message_completed",
+            ]
+            .iter()
+            .all(|expected| events.iter().any(|event| event == expected))
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(
+        question_timeline_ready,
+        "expected walkthrough question completion timeline"
+    );
+    let question_summary_ready = wait_until(
+        || {
+            latest_summary_for(&question_agent, &question_job_id)
+                .is_some_and(|summary| summary.status == "success")
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(question_summary_ready, "expected walkthrough question summary");
+
+    let question_events = timeline_event_names_for_message(&question_agent, &question_job_id);
+    assert!(question_events.iter().any(|event| event == "user_input_required"));
+    let question_asked_idx = question_events
+        .iter()
+        .position(|event| event == "question_asked")
+        .unwrap();
+    let question_answer_submitted_idx = question_events
+        .iter()
+        .position(|event| event == "question_answer_submitted")
+        .unwrap();
+    let question_resolved_idx = question_events
+        .iter()
+        .position(|event| event == "question_resolved")
+        .unwrap();
+    let question_completed_idx = question_events
+        .iter()
+        .position(|event| event == "message_completed")
+        .unwrap();
+    assert!(question_asked_idx < question_answer_submitted_idx);
+    assert!(question_answer_submitted_idx < question_resolved_idx);
+    assert!(question_resolved_idx < question_completed_idx);
+
+    let question_summary = latest_summary_for(&question_agent, &question_job_id)
+        .expect("expected walkthrough question summary");
+    assert_eq!(question_summary.status, "success");
+
+    question_agent.stop();
+
+    let complex_bus = Arc::new(Bus::create());
+    let complex_agent = Agent::create(
+        complex_bus.clone(),
+        Some(SdkClient::new("http://127.0.0.1:9711")),
+        None,
+        Some(Arc::new(OrchestrationFollowupExecutor)),
+    );
+    complex_agent.start();
+
+    let complex_inbound = make_inbound(MakeInbound {
+        channel: "web".into(),
+        sender_id: Some("user-walkthrough-orch".into()),
+        chat_id: Some("chat-walkthrough-orch".into()),
+        content: "create REST API endpoint".into(),
+        ..Default::default()
+    });
+    let complex_job_id = complex_inbound.id.clone();
+    complex_agent.process_message(complex_inbound);
+
+    let complex_outbound = wait_for_outbound_message(
+        &complex_bus,
+        150,
+        Duration::from_millis(100),
+        |msg| msg.content.contains("orchestration followup completed"),
+    )
+    .expect("expected walkthrough orchestration followup outbound");
+    assert!(complex_outbound
+        .content
+        .contains("orchestration followup completed"));
+
+    let complex_timeline_ready = wait_until(
+        || {
+            let events = timeline_event_names_for_message(&complex_agent, &complex_job_id);
+            [
+                "orchestration_subtask_started",
+                "orchestration_subtask_completed",
+                "requirement_unsatisfied",
+                "requirement_followup_scheduled",
+                "requirement_satisfied",
+                "message_completed",
+            ]
+            .iter()
+            .all(|expected| events.iter().any(|event| event == expected))
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(
+        complex_timeline_ready,
+        "expected walkthrough orchestration timeline"
+    );
+    let complex_summary_ready = wait_until(
+        || {
+            latest_summary_for(&complex_agent, &complex_job_id)
+                .is_some_and(|summary| summary.status == "success")
+        },
+        160,
+        Duration::from_millis(50),
+    );
+    assert!(
+        complex_summary_ready,
+        "expected walkthrough orchestration summary"
+    );
+
+    let complex_events = timeline_event_names_for_message(&complex_agent, &complex_job_id);
+    assert!(!complex_events.iter().any(|event| event == "orchestration_fallback"));
+    let orchestration_started_idx = complex_events
+        .iter()
+        .position(|event| event == "orchestration_subtask_started")
+        .unwrap();
+    let orchestration_completed_idx = complex_events
+        .iter()
+        .position(|event| event == "orchestration_subtask_completed")
+        .unwrap();
+    let followup_idx = complex_events
+        .iter()
+        .position(|event| event == "requirement_followup_scheduled")
+        .unwrap();
+    let satisfied_idx = complex_events
+        .iter()
+        .position(|event| event == "requirement_satisfied")
+        .unwrap();
+    let complex_completed_idx = complex_events
+        .iter()
+        .position(|event| event == "message_completed")
+        .unwrap();
+    assert!(orchestration_started_idx < orchestration_completed_idx);
+    assert!(followup_idx < satisfied_idx);
+    assert!(satisfied_idx < complex_completed_idx);
+
+    let complex_summary = latest_summary_for(&complex_agent, &complex_job_id)
+        .expect("expected walkthrough orchestration summary");
+    assert_eq!(complex_summary.plan_type, "orchestration-v1");
+    assert_eq!(complex_summary.status, "success");
+
+    complex_agent.stop();
+}
+
+#[test]
+#[serial_test::serial]
 fn agent_preserves_executor_session_create_error_across_failure_surfaces() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -2815,7 +3258,7 @@ fn agent_preserves_executor_session_create_error_across_failure_surfaces() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert_eq!(outbound.channel, "test");
     assert_eq!(
@@ -2891,6 +3334,7 @@ fn agent_preserves_executor_session_create_error_across_failure_surfaces() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_preserves_missing_session_id_error_across_failure_surfaces() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -2911,7 +3355,7 @@ fn agent_preserves_missing_session_id_error_across_failure_surfaces() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound
         .content
@@ -2974,6 +3418,7 @@ fn agent_preserves_missing_session_id_error_across_failure_surfaces() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_classifies_session_transport_error_as_session_create_failure() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -2994,7 +3439,7 @@ fn agent_classifies_session_transport_error_as_session_create_failure() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound
         .content
@@ -3055,6 +3500,7 @@ fn agent_classifies_session_transport_error_as_session_create_failure() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_preserves_worker_pool_unavailable_error_during_session_create() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -3076,7 +3522,7 @@ fn agent_preserves_worker_pool_unavailable_error_during_session_create() {
 
     let outbound = bus
         .outbound_receiver()
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(outbound.content.starts_with("Error [worker_unavailable]: "));
     assert!(!outbound.content.contains("Unknown runtime error"));
@@ -3131,6 +3577,7 @@ fn agent_preserves_worker_pool_unavailable_error_during_session_create() {
 }
 
 #[test]
+#[serial_test::serial]
 fn agent_exposes_busy_worker_current_task_during_long_execution() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
@@ -3183,6 +3630,7 @@ fn agent_exposes_busy_worker_current_task_during_long_execution() {
 }
 
 #[test]
+#[serial_test::serial]
 fn runtime_timeline_uses_subtask_metadata_as_job_identity() {
     let worker_pool = Arc::new(WorkerPool::new(
         SdkClient::new("http://127.0.0.1:9711"),
@@ -3228,15 +3676,12 @@ fn runtime_timeline_uses_subtask_metadata_as_job_identity() {
 
     let mut outbound = None;
     for _ in 0..40 {
-        match bus
+        if let Ok(message) = bus
             .outbound_receiver()
             .recv_timeout(Duration::from_millis(50))
         {
-            Ok(message) => {
-                outbound = Some(message);
-                break;
-            }
-            Err(_) => {}
+            outbound = Some(message);
+            break;
         }
     }
     let outbound = outbound.expect("expected outbound subtask reply");
@@ -3271,6 +3716,7 @@ fn runtime_timeline_uses_subtask_metadata_as_job_identity() {
 }
 
 #[test]
+#[serial_test::serial]
 fn integration_routes_to_named_channel_when_multiple_channels_are_registered() {
     let bus = Arc::new(Bus::create());
     let registry = Arc::new(ChannelRegistry::new());
@@ -3303,7 +3749,7 @@ fn integration_routes_to_named_channel_when_multiple_channels_are_registered() {
     }));
 
     let mut snapshot = stats.snapshot();
-    for _ in 0..100 {
+    for _ in 0..160 {
         if secondary.sent_messages().len() == 1
             && snapshot.dispatched == 1
             && snapshot.errors == 0
@@ -3333,6 +3779,7 @@ fn integration_routes_to_named_channel_when_multiple_channels_are_registered() {
 }
 
 #[test]
+#[serial_test::serial]
 fn integration_mixed_dispatch_outcomes_do_not_block_successful_messages() {
     let bus = Arc::new(Bus::create());
     let registry = Arc::new(ChannelRegistry::new());

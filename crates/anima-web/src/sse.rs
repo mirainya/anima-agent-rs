@@ -50,6 +50,7 @@ pub fn start_internal_bus_forwarder(bus: Arc<Bus>, web_channel: Arc<WebChannel>)
                             | "api_call_started"
                             | "message_completed"
                             | "message_failed"
+                            | "bus_message_dropped"
                             | "question_asked"
                             | "question_answer_submitted"
                             | "question_resolved"
@@ -88,7 +89,9 @@ pub fn start_internal_bus_forwarder(bus: Arc<Bus>, web_channel: Arc<WebChannel>)
                             | "sdk_stream_content_block_delta"
                             | "sdk_stream_message_delta"
                             | "sdk_stream_content_block_stopped"
-                            | "sdk_stream_message_stopped" => {
+                            | "sdk_stream_message_stopped"
+                            | "subtask_blocked"
+                            | "subtask_auto_resolved" => {
                                 web_channel.broadcast(SseEvent::RuntimeEvent {
                                     event: event_type.to_string(),
                                     message_id: msg

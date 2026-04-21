@@ -52,6 +52,7 @@ pub struct TaskResult {
     pub error: Option<String>,
     pub duration_ms: u64,
     pub worker_id: Option<String>,
+    pub blocked_reason: Option<Value>,
 }
 
 /// 创建任务结果的便捷函数
@@ -64,6 +65,7 @@ pub fn make_task_result(input: MakeTaskResult) -> TaskResult {
         error: input.error,
         duration_ms: input.duration_ms,
         worker_id: input.worker_id,
+        blocked_reason: None,
     }
 }
 

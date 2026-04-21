@@ -12,6 +12,8 @@ pub struct RuntimeBootstrapBuilder {
     url: String,
     prompt: Option<String>,
     cli_enabled: bool,
+    builtin_tools_enabled: bool,
+    sdk_directory_enabled: bool,
     executor: Option<Arc<dyn TaskExecutor>>,
     sdk_options: SdkClientOptions,
     runtime_state_store: Option<Arc<RuntimeStateStore>>,
@@ -23,6 +25,8 @@ impl Default for RuntimeBootstrapBuilder {
             url: crate::cli::DEFAULT_URL.to_string(),
             prompt: Some(crate::cli::DEFAULT_PROMPT.to_string()),
             cli_enabled: true,
+            builtin_tools_enabled: true,
+            sdk_directory_enabled: true,
             executor: None,
             sdk_options: SdkClientOptions::default(),
             runtime_state_store: None,
@@ -47,6 +51,16 @@ impl RuntimeBootstrapBuilder {
 
     pub fn with_cli_enabled(mut self, enabled: bool) -> Self {
         self.cli_enabled = enabled;
+        self
+    }
+
+    pub fn with_builtin_tools_enabled(mut self, enabled: bool) -> Self {
+        self.builtin_tools_enabled = enabled;
+        self
+    }
+
+    pub fn with_sdk_directory_enabled(mut self, enabled: bool) -> Self {
+        self.sdk_directory_enabled = enabled;
         self
     }
 
@@ -86,28 +100,30 @@ impl RuntimeBootstrapBuilder {
             None
         };
         let dispatcher = Arc::new(Dispatcher::new(registry.clone(), None));
-        let client = match std::env::current_dir() {
-            Ok(dir) => SdkClient::with_options(self.url, self.sdk_options)
-                .with_directory(dir.to_string_lossy().to_string()),
-            Err(_) => SdkClient::with_options(self.url, self.sdk_options),
-        };
-        let mut agent = if let Some(runtime_state_store) = self.runtime_state_store {
-            Agent::with_runtime_state_store(
-                bus.clone(),
-                Some(client),
-                Some(session_store),
-                self.executor,
-                runtime_state_store,
-            )
+        let client = if self.sdk_directory_enabled {
+            match std::env::current_dir() {
+                Ok(dir) => SdkClient::with_options(self.url, self.sdk_options)
+                    .with_directory(dir.to_string_lossy().to_string()),
+                Err(_) => SdkClient::with_options(self.url, self.sdk_options),
+            }
         } else {
-            Agent::create(
-                bus.clone(),
-                Some(client),
-                Some(session_store),
-                self.executor,
-            )
+            SdkClient::with_options(self.url, self.sdk_options)
         };
-        agent.register_builtin_tools();
+        let runtime_state_store = self.runtime_state_store.unwrap_or_else(|| {
+            Arc::new(RuntimeStateStore::with_persistence(
+                std::path::PathBuf::from(".opencode/runtime/state.json"),
+            ))
+        });
+        let mut agent = Agent::with_runtime_state_store(
+            bus.clone(),
+            Some(client),
+            Some(session_store),
+            self.executor,
+            runtime_state_store,
+        );
+        if self.builtin_tools_enabled {
+            agent.register_builtin_tools();
+        }
         let mut hook_registry = HookRegistry::new();
         hook_registry.register_post_hook(Arc::new(StopHook));
         agent.set_hook_registry(hook_registry);

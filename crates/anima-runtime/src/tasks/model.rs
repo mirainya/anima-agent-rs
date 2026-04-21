@@ -49,6 +49,16 @@ pub enum SuspensionKind {
     FollowupWait,
     ExternalCallback,
     HumanApproval,
+    SubtaskBlocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum SubtaskBlockedReason {
+    MissingParameter { name: String, description: String },
+    MissingContext { what_needed: String },
+    MultipleOptions { options: Vec<String>, prompt: String },
+    NeedsDecision { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

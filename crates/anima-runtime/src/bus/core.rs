@@ -174,6 +174,7 @@ impl Bus {
         if after > before {
             // 入站丢弃是异常信号（背压），best-effort 发布内部事件便于观测
             let payload = json!({
+                "event": "bus_message_dropped",
                 "channel": "inbound",
                 "dropped_total": after,
                 "queue_depth": self.inbound_tx.len(),

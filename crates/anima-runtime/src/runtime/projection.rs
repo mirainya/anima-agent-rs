@@ -265,6 +265,9 @@ fn derive_pending_question(
             crate::tasks::model::SuspensionKind::ToolPermission => {
                 crate::agent::PendingQuestionSourceKind::ToolPermission
             }
+            crate::tasks::model::SuspensionKind::SubtaskBlocked => {
+                crate::agent::PendingQuestionSourceKind::SubtaskBlocked
+            }
             _ => crate::agent::PendingQuestionSourceKind::UpstreamQuestion,
         },
         continuation_token: Some(suspension.suspension_id.clone()),

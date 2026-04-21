@@ -68,7 +68,10 @@ pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement 
     let question = detect_pending_question(ctx.raw_result.as_ref(), &ctx.opencode_session_id);
     if let Some(question) = question {
         if question.requires_user_confirmation
-            || matches!(question.question_kind, QuestionKind::Input)
+            || matches!(
+                question.question_kind,
+                QuestionKind::Input | QuestionKind::Confirm
+            )
             || classify_question_requires_user_confirmation(&question.prompt, &question.options)
         {
             return RequirementJudgement::NeedsUserInput(Box::new(UserInputRequirement {

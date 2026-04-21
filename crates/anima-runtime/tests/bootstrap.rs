@@ -227,6 +227,29 @@ fn runtime_bootstrap_builder_registers_builtin_tools_and_stop_hook_by_default() 
 }
 
 #[test]
+fn runtime_bootstrap_builder_can_disable_builtin_tools() {
+    let runtime = RuntimeBootstrapBuilder::new()
+        .with_cli_enabled(false)
+        .with_builtin_tools_enabled(false)
+        .build();
+
+    let status = runtime.agent.status();
+    assert_eq!(status.core.tool_count, 0);
+    assert_eq!(status.core.pre_hook_count, 0);
+    assert_eq!(status.core.post_hook_count, 1);
+}
+
+#[test]
+fn runtime_bootstrap_builder_can_disable_sdk_directory() {
+    let runtime = RuntimeBootstrapBuilder::new()
+        .with_cli_enabled(false)
+        .with_sdk_directory_enabled(false)
+        .build();
+
+    assert!(runtime.agent.opencode_client.directory.is_none());
+}
+
+#[test]
 fn runtime_bootstrap_builder_stop_hook_applies_on_real_runtime_message_flow() {
     let executor = Arc::new(SequenceExecutor::new(vec![
         json!({

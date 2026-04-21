@@ -14,7 +14,8 @@ use crate::permissions::{PermissionRequest, PermissionRiskLevel};
 use crate::runtime::{RuntimeDomainEvent, RuntimeStateSnapshot, SharedRuntimeStateStore};
 use crate::support::now_ms;
 use crate::tasks::{
-    SuspensionKind, SuspensionRecord, SuspensionStatus, TaskStatus, ToolInvocationRuntimeRecord,
+    SubtaskBlockedReason, SuspensionKind, SuspensionRecord, SuspensionStatus, TaskStatus,
+    ToolInvocationRuntimeRecord,
 };
 use crate::tools::execution::ToolInvocationRecord;
 
@@ -48,6 +49,7 @@ pub enum QuestionRiskLevel {
 pub enum PendingQuestionSourceKind {
     UpstreamQuestion,
     ToolPermission,
+    SubtaskBlocked,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,8 +199,13 @@ fn build_pending_question(question: &Value, opencode_session_id: &str) -> Option
     let question_kind = classify_question_kind(question, &options);
     let decision_mode = classify_question_decision_mode(&prompt, &options);
     let risk_level = classify_question_risk_level(&prompt, &options);
-    let requires_user_confirmation = matches!(decision_mode, QuestionDecisionMode::UserRequired);
-
+    let requires_user_confirmation = matches!(decision_mode, QuestionDecisionMode::UserRequired)
+        || matches!(question_kind, QuestionKind::Confirm);
+    let source_kind = if question.get("type").and_then(Value::as_str) == Some("tool_permission") {
+        PendingQuestionSourceKind::ToolPermission
+    } else {
+        PendingQuestionSourceKind::UpstreamQuestion
+    };
     Some(PendingQuestion {
         question_id: question
             .get("question_id")
@@ -215,7 +222,7 @@ fn build_pending_question(question: &Value, opencode_session_id: &str) -> Option
         decision_mode,
         risk_level,
         requires_user_confirmation,
-        source_kind: PendingQuestionSourceKind::UpstreamQuestion,
+        source_kind,
         continuation_token: None,
         asked_at_ms: now_ms(),
         answer_submitted: false,
@@ -309,28 +316,112 @@ impl SuspensionCoordinator {
     }
 
     pub fn store_question(&self, job_id: String, question: PendingQuestion) {
+        let suspension_kind = match question.source_kind {
+            PendingQuestionSourceKind::ToolPermission => SuspensionKind::ToolPermission,
+            PendingQuestionSourceKind::SubtaskBlocked => SuspensionKind::SubtaskBlocked,
+            _ => SuspensionKind::Question,
+        };
+        let is_tool_permission =
+            matches!(question.source_kind, PendingQuestionSourceKind::ToolPermission);
+        let invocation_id = question
+            .raw_question
+            .get("invocation_id")
+            .and_then(Value::as_str)
+            .map(String::from);
+        let task_phase = if is_tool_permission {
+            RuntimeTaskPhase::ToolPermission
+        } else {
+            RuntimeTaskPhase::Question
+        };
         let task_id = if let Some(inbound) = question.inbound.as_ref() {
             self.emitter.upsert_task(
                 inbound,
-                RuntimeTaskPhase::Question,
+                task_phase,
                 TaskStatus::Suspended,
                 question.prompt.clone(),
                 None,
             )
         } else {
-            runtime_task_id(&job_id, RuntimeTaskPhase::Question)
+            runtime_task_id(&job_id, task_phase)
         };
         if let Some(inbound) = question.inbound.as_ref() {
             self.emitter.upsert_suspension(
                 inbound,
                 &question,
                 Some(task_id),
-                None,
-                SuspensionKind::Question,
+                invocation_id,
+                suspension_kind,
                 SuspensionStatus::Active,
             );
         }
         self.pending_questions.lock().insert(job_id, question);
+    }
+
+    pub fn register_subtask_blocked(
+        &self,
+        job_id: &str,
+        inbound: &InboundMessage,
+        opencode_session_id: &str,
+        reason: &SubtaskBlockedReason,
+    ) {
+        let (prompt, options, question_kind) = match reason {
+            SubtaskBlockedReason::MissingParameter { name, description } => (
+                format!("子任务需要参数 `{name}`: {description}"),
+                Vec::new(),
+                QuestionKind::Input,
+            ),
+            SubtaskBlockedReason::MissingContext { what_needed } => (
+                format!("子任务缺少上下文: {what_needed}"),
+                Vec::new(),
+                QuestionKind::Input,
+            ),
+            SubtaskBlockedReason::MultipleOptions { options, prompt } => {
+                (prompt.clone(), options.clone(), QuestionKind::Choice)
+            }
+            SubtaskBlockedReason::NeedsDecision { reason } => (
+                format!("子任务需要决策: {reason}"),
+                Vec::new(),
+                QuestionKind::Input,
+            ),
+        };
+        let question_id = Uuid::new_v4().to_string();
+        let question = PendingQuestion {
+            question_id: question_id.clone(),
+            job_id: job_id.to_string(),
+            opencode_session_id: opencode_session_id.to_string(),
+            question_kind,
+            prompt: prompt.clone(),
+            options,
+            raw_question: serde_json::to_value(reason).unwrap_or_default(),
+            decision_mode: QuestionDecisionMode::UserRequired,
+            risk_level: QuestionRiskLevel::Low,
+            requires_user_confirmation: true,
+            source_kind: PendingQuestionSourceKind::SubtaskBlocked,
+            continuation_token: Some(question_id),
+            asked_at_ms: now_ms(),
+            answer_submitted: false,
+            answer_summary: None,
+            resolution_source: None,
+            inbound: Some(inbound.clone()),
+        };
+        let task_id = self.emitter.upsert_task(
+            inbound,
+            RuntimeTaskPhase::Question,
+            TaskStatus::Suspended,
+            prompt,
+            None,
+        );
+        self.emitter.upsert_suspension(
+            inbound,
+            &question,
+            Some(task_id),
+            None,
+            SuspensionKind::SubtaskBlocked,
+            SuspensionStatus::Active,
+        );
+        self.pending_questions
+            .lock()
+            .insert(job_id.to_string(), question);
     }
 
     pub(crate) fn store_tool_invocation(
@@ -466,12 +557,16 @@ impl SuspensionCoordinator {
                     question.prompt.clone(),
                     None,
                 );
+                let kind = match question.source_kind {
+                    PendingQuestionSourceKind::SubtaskBlocked => SuspensionKind::SubtaskBlocked,
+                    _ => SuspensionKind::Question,
+                };
                 self.emitter.upsert_suspension(
                     inbound,
                     question,
                     Some(runtime_task_id(job_id, RuntimeTaskPhase::Question)),
                     None,
-                    SuspensionKind::Question,
+                    kind,
                     SuspensionStatus::Cleared,
                 );
             }
@@ -552,9 +647,12 @@ impl SuspensionCoordinator {
             .find(|record| matches!(record.status, SuspensionStatus::Active))?;
         let question_id = suspension.question_id.clone()?;
         let raw_question = suspension.raw_payload.clone();
-        let source_kind = match suspension.kind {
-            SuspensionKind::ToolPermission => PendingQuestionSourceKind::ToolPermission,
-            _ => PendingQuestionSourceKind::UpstreamQuestion,
+        let source_kind = if suspension.kind == SuspensionKind::ToolPermission
+            || raw_question.get("type").and_then(Value::as_str) == Some("tool_permission")
+        {
+            PendingQuestionSourceKind::ToolPermission
+        } else {
+            PendingQuestionSourceKind::UpstreamQuestion
         };
         let question_kind = if suspension.options.len() > 2 {
             QuestionKind::Choice
@@ -894,13 +992,21 @@ impl SuspensionCoordinator {
             format!("Missing inbound context for pending question on job: {job_id}")
         })?;
 
-        if matches!(pending.source_kind, PendingQuestionSourceKind::UpstreamQuestion) {
+        if matches!(
+            pending.source_kind,
+            PendingQuestionSourceKind::UpstreamQuestion
+                | PendingQuestionSourceKind::SubtaskBlocked
+        ) {
+            let kind = match pending.source_kind {
+                PendingQuestionSourceKind::SubtaskBlocked => SuspensionKind::SubtaskBlocked,
+                _ => SuspensionKind::Question,
+            };
             self.emitter.upsert_suspension(
                 inbound,
                 &pending,
                 Some(runtime_task_id(job_id, RuntimeTaskPhase::Question)),
                 None,
-                SuspensionKind::Question,
+                kind,
                 SuspensionStatus::Resolved,
             );
             self.emitter.upsert_task(

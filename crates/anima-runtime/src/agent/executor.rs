@@ -574,7 +574,7 @@ fn open_opencode_event_stream(client: &SdkClient) -> Result<UnifiedStreamSource,
 
 type MessageRequestResult = Result<String, TaskExecutorError>;
 
-const MESSAGE_COMPLETION_POLL_ATTEMPTS: usize = 120;
+const MESSAGE_COMPLETION_POLL_ATTEMPTS: usize = 480;
 const MESSAGE_COMPLETION_POLL_INTERVAL_MS: u64 = 250;
 
 fn wait_for_message_completion(

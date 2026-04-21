@@ -263,9 +263,7 @@ impl CoreAgent {
             session_store,
             executor,
             pool_size,
-            Arc::new(RuntimeStateStore::with_persistence(
-                std::path::PathBuf::from(".opencode/runtime/state.json"),
-            )),
+            Arc::new(RuntimeStateStore::new()),
         )
     }
 

@@ -17,3 +17,6 @@ reqwest.workspace = true
 regex.workspace = true
 lazy_static.workspace = true
 glob.workspace = true
+
+[dev-dependencies]
+serial_test = "3"

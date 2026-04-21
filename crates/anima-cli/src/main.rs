@@ -210,6 +210,8 @@ fn start_cli(opts: &CliOptions) -> std::io::Result<()> {
         .with_url(bootstrap_opts.url)
         .with_prompt(bootstrap_opts.prompt)
         .with_cli_enabled(bootstrap_opts.cli_enabled)
+        .with_builtin_tools_enabled(false)
+        .with_sdk_directory_enabled(false)
         .build();
     runtime.start();
     let result = runtime

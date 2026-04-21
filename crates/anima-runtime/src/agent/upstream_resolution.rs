@@ -1,6 +1,8 @@
 use serde_json::{json, Value};
 
 use crate::bus::InboundMessage;
+use crate::execution::context_assembly::ContextAssemblyMode;
+use crate::execution::driver::{ApiCallExecutionRequest, ExecutionKind};
 use crate::execution::requirement_judge::AgentFollowupPlan;
 use crate::execution::turn_coordinator::{
     prepare_completed_branch_data, prepare_followup_branch_data, prepare_requirement_evaluation,
@@ -10,10 +12,6 @@ use crate::execution::turn_coordinator::{
 };
 use crate::runtime::planning_stalled_current_step;
 use crate::tasks::{RequirementStatus, RunStatus, TaskStatus, TurnStatus};
-use crate::{
-    execution::context_assembly::ContextAssemblyMode,
-    execution::driver::{ApiCallExecutionRequest, ExecutionKind},
-};
 
 use super::core::{
     turn_source_from_success, AgentFollowupPreparation, CoreAgent, ExecutionContext,
@@ -796,6 +794,31 @@ impl CoreAgent {
         source: SuccessSource,
         resolved_question: Option<&PendingQuestion>,
     ) -> Result<Option<PendingQuestion>, String> {
+        if let Some(blocked_value) = result.blocked_reason.as_ref() {
+            if let Ok(reason) =
+                serde_json::from_value::<crate::tasks::SubtaskBlockedReason>(blocked_value.clone())
+            {
+                if let Some(resolved) =
+                    self.try_auto_resolve_blocked(inbound_msg, exec_ctx, &reason)
+                {
+                    self.emitter
+                        .append_subtask_blocked_transcript(inbound_msg, &reason, true);
+                    return self.continue_with_auto_resolved(
+                        inbound_msg, exec_ctx, &reason, &resolved,
+                    );
+                }
+                self.emitter
+                    .append_subtask_blocked_transcript(inbound_msg, &reason, false);
+                self.suspension.register_subtask_blocked(
+                    &inbound_msg.id,
+                    inbound_msg,
+                    &exec_ctx.opencode_session_id,
+                    &reason,
+                );
+                return Ok(self.suspension.question_state(&inbound_msg.id, false));
+            }
+        }
+
         self.publish_upstream_response_observed(inbound_msg, exec_ctx, &result);
         let requirement_ctx = self.prepare_upstream_requirement_context(
             inbound_msg,
@@ -829,5 +852,112 @@ impl CoreAgent {
         };
 
         self.dispatch_upstream_turn_plan(ctx, requirement_ctx.turn_plan)
+    }
+
+    pub(crate) fn try_auto_resolve_blocked(
+        &self,
+        inbound_msg: &InboundMessage,
+        _exec_ctx: &ExecutionContext,
+        reason: &crate::tasks::SubtaskBlockedReason,
+    ) -> Option<String> {
+        let user_request = &inbound_msg.content;
+        if user_request.trim().is_empty() {
+            return None;
+        }
+        match reason {
+            crate::tasks::SubtaskBlockedReason::MissingParameter { name, .. } => {
+                let lower_request = user_request.to_lowercase();
+                let lower_name = name.to_lowercase();
+                if lower_request.contains(&lower_name) {
+                    Some(format!(
+                        "参数 `{name}` 可从用户原始请求中获取: {user_request}"
+                    ))
+                } else {
+                    None
+                }
+            }
+            crate::tasks::SubtaskBlockedReason::MissingContext { what_needed } => {
+                let lower_request = user_request.to_lowercase();
+                let lower_needed = what_needed.to_lowercase();
+                if lower_request.contains(&lower_needed) {
+                    Some(format!(
+                        "所需上下文 `{what_needed}` 可从用户原始请求中获取: {user_request}"
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn continue_with_auto_resolved(
+        &self,
+        inbound_msg: &InboundMessage,
+        exec_ctx: &ExecutionContext,
+        reason: &crate::tasks::SubtaskBlockedReason,
+        resolved: &str,
+    ) -> Result<Option<PendingQuestion>, String> {
+        let reason_desc = match reason {
+            crate::tasks::SubtaskBlockedReason::MissingParameter { name, .. } => {
+                format!("缺失参数 `{name}`")
+            }
+            crate::tasks::SubtaskBlockedReason::MissingContext { what_needed } => {
+                format!("缺失上下文: {what_needed}")
+            }
+            _ => "子任务阻塞".to_string(),
+        };
+        let prompt = format!(
+            "[子任务阻塞自动恢复] 原因: {reason_desc}\n补充信息: {resolved}\n请基于此信息继续执行。"
+        );
+        let key = super::core::memory_key(inbound_msg);
+        let continuation_ctx = self.assemble_turn_context(
+            inbound_msg,
+            ContextAssemblyMode::SubtaskBlockedContinuation,
+            exec_ctx.opencode_session_id.clone(),
+            None,
+            Some(prompt),
+        );
+        let request = ApiCallExecutionRequest {
+            trace_id: inbound_msg.id.clone(),
+            session_id: continuation_ctx.metadata.opencode_session_id.clone(),
+            content: continuation_ctx.prompt_text.clone(),
+            kind: ExecutionKind::QuestionContinuation,
+            metadata: Some(json!({})),
+        };
+        let result = self
+            .execute_api_call_request(
+                inbound_msg,
+                &key,
+                "single",
+                &request,
+                "子任务阻塞自动恢复",
+                json!({ "auto_resolved": true }),
+            )
+            .map_err(|err| err.internal_message)?;
+        if result.status != "success" {
+            return Err(result
+                .error
+                .unwrap_or_else(|| "Auto-resolved continuation failed".into()));
+        }
+        let new_exec_ctx = ExecutionContext {
+            memory_key: continuation_ctx.metadata.memory_key,
+            history_session_id: continuation_ctx.metadata.history_session_id,
+            opencode_session_id: continuation_ctx.metadata.opencode_session_id,
+            plan_type: "single".into(),
+            context_ms: 0,
+            session_ms: 0,
+            classify_ms: 0,
+            execute_ms: result.duration_ms,
+            total_ms: result.duration_ms,
+            cache_hit: false,
+        };
+        self.handle_upstream_result(
+            inbound_msg,
+            &new_exec_ctx,
+            result,
+            SuccessSource::QuestionContinuation,
+            None,
+        )
     }
 }

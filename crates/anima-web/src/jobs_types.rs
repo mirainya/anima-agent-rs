@@ -47,6 +47,7 @@ pub struct QuestionView {
     pub decision_mode: String,
     pub risk_level: String,
     pub requires_user_confirmation: bool,
+    pub source_kind: String,
     pub opencode_session_id: Option<String>,
     pub answer_summary: Option<String>,
     pub resolution_source: Option<String>,

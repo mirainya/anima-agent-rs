@@ -1156,6 +1156,9 @@ impl AgentOrchestrator {
             );
             if result.status == "success" {
                 last_success = Some(result.clone());
+                if result.blocked_reason.is_some() {
+                    return Ok(Some(result));
+                }
                 if matches!(lowered.primitive, LoweringPrimitive::ApiCall)
                     && detect_pending_question(result.result.as_ref(), session_id).is_some()
                 {
@@ -1500,6 +1503,7 @@ impl AgentOrchestrator {
                     "lowered_task_type": lowered.lowered_task_type,
                     "original_task_type": lowered.original_task_type,
                     "result_kind": lowered.primitive.result_kind(),
+                    "blocked_reason": result.blocked_reason,
                 }),
             );
         }
@@ -1596,6 +1600,28 @@ impl AgentOrchestrator {
         lines.join("\n")
     }
 
+    fn collect_blocked_reasons(
+        &self,
+        lowered_tasks: &[LoweredTask],
+        execution_context: &OrchestrationExecutionContext,
+    ) -> Option<Value> {
+        let blocked: Vec<_> = lowered_tasks
+            .iter()
+            .filter_map(|task| {
+                let entry = execution_context.subtask_results.get(&task.name)?;
+                let reason = entry.get("blocked_reason").filter(|v| !v.is_null())?;
+                Some(json!({ "subtask": task.name, "reason": reason }))
+            })
+            .collect();
+        if blocked.is_empty() {
+            return None;
+        }
+        Some(json!({
+            "type": "subtask_blocked",
+            "blocked_subtasks": blocked,
+        }))
+    }
+
     fn infer_missing_context_question(
         &self,
         plan: &OrchestrationPlan,
@@ -1656,20 +1682,23 @@ impl AgentOrchestrator {
         execution_context: &OrchestrationExecutionContext,
         last_success: Option<&TaskResult>,
     ) -> TaskResult {
-        let aggregated_result = if let Some(question) =
-            self.infer_missing_context_question(plan, lowered_tasks, execution_context)
-        {
-            question
-        } else {
-            let summary_text =
-                self.build_orchestration_summary_text(plan, lowered_tasks, execution_context);
-            json!({
-                "content": summary_text,
-                "plan_id": plan.id,
-                "parent_job_id": plan.parent_job_id,
-                "subtask_results": execution_context.subtask_results.clone(),
-            })
-        };
+        let aggregated_result =
+            if let Some(blocked) = self.collect_blocked_reasons(lowered_tasks, execution_context) {
+                blocked
+            } else if let Some(question) =
+                self.infer_missing_context_question(plan, lowered_tasks, execution_context)
+            {
+                question
+            } else {
+                let summary_text =
+                    self.build_orchestration_summary_text(plan, lowered_tasks, execution_context);
+                json!({
+                    "content": summary_text,
+                    "plan_id": plan.id,
+                    "parent_job_id": plan.parent_job_id,
+                    "subtask_results": execution_context.subtask_results.clone(),
+                })
+            };
 
         let (total_subtasks, completed_subtasks, failed_subtasks) =
             self.runtime_plan_progress_counts(&plan.id);
@@ -1688,6 +1717,19 @@ impl AgentOrchestrator {
                 result_obj.insert("subtasks_total".into(), Value::from(total_subtasks));
                 result_obj.insert("subtasks_completed".into(), Value::from(completed_subtasks));
                 result_obj.insert("subtasks_failed".into(), Value::from(failed_subtasks));
+            }
+        }
+
+        if let Some(result_value) = result.result.as_ref() {
+            if result_value.get("type").and_then(Value::as_str) == Some("subtask_blocked") {
+                if let Some(first_reason) = result_value
+                    .get("blocked_subtasks")
+                    .and_then(Value::as_array)
+                    .and_then(|arr| arr.first())
+                    .and_then(|entry| entry.get("reason"))
+                {
+                    result.blocked_reason = Some(first_reason.clone());
+                }
             }
         }
 

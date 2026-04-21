@@ -5,6 +5,7 @@ use crate::agent::{ExecutionSummary, PendingQuestion};
 pub enum ContextAssemblyMode {
     Initial,
     QuestionContinuation,
+    SubtaskBlockedContinuation,
     Followup,
 }
 
@@ -99,6 +100,7 @@ fn build_prompt_text(request: &ContextAssemblyRequest) -> String {
     match request.mode {
         ContextAssemblyMode::Initial => request.original_user_request.clone(),
         ContextAssemblyMode::QuestionContinuation => build_question_continuation_prompt(request),
+        ContextAssemblyMode::SubtaskBlockedContinuation => request.original_user_request.clone(),
         ContextAssemblyMode::Followup => request.original_user_request.clone(),
     }
 }

@@ -84,6 +84,20 @@ pub(crate) fn question_risk_level_label(level: &anima_runtime::agent::QuestionRi
     }
 }
 
+pub(crate) fn source_kind_label(kind: &anima_runtime::agent::PendingQuestionSourceKind) -> String {
+    match kind {
+        anima_runtime::agent::PendingQuestionSourceKind::UpstreamQuestion => {
+            "upstream_question".into()
+        }
+        anima_runtime::agent::PendingQuestionSourceKind::ToolPermission => {
+            "tool_permission".into()
+        }
+        anima_runtime::agent::PendingQuestionSourceKind::SubtaskBlocked => {
+            "subtask_blocked".into()
+        }
+    }
+}
+
 pub(crate) fn runtime_pending_question_view(
     question: &anima_runtime::agent::PendingQuestion,
 ) -> QuestionView {
@@ -96,6 +110,7 @@ pub(crate) fn runtime_pending_question_view(
         decision_mode: question_decision_mode_label(&question.decision_mode),
         risk_level: question_risk_level_label(&question.risk_level),
         requires_user_confirmation: question.requires_user_confirmation,
+        source_kind: source_kind_label(&question.source_kind),
         opencode_session_id: Some(question.opencode_session_id.clone()),
         answer_summary: question.answer_summary.clone(),
         resolution_source: question.resolution_source.clone(),
@@ -503,6 +518,12 @@ pub(crate) fn derive_pending_question(events: &[RuntimeTimelineEvent]) -> Option
             .and_then(|event| event.payload.get("resolution_source"))
             .and_then(|value| value.as_str())
             .map(ToString::to_string),
+        source_kind: asked
+            .payload
+            .get("source_kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or("upstream_question")
+            .to_string(),
     })
 }
 

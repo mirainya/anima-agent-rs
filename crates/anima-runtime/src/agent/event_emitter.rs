@@ -512,4 +512,27 @@ impl RuntimeEventEmitter {
             self.append_transcript_message(inbound_msg, message);
         }
     }
+
+    pub fn append_subtask_blocked_transcript(
+        &self,
+        inbound_msg: &InboundMessage,
+        reason: &crate::tasks::SubtaskBlockedReason,
+        auto_resolved: bool,
+    ) {
+        let label = if auto_resolved {
+            "subtask_auto_resolved"
+        } else {
+            "subtask_blocked"
+        };
+        let text = format!("[{label}] {}", serde_json::to_string(reason).unwrap_or_default());
+        let msg = crate::messages::types::InternalMsg {
+            role: crate::messages::types::MessageRole::System,
+            content: Value::String(text),
+            message_id: format!("{}-{label}", runtime_message_id(inbound_msg)),
+            tool_use_id: None,
+            filtered: false,
+            metadata: json!({ "subtask_blocked": true, "auto_resolved": auto_resolved }),
+        };
+        self.append_transcript_message(inbound_msg, &msg);
+    }
 }

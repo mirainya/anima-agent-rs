@@ -10,7 +10,7 @@ use crate::execution::context_assembly::ContextAssemblyMode;
 use crate::execution::driver::{ApiCallExecutionRequest, ExecutionKind};
 use crate::prompt::PromptAssembler;
 use crate::support::now_ms;
-use crate::tasks::{SuspensionKind, SuspensionStatus, TaskStatus};
+use crate::tasks::{RunStatus, SuspensionKind, SuspensionStatus, TaskStatus, TurnStatus};
 
 use super::core::{
     memory_key, CoreAgent, ExecutionContext, RuntimeTaskPhase, SuccessSource,
@@ -80,6 +80,74 @@ impl CoreAgent {
             inbound,
             &exec_ctx,
             continuation_result,
+            SuccessSource::QuestionContinuation,
+            Some(pending),
+        )?;
+        Ok(pending.clone())
+    }
+
+    pub(crate) fn continue_subtask_blocked_answer(
+        &self,
+        inbound: &InboundMessage,
+        key: &str,
+        pending: &PendingQuestion,
+        answer: &QuestionAnswerInput,
+    ) -> Result<PendingQuestion, String> {
+        let reason_desc = pending
+            .raw_question
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let prompt = format!(
+            "[子任务阻塞恢复] 阻塞类型: {reason_desc}\n原始问题: {}\n用户回答: {}\n请基于此信息继续执行。",
+            pending.prompt,
+            answer.answer,
+        );
+        let continuation_ctx = self.assemble_turn_context(
+            inbound,
+            ContextAssemblyMode::SubtaskBlockedContinuation,
+            pending.opencode_session_id.clone(),
+            Some(pending.clone()),
+            Some(prompt),
+        );
+        let request = ApiCallExecutionRequest {
+            trace_id: inbound.id.clone(),
+            session_id: continuation_ctx.metadata.opencode_session_id.clone(),
+            content: continuation_ctx.prompt_text.clone(),
+            kind: ExecutionKind::QuestionContinuation,
+            metadata: Some(json!({})),
+        };
+        let result = self
+            .execute_api_call_request(
+                inbound,
+                key,
+                "single",
+                &request,
+                "子任务阻塞恢复 — 用户已回答",
+                json!({ "question_id": pending.question_id }),
+            )
+            .map_err(|err| err.internal_message)?;
+        if result.status != "success" {
+            return Err(result
+                .error
+                .unwrap_or_else(|| "Subtask blocked continuation failed".into()));
+        }
+        let exec_ctx = ExecutionContext {
+            memory_key: continuation_ctx.metadata.memory_key,
+            history_session_id: continuation_ctx.metadata.history_session_id,
+            opencode_session_id: continuation_ctx.metadata.opencode_session_id,
+            plan_type: "single".into(),
+            context_ms: 0,
+            session_ms: 0,
+            classify_ms: 0,
+            execute_ms: result.duration_ms,
+            total_ms: result.duration_ms,
+            cache_hit: false,
+        };
+        let _ = self.handle_upstream_result(
+            inbound,
+            &exec_ctx,
+            result,
             SuccessSource::QuestionContinuation,
             Some(pending),
         )?;
@@ -223,6 +291,23 @@ impl CoreAgent {
         );
         self.suspension.clear_question(job_id);
         self.suspension.clear_tool_invocation(&pending.question_id);
+        let completed_turn_id = self.upsert_runtime_turn(
+            &suspended.inbound,
+            "tool_permission_continuation",
+            TurnStatus::Completed,
+        );
+        self.upsert_runtime_run(
+            &suspended.inbound,
+            RunStatus::Completed,
+            Some(completed_turn_id),
+        );
+        self.upsert_runtime_task(
+            &suspended.inbound,
+            RuntimeTaskPhase::ToolPermission,
+            TaskStatus::Completed,
+            "tool permission resolved",
+            None,
+        );
         self.emitter.record_job_lifecycle_hint(
             job_id,
             "completed",
@@ -436,6 +521,26 @@ impl CoreAgent {
                     .get("tool_name")
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
+                "type": "question",
+                "question": {
+                    "kind": "confirm",
+                    "type": "tool_permission",
+                    "question_id": pending_question.question_id,
+                    "invocation_id": suspension.suspended_tool.invocation.invocation_id,
+                    "tool_name": suspension.suspended_tool.tool_name,
+                    "tool_use_id": suspension.suspended_tool.tool_use_id,
+                    "tool_input": suspension.suspended_tool.tool_input,
+                    "prompt": pending_question.prompt,
+                    "options": pending_question
+                        .options
+                        .iter()
+                        .map(|opt| json!({"value": opt}))
+                        .collect::<Vec<_>>(),
+                    "requires_user_confirmation": true,
+                    "risk_level": question_risk_level_str(&permission_risk_to_question_risk(
+                        &suspension.suspended_tool.permission_request.risk_level,
+                    )),
+                },
             })),
             error: None,
             duration_ms: now_ms().saturating_sub(started),
@@ -523,6 +628,9 @@ impl CoreAgent {
         match pending.source_kind {
             PendingQuestionSourceKind::UpstreamQuestion => {
                 self.continue_upstream_question_answer(inbound, key, pending)
+            }
+            PendingQuestionSourceKind::SubtaskBlocked => {
+                self.continue_subtask_blocked_answer(inbound, key, pending, answer)
             }
             PendingQuestionSourceKind::ToolPermission => {
                 self.continue_tool_permission_answer(job_id, pending, answer.answer.trim())
