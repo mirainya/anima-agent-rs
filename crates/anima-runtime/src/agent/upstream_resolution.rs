@@ -13,11 +13,12 @@ use crate::execution::turn_coordinator::{
 use crate::runtime::planning_stalled_current_step;
 use crate::tasks::{RequirementStatus, RunStatus, TaskStatus, TurnStatus};
 
-use super::core::{
-    turn_source_from_success, AgentFollowupPreparation, CoreAgent, ExecutionContext,
+use super::context_types::{
+    turn_source_from_success, AgentFollowupPreparation, ExecutionContext,
     RuntimeErrorInfo, RuntimeTaskPhase, SuccessSource, UpstreamRequirementContext,
     UpstreamTurnContext,
 };
+use super::core::CoreAgent;
 use super::runtime_error::classify_runtime_error;
 use super::runtime_helpers::{
     extract_response_text, infer_operation, infer_provider, truncate_preview,
@@ -367,7 +368,7 @@ impl CoreAgent {
     ) -> AgentFollowupPreparation {
         let progress = self.requirement.ensure(
             inbound_msg,
-            super::core::DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS,
+            super::context_types::DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS,
         );
         let next_round = progress.attempted_rounds + 1;
         let fingerprint = plan.result_fingerprint.clone();
@@ -919,7 +920,7 @@ impl CoreAgent {
         let prompt = format!(
             "[子任务阻塞自动恢复] 原因: {reason_desc}\n补充信息: {resolved}\n请基于此信息继续执行。"
         );
-        let key = super::core::memory_key(inbound_msg);
+        let key = super::context_types::memory_key(inbound_msg);
         let continuation_ctx = self.assemble_turn_context(
             inbound_msg,
             ContextAssemblyMode::SubtaskBlockedContinuation,

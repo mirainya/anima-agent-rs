@@ -5,10 +5,10 @@ use crate::execution::context_assembly::ContextAssemblyMode;
 use crate::support::now_ms;
 use crate::tasks::{TaskStatus, TurnStatus};
 
-use super::core::{
-    CoreAgent, ExecutionContext, ExecutionStageDurations, ProcessInboundResolutionContext,
-    RuntimeTaskPhase, SuccessSource,
+use super::context_types::{
+    ExecutionContext, ProcessInboundResolutionContext, RuntimeTaskPhase, SuccessSource,
 };
+use super::core::{CoreAgent, ExecutionStageDurations};
 use super::runtime_error::classify_runtime_error;
 use super::types::ExecutionPlan;
 

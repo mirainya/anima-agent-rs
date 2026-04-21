@@ -14,7 +14,7 @@ use crate::tasks::{
 use crate::tools::execution::ToolInvocationRecord;
 use crate::transcript::MessageRecord;
 
-use super::core::{RuntimeErrorInfo, RuntimeTaskPhase};
+use super::context_types::{RuntimeErrorInfo, RuntimeTaskPhase};
 use super::runtime_helpers::{merge_runtime_metadata, runtime_message_id};
 use super::runtime_ids::{
     runtime_requirement_id, runtime_run_id, runtime_suspension_id, runtime_task_id, runtime_turn_id,

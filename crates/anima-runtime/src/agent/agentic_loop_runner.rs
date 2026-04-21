@@ -8,7 +8,8 @@ use crate::prompt::PromptAssembler;
 use crate::streaming::types::{ContentBlock, ContentDelta, StreamEvent};
 use crate::support::now_ms;
 
-use super::core::{CoreAgent, InitialAgenticLoopRunPreparation};
+use super::context_types::InitialAgenticLoopRunPreparation;
+use super::core::CoreAgent;
 use super::runtime_error::RuntimeError;
 use super::types::{make_task_result, MakeTaskResult, TaskResult};
 

@@ -1,6 +1,6 @@
 use crate::execution::driver::ExecutionKind;
 
-use super::core::RuntimeTaskPhase;
+use super::context_types::RuntimeTaskPhase;
 
 pub(crate) fn runtime_run_id(job_id: &str) -> String {
     format!("run_{job_id}")

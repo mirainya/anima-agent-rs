@@ -12,10 +12,11 @@ use crate::prompt::PromptAssembler;
 use crate::support::now_ms;
 use crate::tasks::{RunStatus, SuspensionKind, SuspensionStatus, TaskStatus, TurnStatus};
 
-use super::core::{
-    memory_key, CoreAgent, ExecutionContext, RuntimeTaskPhase, SuccessSource,
+use super::context_types::{
+    memory_key, ExecutionContext, RuntimeTaskPhase, SuccessSource,
     ToolPermissionResumePreparation,
 };
+use super::core::CoreAgent;
 use super::runtime_helpers::truncate_preview;
 use super::runtime_ids::runtime_task_id;
 use super::suspension::{

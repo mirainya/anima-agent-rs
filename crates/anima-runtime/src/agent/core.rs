@@ -1,49 +1,35 @@
-//! # 核心智能体模块
-//!
-//! 本模块定义了 Anima 运行时的核心智能体架构，分为两层：
-//! - `Agent`：对外门面，提供简洁的创建/启停/消息投递接口
-//! - `CoreAgent`：内部引擎，负责消息循环、会话管理、任务编排、缓存和指标采集
-//!
-//! 消息处理流程：
-//! 1. 入站消息通过 Bus 到达 CoreAgent 的消息循环
-//! 2. 确保会话上下文存在（ensure_context），获取或创建 SDK 会话
-//! 3. AgentClassifier 对消息进行分类，生成执行计划（direct / single / multi-step）
-//! 4. AgentOrchestrator 将计划分发给 WorkerPool 执行
-//! 5. 结果经 extract_response_text 提取后，通过 Bus 发送出站消息
+//! CoreAgent 核心定义：struct、构造函数、消息处理方法
 
 use anima_sdk::facade::Client as SdkClient;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
+use super::context_types::{
+    memory_key, InboundContextPreparation, PlanPreparation, RuntimeErrorInfo, RuntimeTaskPhase,
+    SessionPreparation,
+};
 use super::event_emitter::RuntimeEventEmitter;
-use super::executor::{SdkTaskExecutor, TaskExecutor};
+use super::executor::TaskExecutor;
 use super::requirement::RequirementCoordinator;
 use super::runtime_helpers::truncate_preview;
-use super::types::{ExecutionPlan, TaskResult};
 use super::worker::{WorkerPool, WorkerPoolStatus};
-use crate::bus::ControlSignal;
 use crate::bus::{
     make_internal, make_outbound, Bus, InboundMessage, MakeInternal, MakeOutbound, OutboundMessage,
 };
 use crate::channel::SessionStore;
 use crate::classifier::rule::AgentClassifier;
-use crate::execution::agentic_loop::AgenticLoopConfig;
 use crate::execution::context_assembly::{
     assemble_context, ContextAssemblyMode, ContextAssemblyRequest, ContextAssemblyResult,
 };
-use crate::execution::driver::ExecutionKind;
-use crate::execution::turn_coordinator::{TurnOutcomePlan, TurnSource};
 use crate::hooks::HookRegistry;
 use crate::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
 use crate::orchestrator::specialist_pool::SpecialistPool;
 use crate::permissions::PermissionChecker;
 use crate::runtime::{
-    build_projection, RuntimeProjectionView, RuntimeStateSnapshot, RuntimeStateStore,
-    SharedRuntimeStateStore,
+    RuntimeStateStore, SharedRuntimeStateStore,
 };
 use crate::runtime::{
     planning_ready_current_step, preparing_context_current_step, session_ready_current_step,
@@ -52,28 +38,17 @@ use crate::support::{now_ms, ContextManager, LruCache, MetricsCollector};
 use crate::tasks::{RunStatus, SuspensionKind, SuspensionStatus, TaskStatus, TurnStatus};
 use crate::tools::registry::ToolRegistry;
 
-#[derive(Debug, Clone)]
-pub(crate) struct RuntimeErrorInfo {
-    pub(crate) code: &'static str,
-    pub(crate) stage: &'static str,
-    pub(crate) user_message: String,
-    pub(crate) internal_message: String,
-}
-
-// 事件类型已下沉到 anima-types::event，此处 re-export
 pub use anima_types::event::{
     ExecutionStageDurations, ExecutionSummary, RuntimeFailureSnapshot, RuntimeFailureStatus,
     RuntimeTimelineEvent,
 };
 
-// 挂起相关类型从 suspension 模块导入
 pub use super::suspension::{
     PendingQuestion, PendingQuestionSourceKind, QuestionAnswerInput, QuestionDecisionMode,
     QuestionKind, QuestionRiskLevel,
 };
-use super::suspension::{SuspendedToolInvocationState, SuspensionCoordinator};
+use super::suspension::SuspensionCoordinator;
 
-/// 单个会话的上下文信息，包含 SDK 会话 ID 和对话历史
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionContext {
     pub session_id: Option<String>,
@@ -82,126 +57,9 @@ pub struct SessionContext {
     pub history: Vec<Value>,
 }
 
-/// 内存中最多保留的会话数，超出时淘汰最早的会话
 const MAX_SESSIONS: usize = 1000;
-/// 每个会话最多保留的历史消息条数
 const MAX_SESSION_HISTORY: usize = 200;
-pub(crate) const DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS: usize = 3;
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ExecutionContext {
-    pub(crate) memory_key: String,
-    pub(crate) history_session_id: String,
-    pub(crate) opencode_session_id: String,
-    pub(crate) plan_type: String,
-    pub(crate) context_ms: u64,
-    pub(crate) session_ms: u64,
-    pub(crate) classify_ms: u64,
-    pub(crate) execute_ms: u64,
-    pub(crate) total_ms: u64,
-    pub(crate) cache_hit: bool,
-}
-
-pub(crate) struct ToolPermissionResumePreparation {
-    pub(crate) suspended: SuspendedToolInvocationState,
-    pub(crate) config: AgenticLoopConfig,
-    pub(crate) resumed_messages: Vec<crate::messages::types::InternalMsg>,
-}
-
-pub(crate) struct InitialAgenticLoopRunPreparation {
-    pub(crate) initial_messages: Vec<crate::messages::types::InternalMsg>,
-    pub(crate) config: AgenticLoopConfig,
-}
-
-pub(crate) struct InitialPlanDispatchContext<'a> {
-    pub(crate) inbound_msg: &'a InboundMessage,
-    pub(crate) plan: &'a ExecutionPlan,
-    pub(crate) opencode_session_id: &'a str,
-    pub(crate) memory_key: &'a str,
-    pub(crate) execution_kind: ExecutionKind,
-}
-
-pub(crate) struct InitialExecutionOutcome {
-    pub(crate) plan_type: String,
-    pub(crate) cache_hit: bool,
-    pub(crate) execute_ms: u64,
-    pub(crate) result: TaskResult,
-}
-
-pub(crate) struct ProcessInboundResolutionContext<'a> {
-    pub(crate) inbound_msg: &'a InboundMessage,
-    pub(crate) key: &'a str,
-    pub(crate) opencode_session_id: &'a str,
-    pub(crate) plan_type: &'a str,
-    pub(crate) context_ms: u64,
-    pub(crate) session_ms: u64,
-    pub(crate) classify_ms: u64,
-    pub(crate) execute_ms: u64,
-    pub(crate) total_ms: u64,
-    pub(crate) cache_hit: bool,
-}
-
-pub(crate) struct InboundContextPreparation {
-    pub(crate) key: String,
-    pub(crate) context_ms: u64,
-}
-
-pub(crate) struct SessionPreparation {
-    pub(crate) opencode_session_id: String,
-    pub(crate) session_ms: u64,
-}
-
-pub(crate) struct PlanPreparation {
-    pub(crate) plan: ExecutionPlan,
-    pub(crate) classify_ms: u64,
-}
-
-pub(crate) struct AgentFollowupPreparation {
-    pub(crate) progress: crate::execution::requirement_judge::RequirementProgressState,
-    pub(crate) next_round: usize,
-    pub(crate) fingerprint: String,
-    pub(crate) followup_branch: crate::execution::turn_coordinator::FollowupBranchData,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RuntimeTaskPhase {
-    Main,
-    Question,
-    ToolPermission,
-    Followup,
-    Requirement,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SuccessSource {
-    Initial,
-    QuestionContinuation,
-    AgentFollowup,
-}
-
-pub(crate) struct UpstreamTurnContext<'a> {
-    pub(crate) inbound_msg: &'a InboundMessage,
-    pub(crate) exec_ctx: &'a ExecutionContext,
-    pub(crate) result: &'a TaskResult,
-    pub(crate) resolved_question: Option<&'a PendingQuestion>,
-    pub(crate) turn_source_label: &'a str,
-}
-
-pub(crate) struct UpstreamRequirementContext {
-    pub(crate) turn_plan: TurnOutcomePlan,
-    pub(crate) turn_source_label: &'static str,
-}
-
-pub(crate) fn turn_source_from_success(source: SuccessSource) -> TurnSource {
-    match source {
-        SuccessSource::Initial => TurnSource::Initial,
-        SuccessSource::QuestionContinuation => TurnSource::QuestionContinuation,
-        SuccessSource::AgentFollowup => TurnSource::AgentFollowup,
-    }
-}
-
-/// 核心智能体，承载消息循环、会话管理、任务调度等核心逻辑。
-/// 通过 Bus 接收入站消息，经分类和编排后交由 WorkerPool 执行。
 pub struct CoreAgent {
     pub(crate) bus: Arc<Bus>,
     pub(crate) _client: SdkClient,
@@ -225,9 +83,9 @@ pub struct CoreAgent {
     /// 挂起状态协调器
     pub(crate) suspension: Arc<SuspensionCoordinator>,
     pub(crate) requirement: Arc<RequirementCoordinator>,
-    running: AtomicBool,
-    loop_handle: Mutex<Option<thread::JoinHandle<()>>>,
-    control_handle: Mutex<Option<thread::JoinHandle<()>>>,
+    pub(crate) running: AtomicBool,
+    pub(crate) loop_handle: Mutex<Option<thread::JoinHandle<()>>>,
+    pub(crate) control_handle: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 /// CoreAgent 的运行状态快照，用于健康检查和监控
@@ -377,153 +235,6 @@ impl CoreAgent {
             loop_handle: Mutex::new(None),
             control_handle: Mutex::new(None),
         }
-    }
-
-    /// 设置工具注册中心（启用 agentic loop）
-    pub fn set_tool_registry(&mut self, registry: ToolRegistry) {
-        self.tool_registry = Arc::new(registry);
-    }
-
-    /// 设置权限检查器
-    pub fn set_permission_checker(&mut self, checker: PermissionChecker) {
-        self.permission_checker = Some(Arc::new(checker));
-    }
-
-    /// 设置钩子注册中心
-    pub fn set_hook_registry(&mut self, registry: HookRegistry) {
-        self.hook_registry = Some(Arc::new(registry));
-    }
-
-    /// 注册所有内建工具（启用 agentic loop 客户端工具执行）
-    ///
-    /// 调用方按需决定是否启用；不自动注册，保留 orchestrator 路径作为默认行为。
-    pub fn register_builtin_tools(&mut self) {
-        let registry = Arc::get_mut(&mut self.tool_registry)
-            .expect("cannot mutate shared tool_registry — ensure no other Arc references exist");
-        crate::tools::builtins::register_all(registry);
-    }
-
-    /// 启动智能体：启动 WorkerPool，并创建两个后台线程：
-    /// 1. 控制信号监听线程（处理 Shutdown / Pause / Resume）
-    /// 2. 入站消息循环线程（从 Bus 接收并处理消息）
-    pub fn start(self: &Arc<Self>) {
-        if self.running.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        self.worker_pool.start();
-        self.orchestrator.start();
-
-        // Control signal listener
-        let agent_ctrl = Arc::clone(self);
-        let ctrl_handle = thread::spawn(move || {
-            let control_rx = agent_ctrl.bus.control_receiver();
-            while agent_ctrl.running.load(Ordering::SeqCst) {
-                match control_rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(msg) => match msg.signal {
-                        ControlSignal::Shutdown => {
-                            agent_ctrl.running.store(false, Ordering::SeqCst);
-                            break;
-                        }
-                        ControlSignal::Pause => {
-                            agent_ctrl.metrics.counter_inc("agent.paused");
-                        }
-                        ControlSignal::Resume => {
-                            agent_ctrl.metrics.counter_inc("agent.resumed");
-                        }
-                        _ => {}
-                    },
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                        if agent_ctrl.bus.is_closed() {
-                            break;
-                        }
-                    }
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-                }
-            }
-        });
-
-        // Inbound message loop
-        let agent = Arc::clone(self);
-        let handle = thread::spawn(move || {
-            let inbound_rx = agent.bus.inbound_receiver();
-            while agent.running.load(Ordering::SeqCst) {
-                match inbound_rx.recv_timeout(Duration::from_millis(25)) {
-                    Ok(msg) => agent.process_inbound_message(msg),
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                        if agent.bus.is_closed() {
-                            break;
-                        }
-                    }
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-                }
-            }
-        });
-        *self.loop_handle.lock() = Some(handle);
-        *self.control_handle.lock() = Some(ctrl_handle);
-    }
-
-    /// 停止智能体，关闭 WorkerPool 并等待后台线程退出
-    pub fn stop(&self) {
-        if !self.running.swap(false, Ordering::SeqCst) {
-            return;
-        }
-        self.worker_pool.stop();
-        self.orchestrator.stop();
-        if let Some(handle) = self.loop_handle.lock().take() {
-            let _ = handle.join();
-        }
-        if let Some(handle) = self.control_handle.lock().take() {
-            let _ = handle.join();
-        }
-    }
-
-    pub fn is_running(&self) -> bool {
-        self.running.load(Ordering::SeqCst)
-    }
-
-    pub fn status(&self) -> CoreAgentStatus {
-        let memory = self.memory.lock();
-        CoreAgentStatus {
-            status: if self.is_running() {
-                "running"
-            } else {
-                "stopped"
-            }
-            .into(),
-            sessions_count: memory.len(),
-            worker_pool: self.worker_pool.status(),
-            context_status: self.context_manager.status().status,
-            cache_entries: self.result_cache.stats().entry_count,
-            metrics: self.metrics.snapshot(),
-            recent_sessions: memory.values().rev().take(5).cloned().collect(),
-            failures: self.emitter.failures_snapshot(),
-            runtime_timeline: self.emitter.timeline_snapshot(),
-            recent_execution_summaries: self.emitter.execution_summaries_snapshot(),
-            tool_count: self.tool_registry.len(),
-            pre_hook_count: self
-                .hook_registry
-                .as_ref()
-                .map(|registry| registry.pre_hook_count())
-                .unwrap_or(0),
-            post_hook_count: self
-                .hook_registry
-                .as_ref()
-                .map(|registry| registry.post_hook_count())
-                .unwrap_or(0),
-        }
-    }
-
-    pub fn runtime_state_snapshot(&self) -> RuntimeStateSnapshot {
-        self.runtime_state_store.snapshot()
-    }
-
-    pub fn runtime_projection_snapshot(&self) -> RuntimeProjectionView {
-        build_projection(&self.runtime_state_store.snapshot())
-    }
-
-    #[doc(hidden)]
-    pub fn evict_resume_state_cache_for_testing(&self, job_id: &str) {
-        self.suspension.evict_cache_for_testing(job_id);
     }
 
     pub(crate) fn upsert_runtime_run(
@@ -769,7 +480,7 @@ impl CoreAgent {
     ) -> ContextAssemblyResult {
         let progress = self
             .requirement
-            .ensure(inbound_msg, DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS);
+            .ensure(inbound_msg, super::context_types::DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS);
         assemble_context(ContextAssemblyRequest {
             mode,
             inbound_id: inbound_msg.id.clone(),
@@ -811,167 +522,4 @@ impl CoreAgent {
                 .cloned()
         })
     }
-}
-
-/// 对外门面智能体，封装 CoreAgent 提供简洁的公共 API。
-/// 使用者通过 Agent::create 创建实例，调用 start/stop 控制生命周期，
-/// 通过 process_message 投递消息。
-pub struct Agent {
-    pub bus: Arc<Bus>,
-    pub opencode_client: SdkClient,
-    pub session_manager: Arc<SessionStore>,
-    running: AtomicBool,
-    core_agent: Arc<CoreAgent>,
-}
-
-/// Agent 的运行状态快照
-#[derive(Debug, Clone, PartialEq)]
-pub struct AgentStatus {
-    pub running: bool,
-    pub core: CoreAgentStatus,
-}
-
-impl Agent {
-    /// 创建 Agent 实例，各参数均可选，使用合理默认值：
-    /// - client: 默认连接 127.0.0.1:9711
-    /// - executor: 默认使用 SdkTaskExecutor
-    pub fn create(
-        bus: Arc<Bus>,
-        client: Option<SdkClient>,
-        session_manager: Option<Arc<SessionStore>>,
-        executor: Option<Arc<dyn TaskExecutor>>,
-    ) -> Self {
-        let opencode_client = client.unwrap_or_else(|| {
-            SdkClient::with_options("http://127.0.0.1:9711", anima_sdk::ClientOptions::default())
-        });
-        let session_manager = session_manager.unwrap_or_else(|| Arc::new(SessionStore::new()));
-        let core_agent = Arc::new(CoreAgent::new(
-            bus.clone(),
-            opencode_client.clone(),
-            Some(session_manager.clone()),
-            executor.unwrap_or_else(|| Arc::new(SdkTaskExecutor)),
-            None,
-        ));
-        Self {
-            bus,
-            opencode_client,
-            session_manager,
-            running: AtomicBool::new(false),
-            core_agent,
-        }
-    }
-
-    pub fn with_runtime_state_store(
-        bus: Arc<Bus>,
-        client: Option<SdkClient>,
-        session_manager: Option<Arc<SessionStore>>,
-        executor: Option<Arc<dyn TaskExecutor>>,
-        runtime_state_store: SharedRuntimeStateStore,
-    ) -> Self {
-        let opencode_client = client.unwrap_or_else(|| {
-            SdkClient::with_options("http://127.0.0.1:9711", anima_sdk::ClientOptions::default())
-        });
-        let session_manager = session_manager.unwrap_or_else(|| Arc::new(SessionStore::new()));
-        let core_agent = Arc::new(CoreAgent::new_with_runtime_state_store(
-            bus.clone(),
-            opencode_client.clone(),
-            Some(session_manager.clone()),
-            executor.unwrap_or_else(|| Arc::new(SdkTaskExecutor)),
-            None,
-            runtime_state_store,
-        ));
-        Self {
-            bus,
-            opencode_client,
-            session_manager,
-            running: AtomicBool::new(false),
-            core_agent,
-        }
-    }
-
-    pub fn start(&self) {
-        if !self.running.swap(true, Ordering::SeqCst) {
-            self.core_agent.start();
-        }
-    }
-
-    pub fn stop(&self) {
-        self.running.store(false, Ordering::SeqCst);
-        self.core_agent.stop();
-    }
-
-    pub fn is_running(&self) -> bool {
-        self.running.load(Ordering::SeqCst)
-    }
-
-    /// 将消息投递到 Bus，由 CoreAgent 的消息循环异步处理
-    pub fn process_message(&self, inbound_msg: InboundMessage) {
-        let _ = self.bus.publish_inbound(inbound_msg);
-    }
-
-    pub fn register_builtin_tools(&mut self) {
-        let core = Arc::get_mut(&mut self.core_agent)
-            .expect("cannot mutate shared core_agent — ensure no other Arc references exist");
-        core.register_builtin_tools();
-    }
-
-    pub fn set_hook_registry(&mut self, registry: HookRegistry) {
-        let core = Arc::get_mut(&mut self.core_agent)
-            .expect("cannot mutate shared core_agent — ensure no other Arc references exist");
-        core.set_hook_registry(registry);
-    }
-
-    pub fn set_permission_checker(&mut self, checker: PermissionChecker) {
-        let core = Arc::get_mut(&mut self.core_agent)
-            .expect("cannot mutate shared core_agent — ensure no other Arc references exist");
-        core.set_permission_checker(checker);
-    }
-
-    pub fn core_agent(&self) -> Arc<CoreAgent> {
-        Arc::clone(&self.core_agent)
-    }
-
-    pub fn worker_pool(&self) -> Arc<WorkerPool> {
-        Arc::clone(&self.core_agent.worker_pool)
-    }
-
-    pub fn status(&self) -> AgentStatus {
-        AgentStatus {
-            running: self.is_running(),
-            core: self.core_agent.status(),
-        }
-    }
-
-    pub fn pending_question_for(&self, job_id: &str) -> Option<PendingQuestion> {
-        self.core_agent.pending_question_for(job_id)
-    }
-
-    pub fn submit_question_answer(
-        &self,
-        job_id: &str,
-        answer: QuestionAnswerInput,
-    ) -> Result<PendingQuestion, String> {
-        self.core_agent.submit_question_answer(job_id, answer)
-    }
-
-    pub fn runtime_projection_snapshot(&self) -> RuntimeProjectionView {
-        self.core_agent.runtime_projection_snapshot()
-    }
-
-    #[doc(hidden)]
-    pub fn evict_resume_state_cache_for_testing(&self, job_id: &str) {
-        self.core_agent.evict_resume_state_cache_for_testing(job_id);
-    }
-}
-
-/// 生成会话内存的 key，格式为 "channel:chat_id"
-pub(crate) fn memory_key(inbound_msg: &InboundMessage) -> String {
-    format!(
-        "{}:{}",
-        inbound_msg.channel,
-        inbound_msg
-            .chat_id
-            .clone()
-            .unwrap_or_else(|| inbound_msg.id.clone())
-    )
 }

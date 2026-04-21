@@ -8,7 +8,8 @@ use crate::execution::driver::{
 };
 use crate::support::{make_api_cache_key, now_ms};
 
-use super::core::{CoreAgent, InitialExecutionOutcome, InitialPlanDispatchContext};
+use super::context_types::{InitialExecutionOutcome, InitialPlanDispatchContext};
+use super::core::CoreAgent;
 use super::runtime_error::RuntimeError;
 use super::runtime_helpers::truncate_preview;
 use super::runtime_ids::execution_kind_label;

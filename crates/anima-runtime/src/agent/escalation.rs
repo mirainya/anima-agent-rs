@@ -3,7 +3,8 @@ use serde_json::{json, Value};
 use crate::bus::InboundMessage;
 use crate::tasks::SubtaskBlockedReason;
 
-use super::core::{CoreAgent, ExecutionContext};
+use super::context_types::ExecutionContext;
+use super::core::CoreAgent;
 
 impl CoreAgent {
     pub(crate) fn try_llm_resolve_blocked(

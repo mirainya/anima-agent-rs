@@ -19,7 +19,7 @@ use crate::tasks::{
 };
 use crate::tools::execution::ToolInvocationRecord;
 
-use super::core::RuntimeTaskPhase;
+use super::context_types::RuntimeTaskPhase;
 use super::runtime_helpers::runtime_message_id;
 use super::runtime_ids::{runtime_run_id, runtime_task_id};
 

@@ -9,7 +9,7 @@ use crate::runtime::{RuntimeDomainEvent, RuntimeStateSnapshot, SharedRuntimeStat
 use crate::support::now_ms;
 use crate::tasks::{RequirementRecord, RequirementStatus, TaskStatus};
 
-use super::core::RuntimeTaskPhase;
+use super::context_types::RuntimeTaskPhase;
 use super::event_emitter::RuntimeEventEmitter;
 use super::runtime_ids::{runtime_requirement_id, runtime_run_id};
 
