@@ -51,7 +51,7 @@ impl TaskExecutor for StreamingApiCallExecutor {
         _client: &SdkClient,
         _session_id: &str,
         _content: Value,
-    ) -> Result<anima_runtime::agent::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
+    ) -> Result<anima_runtime::worker::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
         let idx = self.streaming_call_count.fetch_add(1, Ordering::SeqCst);
         let lines = self
             .sse_sequences

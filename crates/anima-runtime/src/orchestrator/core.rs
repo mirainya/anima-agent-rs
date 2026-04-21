@@ -7,12 +7,12 @@
 //! - 同时提供静态方法 `execute_plan` / `execute_single_task` 用于直接执行 ExecutionPlan
 
 use crate::agent::detect_pending_question;
-use crate::agent::executor::TaskExecutor;
+use crate::worker::executor::TaskExecutor;
 use crate::agent::types::{
     make_task, make_task_result, ExecutionPlan, ExecutionPlanKind, MakeTask, MakeTaskResult, Task,
     TaskResult,
 };
-use crate::agent::worker::WorkerPool;
+use crate::worker::WorkerPool;
 use crate::orchestrator::parallel_pool::ParallelPool;
 use crate::orchestrator::specialist_pool::SpecialistPool;
 use crate::runtime::{RuntimeDomainEvent, SharedRuntimeStateStore};

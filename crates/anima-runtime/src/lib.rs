@@ -23,6 +23,8 @@ pub mod runtime;
 pub mod tasks;
 /// transcript 领域核心：消息记录、配对与追加
 pub mod transcript;
+/// Worker 域：任务执行器与工作者池
+pub mod worker;
 
 /// 消息总线，入站/出站消息的发布订阅机制
 pub mod bus;

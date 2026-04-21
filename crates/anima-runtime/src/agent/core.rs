@@ -12,10 +12,10 @@ use super::context_types::{
     SessionPreparation,
 };
 use super::event_emitter::RuntimeEventEmitter;
-use super::executor::TaskExecutor;
+use crate::worker::executor::TaskExecutor;
 use super::requirement::RequirementCoordinator;
 use super::runtime_helpers::truncate_preview;
-use super::worker::{WorkerPool, WorkerPoolStatus};
+use crate::worker::{WorkerPool, WorkerPoolStatus};
 use crate::bus::{
     make_internal, make_outbound, Bus, InboundMessage, MakeInternal, MakeOutbound, OutboundMessage,
 };

@@ -1,6 +1,6 @@
-use anima_runtime::agent::executor::TaskExecutor;
+use anima_runtime::worker::executor::TaskExecutor;
 use anima_runtime::agent::types::{make_task, MakeTask};
-use anima_runtime::agent::worker::WorkerPool;
+use anima_runtime::worker::WorkerPool;
 use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::Arc;

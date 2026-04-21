@@ -1,7 +1,7 @@
-use anima_runtime::agent::executor::TaskExecutor;
+use anima_runtime::worker::executor::TaskExecutor;
 use anima_runtime::classifier::router::*;
 use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
-use anima_runtime::agent::worker::WorkerPool;
+use anima_runtime::worker::WorkerPool;
 use anima_runtime::bus::message::{make_inbound, MakeInbound};
 use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};

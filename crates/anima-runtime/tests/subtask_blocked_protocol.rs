@@ -580,8 +580,8 @@ fn cleared_question_no_longer_returned_by_question_state() {
 
 #[test]
 fn worker_extracts_blocked_reason_from_response() {
-    use anima_runtime::agent::executor::TaskExecutor;
-    use anima_runtime::agent::worker::WorkerPool;
+    use anima_runtime::worker::executor::TaskExecutor;
+    use anima_runtime::worker::WorkerPool;
     use anima_runtime::agent::{make_task, MakeTask};
     use anima_sdk::facade::Client as SdkClient;
     use serde_json::json;
@@ -648,8 +648,8 @@ fn worker_extracts_blocked_reason_from_response() {
 
 #[test]
 fn orchestrator_propagates_blocked_reason_on_final_result() {
-    use anima_runtime::agent::executor::TaskExecutor;
-    use anima_runtime::agent::worker::WorkerPool;
+    use anima_runtime::worker::executor::TaskExecutor;
+    use anima_runtime::worker::WorkerPool;
     use anima_runtime::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
     use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
     use anima_runtime::runtime::RuntimeStateStore;

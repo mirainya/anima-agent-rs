@@ -8,7 +8,7 @@
 //! - 同时保留了旧版 name→pool 的简单映射接口（向后兼容）
 
 use crate::agent::types::{make_task_result, MakeTaskResult, Task, TaskResult};
-use crate::agent::worker::WorkerPool;
+use crate::worker::WorkerPool;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde_json::{json, Value};

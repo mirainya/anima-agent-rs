@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::agent::runtime_error::{RuntimeError, RuntimeErrorKind, RuntimeErrorStage};
 use crate::agent::types::{make_task, MakeTask, Task, TaskResult};
-use crate::agent::worker::WorkerPool;
+use crate::worker::WorkerPool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionKind {

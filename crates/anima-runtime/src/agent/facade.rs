@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::core::{CoreAgent, CoreAgentStatus};
-use super::executor::{SdkTaskExecutor, TaskExecutor};
+use crate::worker::{SdkTaskExecutor, TaskExecutor};
 use super::suspension::{PendingQuestion, QuestionAnswerInput};
-use super::worker::WorkerPool;
+use crate::worker::WorkerPool;
 use crate::bus::{Bus, InboundMessage};
 use crate::channel::SessionStore;
 use crate::hooks::HookRegistry;

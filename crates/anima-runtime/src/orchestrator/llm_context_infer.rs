@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use super::core::{AgentOrchestrator, LoweredTask, OrchestrationPlan};
-use crate::agent::executor::TaskExecutor;
+use crate::worker::executor::TaskExecutor;
 use anima_sdk::facade::Client as SdkClient;
 
 #[derive(Debug, Deserialize)]

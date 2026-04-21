@@ -21,7 +21,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::executor::{TaskExecutor, TaskExecutorError};
-use super::types::{make_task_result, MakeTaskResult, Task, TaskResult};
+use crate::agent::types::{make_task_result, MakeTaskResult, Task, TaskResult};
 use crate::streaming::executor::{consume_runtime_stream, RuntimeStreamEvent};
 use crate::streaming::types::{ContentBlock, ContentDelta};
 use crate::support::now_ms;
@@ -1019,8 +1019,8 @@ impl ExecuteResult {
 
 fn classify_error_kind(error: &TaskExecutorError) -> &'static str {
     match error.kind {
-        super::runtime_error::RuntimeErrorKind::UpstreamTimeout
-        | super::runtime_error::RuntimeErrorKind::ToolTimeout => "timeout",
+        crate::agent::runtime_error::RuntimeErrorKind::UpstreamTimeout
+        | crate::agent::runtime_error::RuntimeErrorKind::ToolTimeout => "timeout",
         _ => {
             let lower = error.internal_message.to_ascii_lowercase();
             if lower.contains("timeout") || lower.contains("timed out") {

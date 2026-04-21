@@ -1,6 +1,6 @@
 //! 集成测试：Agentic Loop 上下文压缩
 
-use anima_runtime::agent::executor::TaskExecutor;
+use anima_runtime::worker::executor::TaskExecutor;
 use anima_runtime::execution::agentic_loop::{
     run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome,
 };

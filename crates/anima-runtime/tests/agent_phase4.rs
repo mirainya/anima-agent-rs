@@ -90,7 +90,7 @@ impl TaskExecutor for StreamingSequenceExecutor {
         client: &SdkClient,
         session_id: &str,
         content: Value,
-    ) -> Result<anima_runtime::agent::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
+    ) -> Result<anima_runtime::worker::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
         let response = self.send_prompt(client, session_id, content)?;
         Ok(Box::new(response_to_sse_lines(&response).into_iter().map(Ok)))
     }

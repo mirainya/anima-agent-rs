@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::thread;
 use uuid::Uuid;
 
-use crate::agent::executor::TaskExecutor;
+use crate::worker::executor::TaskExecutor;
 use crate::agent::runtime_error::{RuntimeError, RuntimeErrorKind, RuntimeErrorStage};
 use crate::hooks::HookRegistry;
 use crate::messages::compact::{compact_if_needed, CompactConfig};

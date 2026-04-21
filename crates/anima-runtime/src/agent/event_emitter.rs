@@ -70,7 +70,7 @@ impl RuntimeEventEmitter {
         &self,
         event: &str,
         inbound_msg: &InboundMessage,
-        worker_snapshots: &[crate::agent::worker::WorkerStatus],
+        worker_snapshots: &[crate::worker::WorkerStatus],
         task_type: &str,
     ) {
         for w in worker_snapshots {

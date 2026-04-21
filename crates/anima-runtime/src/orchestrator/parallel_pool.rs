@@ -6,7 +6,7 @@
 //! - 同时保留了向后兼容的简单 `execute` 接口
 
 use crate::agent::types::{make_task_result, MakeTaskResult, Task, TaskResult};
-use crate::agent::worker::WorkerPool;
+use crate::worker::WorkerPool;
 use crate::support::now_ms;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
