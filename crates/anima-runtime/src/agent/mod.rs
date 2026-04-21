@@ -2,6 +2,7 @@
 
 pub mod agentic_loop_runner;
 pub mod core;
+pub mod escalation;
 pub mod event_emitter;
 pub mod executor;
 pub mod inbound_pipeline;

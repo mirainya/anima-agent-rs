@@ -809,6 +809,15 @@ impl CoreAgent {
                 }
                 self.emitter
                     .append_subtask_blocked_transcript(inbound_msg, &reason, false);
+                if let Some(resolved) =
+                    self.try_llm_resolve_blocked(inbound_msg, exec_ctx, &reason)
+                {
+                    self.emitter
+                        .append_subtask_blocked_transcript(inbound_msg, &reason, true);
+                    return self.continue_with_auto_resolved(
+                        inbound_msg, exec_ctx, &reason, &resolved,
+                    );
+                }
                 self.suspension.register_subtask_blocked(
                     &inbound_msg.id,
                     inbound_msg,
