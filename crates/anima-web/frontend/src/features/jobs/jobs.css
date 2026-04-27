@@ -6,6 +6,8 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .chat-turn {
@@ -206,6 +208,69 @@
 .chat-question-prompt {
   font-size: 13px;
   line-height: 1.5;
+}
+
+.chat-question-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-question-option-btn {
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.chat-question-option-btn:hover {
+  background: var(--hover-bg);
+  border-color: var(--accent);
+}
+
+.chat-question-option-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-question-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-question-input {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.chat-question-input:focus {
+  border-color: var(--accent);
+}
+
+.chat-question-submit {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: none;
+  background: var(--btn-gradient);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chat-question-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Streaming output */

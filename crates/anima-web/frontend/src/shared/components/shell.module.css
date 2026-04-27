@@ -40,3 +40,22 @@
     display: none;
   }
 }
+
+.conn-connecting,
+.conn-disconnected {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+.conn-connecting {
+  background: var(--yellow);
+  color: #1a1a1a;
+}
+
+.conn-disconnected {
+  background: var(--red);
+  color: #fff;
+}

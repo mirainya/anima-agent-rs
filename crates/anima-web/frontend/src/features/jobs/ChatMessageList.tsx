@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { JobView, SessionSummary } from '@/shared/utils/types';
 import { formatTimestamp, shortId, formatDurationShort } from '@/shared/utils/format';
 import { statusLabel, statusTone } from '@/shared/utils/jobStatus';
 import { PlanApprovalPanel } from './PlanApprovalPanel';
+import { useQuestionAnswerMutation, type QuestionAnswerPayload } from '@/shared/api/questionAnswer';
 import { useStreamStore } from '@/shared/state/useStreamStore';
 import './jobs.css';
 
@@ -342,6 +343,62 @@ function StreamingOutput({ jobId }: { jobId: string }) {
   );
 }
 
+function QuestionAnswerForm({ job }: { job: JobView }) {
+  const q = job.pending_question;
+  if (!q || q.answer_summary) return null;
+
+  const mutation = useQuestionAnswerMutation(job.job_id);
+  const [text, setText] = useState('');
+  const options = q.options ?? [];
+
+  const submit = (answer: string, answerType: QuestionAnswerPayload['answer_type']) => {
+    mutation.mutate({
+      question_id: q.question_id,
+      source: 'user',
+      answer_type: answerType,
+      answer,
+    });
+  };
+
+  if (options.length > 0) {
+    return (
+      <div className="chat-question-actions">
+        {options.map((opt, i) => (
+          <button
+            key={i}
+            type="button"
+            className="chat-question-option-btn"
+            disabled={mutation.isPending}
+            onClick={() => submit(opt, 'choice')}
+          >
+            {opt}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  const onSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (text.trim()) submit(text.trim(), 'text');
+  };
+
+  return (
+    <form className="chat-question-input-row" onSubmit={onSubmit}>
+      <input
+        className="chat-question-input"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="输入回答..."
+        disabled={mutation.isPending}
+      />
+      <button type="submit" className="chat-question-submit" disabled={mutation.isPending || !text.trim()}>
+        回答
+      </button>
+    </form>
+  );
+}
+
 function AgentResponseCard({ job, childJobs }: { job: JobView; childJobs: JobView[] }) {
   const tone = statusTone(job.status);
   const label = statusLabel(job.status);
@@ -409,8 +466,10 @@ function AgentResponseCard({ job, childJobs }: { job: JobView; childJobs: JobVie
           <div className="chat-flow-step-label">等待回答</div>
           <div className="chat-question-box">
             <div className="chat-question-prompt">{job.pending_question.prompt}</div>
-            {job.pending_question.answer_summary && (
+            {job.pending_question.answer_summary ? (
               <div className="chat-meta">已回答：{job.pending_question.answer_summary}</div>
+            ) : (
+              <QuestionAnswerForm job={job} />
             )}
           </div>
         </div>
@@ -455,6 +514,23 @@ interface ChatMessageListProps {
 }
 
 export function ChatMessageList({ jobs, selectedSession, selectedSessionId }: ChatMessageListProps) {
+  const endRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const userScrolledUp = useRef(false);
+  const streamVersion = useStreamStore((s) => s.version);
+
+  const onScroll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    userScrolledUp.current = el.scrollHeight - el.scrollTop - el.clientHeight > 100;
+  }, []);
+
+  useEffect(() => {
+    if (!userScrolledUp.current) {
+      endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [jobs, streamVersion]);
+
   if (!selectedSessionId) {
     return (
       <div className="chat-empty-state">
@@ -477,7 +553,7 @@ export function ChatMessageList({ jobs, selectedSession, selectedSessionId }: Ch
   }
 
   return (
-    <div className="chat-message-list">
+    <div className="chat-message-list" ref={containerRef} onScroll={onScroll}>
       {displayJobs.map((job) => {
         const childJobs = jobs.filter((j) => j.parent_job_id === job.job_id);
         return (
@@ -496,6 +572,7 @@ export function ChatMessageList({ jobs, selectedSession, selectedSessionId }: Ch
           </div>
         );
       })}
+      <div ref={endRef} />
     </div>
   );
 }

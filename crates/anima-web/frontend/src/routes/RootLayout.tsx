@@ -4,10 +4,10 @@ import { useEventsSync } from '@/shared/api/events';
 import { SessionSidebar } from '@/features/sessions/SessionSidebar';
 
 export function RootLayout() {
-  useEventsSync();
+  const connectionState = useEventsSync();
 
   return (
-    <AppShell sidebar={<SessionSidebar />}>
+    <AppShell sidebar={<SessionSidebar />} connectionState={connectionState}>
       <Outlet />
     </AppShell>
   );
