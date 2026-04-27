@@ -5,10 +5,19 @@ import { statusLabel, statusTone } from '@/shared/utils/jobStatus';
 import { PlanApprovalPanel } from './PlanApprovalPanel';
 import { useQuestionAnswerMutation, type QuestionAnswerPayload } from '@/shared/api/questionAnswer';
 import { useStreamStore } from '@/shared/state/useStreamStore';
+import { MarkdownContent } from '@/shared/components/MarkdownContent';
 import './jobs.css';
 
 function getUserMessage(job: JobView): string {
   return job.user_content?.trim() || '（无消息内容）';
+}
+
+interface ToolCardData {
+  toolName: string;
+  input?: string | null;
+  result?: string | null;
+  error?: string | null;
+  durationMs?: number | null;
 }
 
 interface TimelineStep {
@@ -17,6 +26,7 @@ interface TimelineStep {
   tone: 'neutral' | 'success' | 'failed' | 'warn' | 'active';
   detail?: string | null;
   expandable?: string | null;
+  toolCard?: ToolCardData | null;
 }
 
 function buildTimeline(job: JobView): TimelineStep[] {
@@ -214,6 +224,47 @@ function buildTimeline(job: JobView): TimelineStep[] {
         });
         break;
 
+      case 'tool_execution_started':
+        steps.push({
+          label: `工具：${(p.tool_name as string) || '未知'}`,
+          time: e.recorded_at_ms,
+          tone: 'active',
+          toolCard: {
+            toolName: (p.tool_name as string) || '未知',
+            input: p.details ? JSON.stringify((p.details as Record<string, unknown>).tool_input, null, 2) : null,
+          },
+        });
+        break;
+
+      case 'tool_execution_finished': {
+        const startedAt = p.started_at_ms as number | undefined;
+        const finishedAt = p.finished_at_ms as number | undefined;
+        const dur = startedAt && finishedAt ? finishedAt - startedAt : null;
+        steps.push({
+          label: `工具完成：${(p.tool_name as string) || '未知'}`,
+          time: e.recorded_at_ms,
+          tone: 'success',
+          toolCard: {
+            toolName: (p.tool_name as string) || '未知',
+            result: (p.result_summary as string) || null,
+            durationMs: dur,
+          },
+        });
+        break;
+      }
+
+      case 'tool_execution_failed':
+        steps.push({
+          label: `工具失败：${(p.tool_name as string) || '未知'}`,
+          time: e.recorded_at_ms,
+          tone: 'failed',
+          toolCard: {
+            toolName: (p.tool_name as string) || '未知',
+            error: (p.error_summary as string) || (p.details as Record<string, unknown>)?.error as string || null,
+          },
+        });
+        break;
+
       // Skip internal events: sdk_send_prompt_started, worker_api_call_started,
       // worker_api_call_finished, sdk_send_prompt_finished, cache_miss,
       // worker_task_cleanup_finished, etc.
@@ -248,13 +299,35 @@ function Collapsible({ title, defaultOpen, children }: { title: string; defaultO
 
 function ExpandableText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
-  if (text.length <= 300) return <div className="chat-timeline-detail">{text}</div>;
+  if (text.length <= 300) return <div className="chat-timeline-detail"><MarkdownContent content={text} /></div>;
   return (
     <div className="chat-timeline-detail">
-      {expanded ? text : text.slice(0, 300) + '...'}
+      <MarkdownContent content={expanded ? text : text.slice(0, 300) + '...'} />
       <button type="button" className="chat-expand-btn" onClick={() => setExpanded(!expanded)}>
         {expanded ? '收起' : '展开全文'}
       </button>
+    </div>
+  );
+}
+
+function ToolCard({ data }: { data: ToolCardData }) {
+  return (
+    <div className="chat-tool-card">
+      <div className="chat-tool-card-name">{data.toolName}</div>
+      {data.input && (
+        <Collapsible title="输入">
+          <pre className="chat-tool-card-pre">{data.input}</pre>
+        </Collapsible>
+      )}
+      {data.result && (
+        <Collapsible title="结果">
+          <pre className="chat-tool-card-pre">{data.result}</pre>
+        </Collapsible>
+      )}
+      {data.error && <div className="chat-tool-card-error">{data.error}</div>}
+      {data.durationMs != null && (
+        <div className="chat-tool-card-meta">{formatDurationShort(data.durationMs)}</div>
+      )}
     </div>
   );
 }
@@ -273,6 +346,7 @@ function EventTimeline({ steps }: { steps: TimelineStep[] }) {
               <span className="chat-timeline-time">{formatTimestamp(step.time)}</span>
             </div>
             {step.detail && <div className="chat-timeline-detail">{step.detail}</div>}
+            {step.toolCard && <ToolCard data={step.toolCard} />}
             {step.expandable && step.expandable !== step.detail && (
               <Collapsible title="查看完整内容">
                 <ExpandableText text={step.expandable} />
@@ -335,7 +409,11 @@ function StreamingOutput({ jobId }: { jobId: string }) {
               {kindLabel}
               {block.active && <span className="chat-stream-cursor" />}
             </div>
-            <div className="chat-stream-text">{block.text}</div>
+            {block.kind === 'text' ? (
+              <MarkdownContent content={block.text} />
+            ) : (
+              <div className="chat-stream-text">{block.text}</div>
+            )}
           </div>
         );
       })}
