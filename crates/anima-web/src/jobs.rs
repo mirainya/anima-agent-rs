@@ -1,7 +1,8 @@
 pub use crate::jobs_store::JobStore;
 pub use crate::jobs_types::{
     AcceptedJob, JobEventView, JobKind, JobReviewInput, JobReviewView, JobStatus, JobView,
-    OrchestrationView, QuestionView, ToolStateView, UserVerdict, WorkerTaskView,
+    OrchestrationView, PlanProposalView, PlanTaskView, QuestionView, ToolStateView, UserVerdict,
+    WorkerTaskView,
 };
 use crate::jobs_derive::{
     collect_recent_job_events, derive_job_hierarchy, derive_job_status,
@@ -11,7 +12,8 @@ use crate::jobs_derive::{
     summary_to_value,
 };
 use anima_runtime::agent::{
-    ExecutionSummary, RuntimeFailureSnapshot, RuntimeTimelineEvent, WorkerStatus,
+    ExecutionSummary, PendingQuestionSourceKind, RuntimeFailureSnapshot, RuntimeTimelineEvent,
+    WorkerStatus,
 };
 use anima_runtime::runtime::{
     build_projection, queued_current_step, RuntimeProjectionView, RuntimeStateSnapshot,
@@ -247,7 +249,25 @@ fn build_job_view(
         .map(|event| event.sender_id.clone())
         .or_else(|| accepted_job.as_ref().map(|job| job.sender_id.clone()))
         .unwrap_or_else(|| "web-user".into());
-    let user_content = accepted_job.as_ref().map(|job| job.user_content.clone());
+    let user_content = accepted_job
+        .as_ref()
+        .map(|job| job.user_content.clone())
+        .or_else(|| {
+            events.iter().find(|e| e.event == "message_received")
+                .and_then(|e| e.payload.get("content_preview"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            let run = runtime_run?;
+            runtime_snapshot.transcript.iter()
+                .find(|m| m.run_id == run.run_id && m.role == anima_runtime::messages::MessageRole::User)
+                .and_then(|m| m.blocks.first())
+                .and_then(|b| match b {
+                    anima_runtime::messages::ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+        });
 
     JobView {
         job_id: job_id.to_string(),
@@ -273,8 +293,34 @@ fn build_job_view(
         execution_summary: derived.execution_summary,
         failure: derived.failure_value,
         review,
+        pending_plan: derive_pending_plan(job_id, runtime_projection),
         orchestration: None,
     }
+}
+
+fn derive_pending_plan(job_id: &str, projection: &RuntimeProjectionView) -> Option<PlanProposalView> {
+    let question = projection.pending_questions.get(job_id)?;
+    if question.source_kind != PendingQuestionSourceKind::PlanApproval {
+        return None;
+    }
+    let raw = &question.raw_question;
+    let proposal_id = raw.get("proposal_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let summary = raw.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let tasks = raw.get("plan")
+        .and_then(|p| p.get("tasks"))
+        .and_then(|t| t.as_array())
+        .map(|arr| arr.iter().map(|t| PlanTaskView {
+            id: t.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            task_type: t.get("task_type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            payload: t.get("payload").cloned().unwrap_or_default(),
+        }).collect())
+        .unwrap_or_default();
+    Some(PlanProposalView {
+        proposal_id,
+        summary,
+        tasks,
+        proposed_at_ms: question.asked_at_ms,
+    })
 }
 
 fn derive_started_at_ms(

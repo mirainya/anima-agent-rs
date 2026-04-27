@@ -4,21 +4,162 @@
   box-sizing: border-box;
 }
 
-:root {
-  --bg: #08090a;
-  --panel: rgba(15, 17, 19, 0.84);
-  --panel-strong: rgba(8, 10, 16, 0.92);
-  --border: rgba(255, 255, 255, 0.08);
-  --text: #f8fafc;
-  --text2: #94a3b8;
-  --accent: #3b82f6;
-  --accent2: #8b5cf6;
-  --user-bg: #3b82f6;
-  --ai-bg: rgba(17, 24, 39, 0.92);
+/* ===== Pink (default) ===== */
+[data-theme="pink"], :root {
+  --bg: #fff5f7;
+  --bg-gradient-1: rgba(244, 114, 182, 0.08);
+  --bg-gradient-2: rgba(167, 139, 250, 0.05);
+  --bg-base: #fff5f7;
+  --panel: rgba(255, 255, 255, 0.75);
+  --panel-strong: rgba(255, 255, 255, 0.9);
+  --sidebar-bg: #fff5f9;
+  --sidebar-blur: 0;
+  --sidebar-shadow: rgba(244, 114, 182, 0.06);
+  --border: rgba(244, 114, 182, 0.15);
+  --border-strong: rgba(244, 114, 182, 0.28);
+  --text: #2d1b33;
+  --text2: #9b8a9e;
+  --accent: #ec4899;
+  --accent2: #a78bfa;
+  --user-bg: linear-gradient(135deg, #f472b6, #c084fc);
+  --ai-bg: rgba(255, 255, 255, 0.85);
   --green: #10b981;
   --red: #f43f5e;
   --yellow: #f59e0b;
-  --shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.45);
+  --glow: rgba(244, 114, 182, 0.1);
+  --scrollbar-thumb: rgba(244, 114, 182, 0.25);
+  --scrollbar-hover: rgba(244, 114, 182, 0.4);
+  --composer-bg: rgba(255, 255, 255, 0.8);
+  --composer-border: rgba(244, 114, 182, 0.2);
+  --composer-focus: rgba(244, 114, 182, 0.35);
+  --btn-gradient: linear-gradient(135deg, #f472b6, #c084fc);
+  --btn-shadow: rgba(244, 114, 182, 0.25);
+  --active-bg: linear-gradient(135deg, rgba(244, 114, 182, 0.1), rgba(167, 139, 250, 0.06));
+  --active-border: rgba(244, 114, 182, 0.22);
+  --hover-bg: rgba(244, 114, 182, 0.05);
+  --hover-border: rgba(244, 114, 182, 0.1);
+  --plan-bg: rgba(167, 139, 250, 0.06);
+  --plan-border: rgba(167, 139, 250, 0.2);
+  --plan-btn-bg: linear-gradient(135deg, rgba(244, 114, 182, 0.15), rgba(167, 139, 250, 0.1));
+  --plan-btn-border: rgba(244, 114, 182, 0.3);
+  --question-bg: rgba(245, 158, 11, 0.06);
+  --question-border: rgba(245, 158, 11, 0.15);
+}
+
+/* ===== Blue ===== */
+[data-theme="blue"] {
+  --bg: #f0f7ff;
+  --bg-gradient-1: rgba(59, 130, 246, 0.07);
+  --bg-gradient-2: rgba(99, 102, 241, 0.04);
+  --bg-base: #f0f7ff;
+  --sidebar-bg: #f5f9ff;
+  --sidebar-blur: 0;
+  --sidebar-shadow: rgba(59, 130, 246, 0.06);
+  --border: rgba(59, 130, 246, 0.12);
+  --border-strong: rgba(59, 130, 246, 0.25);
+  --text: #1a2332;
+  --text2: #7b8fa6;
+  --accent: #3b82f6;
+  --accent2: #6366f1;
+  --user-bg: linear-gradient(135deg, #3b82f6, #6366f1);
+  --ai-bg: rgba(255, 255, 255, 0.85);
+  --glow: rgba(59, 130, 246, 0.08);
+  --scrollbar-thumb: rgba(59, 130, 246, 0.2);
+  --scrollbar-hover: rgba(59, 130, 246, 0.35);
+  --composer-bg: rgba(255, 255, 255, 0.8);
+  --composer-border: rgba(59, 130, 246, 0.18);
+  --composer-focus: rgba(59, 130, 246, 0.3);
+  --btn-gradient: linear-gradient(135deg, #3b82f6, #6366f1);
+  --btn-shadow: rgba(59, 130, 246, 0.2);
+  --active-bg: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(99, 102, 241, 0.05));
+  --active-border: rgba(59, 130, 246, 0.2);
+  --hover-bg: rgba(59, 130, 246, 0.04);
+  --hover-border: rgba(59, 130, 246, 0.08);
+  --plan-bg: rgba(99, 102, 241, 0.05);
+  --plan-border: rgba(99, 102, 241, 0.18);
+  --plan-btn-bg: linear-gradient(135deg, rgba(59, 130, 246, 0.12), rgba(99, 102, 241, 0.08));
+  --plan-btn-border: rgba(59, 130, 246, 0.25);
+  --question-bg: rgba(245, 158, 11, 0.06);
+  --question-border: rgba(245, 158, 11, 0.15);
+}
+
+/* ===== Green ===== */
+[data-theme="green"] {
+  --bg: #f0fdf4;
+  --bg-gradient-1: rgba(16, 185, 129, 0.06);
+  --bg-gradient-2: rgba(52, 211, 153, 0.04);
+  --bg-base: #f0fdf4;
+  --sidebar-bg: #f5fdf8;
+  --sidebar-blur: 0;
+  --sidebar-shadow: rgba(16, 185, 129, 0.06);
+  --border: rgba(16, 185, 129, 0.12);
+  --border-strong: rgba(16, 185, 129, 0.25);
+  --text: #1a2e22;
+  --text2: #7b9e8a;
+  --accent: #10b981;
+  --accent2: #14b8a6;
+  --user-bg: linear-gradient(135deg, #10b981, #14b8a6);
+  --ai-bg: rgba(255, 255, 255, 0.85);
+  --glow: rgba(16, 185, 129, 0.08);
+  --scrollbar-thumb: rgba(16, 185, 129, 0.2);
+  --scrollbar-hover: rgba(16, 185, 129, 0.35);
+  --composer-bg: rgba(255, 255, 255, 0.8);
+  --composer-border: rgba(16, 185, 129, 0.18);
+  --composer-focus: rgba(16, 185, 129, 0.3);
+  --btn-gradient: linear-gradient(135deg, #10b981, #14b8a6);
+  --btn-shadow: rgba(16, 185, 129, 0.2);
+  --active-bg: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(20, 184, 166, 0.05));
+  --active-border: rgba(16, 185, 129, 0.2);
+  --hover-bg: rgba(16, 185, 129, 0.04);
+  --hover-border: rgba(16, 185, 129, 0.08);
+  --plan-bg: rgba(20, 184, 166, 0.05);
+  --plan-border: rgba(20, 184, 166, 0.18);
+  --plan-btn-bg: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(20, 184, 166, 0.08));
+  --plan-btn-border: rgba(16, 185, 129, 0.25);
+  --question-bg: rgba(245, 158, 11, 0.06);
+  --question-border: rgba(245, 158, 11, 0.15);
+}
+
+/* ===== Dark ===== */
+[data-theme="dark"] {
+  --bg: #0f0d1a;
+  --bg-gradient-1: rgba(244, 114, 182, 0.08);
+  --bg-gradient-2: rgba(167, 139, 250, 0.06);
+  --bg-base: #0f0d1a;
+  --panel: rgba(18, 14, 30, 0.85);
+  --panel-strong: rgba(12, 10, 22, 0.92);
+  --sidebar-bg: rgba(14, 10, 26, 0.6);
+  --sidebar-blur: blur(24px);
+  --sidebar-shadow: rgba(244, 114, 182, 0.04);
+  --border: rgba(244, 114, 182, 0.1);
+  --border-strong: rgba(244, 114, 182, 0.2);
+  --text: #f5f0ff;
+  --text2: #a89ec8;
+  --accent: #f472b6;
+  --accent2: #a78bfa;
+  --user-bg: linear-gradient(135deg, #f472b6, #a78bfa);
+  --ai-bg: rgba(22, 18, 38, 0.92);
+  --green: #34d399;
+  --red: #fb7185;
+  --yellow: #fbbf24;
+  --glow: rgba(244, 114, 182, 0.1);
+  --scrollbar-thumb: rgba(244, 114, 182, 0.3);
+  --scrollbar-hover: rgba(244, 114, 182, 0.5);
+  --composer-bg: rgba(22, 18, 38, 0.8);
+  --composer-border: rgba(244, 114, 182, 0.15);
+  --composer-focus: rgba(244, 114, 182, 0.3);
+  --btn-gradient: linear-gradient(135deg, #f472b6, #a78bfa);
+  --btn-shadow: rgba(244, 114, 182, 0.2);
+  --active-bg: linear-gradient(135deg, rgba(244, 114, 182, 0.08), rgba(167, 139, 250, 0.06));
+  --active-border: rgba(244, 114, 182, 0.18);
+  --hover-bg: rgba(244, 114, 182, 0.04);
+  --hover-border: rgba(244, 114, 182, 0.08);
+  --plan-bg: rgba(167, 139, 250, 0.06);
+  --plan-border: rgba(167, 139, 250, 0.25);
+  --plan-btn-bg: linear-gradient(135deg, rgba(244, 114, 182, 0.2), rgba(167, 139, 250, 0.15));
+  --plan-btn-border: rgba(244, 114, 182, 0.35);
+  --question-bg: rgba(245, 158, 11, 0.06);
+  --question-border: rgba(245, 158, 11, 0.15);
 }
 
 html,
@@ -28,14 +169,15 @@ body,
 }
 
 body {
-  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   background: var(--bg);
   color: var(--text);
   overflow: hidden;
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -46,75 +188,27 @@ button {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(162, 155, 254, 0.45) rgba(255, 255, 255, 0.04);
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 
 *::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 999px;
+  background: transparent;
 }
 
 *::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(162, 155, 254, 0.34), rgba(108, 92, 231, 0.3));
+  background: var(--scrollbar-thumb);
   border-radius: 999px;
-  border: 2px solid rgba(15, 15, 19, 0.92);
-  transition: background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(196, 191, 255, 0.56), rgba(134, 122, 240, 0.48));
-  border-color: rgba(20, 20, 30, 0.96);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 0 0 1px rgba(162, 155, 254, 0.08);
+  background: var(--scrollbar-hover);
 }
 
 *::-webkit-scrollbar-corner {
   background: transparent;
-}
-
-.sidebar-section-title {
-  font-size: 12px;
-  color: var(--text2);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 8px;
-}
-
-.sidebar-placeholder {
-  font-size: 13px;
-  color: var(--text2);
-}
-
-.message-input {
-  flex: 1;
-  min-width: 0;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--ai-bg);
-  color: var(--text);
-  padding: 8px 12px;
-  font-size: 13px;
-}
-
-.message-input:disabled {
-  opacity: 0.6;
-}
-
-.message-send-btn {
-  padding: 8px 14px;
-  border-radius: 999px;
-  border: none;
-  background: var(--accent);
-  color: #fff;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.message-send-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }

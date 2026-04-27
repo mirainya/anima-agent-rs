@@ -274,7 +274,7 @@ impl ContextStorage for FileStorage {
 
         let _ = std::fs::create_dir_all(&self.base_path);
         let path = self.file_path(key);
-        let _ = std::fs::write(&path, serde_json::to_string_pretty(&stored).unwrap());
+        let _ = std::fs::write(&path, serde_json::to_string_pretty(&stored).unwrap_or_default());
 
         self.metadata_cache
             .lock()

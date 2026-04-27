@@ -41,6 +41,35 @@ pub enum InternalMessageType {
     Event,
 }
 
+/// 内部消息的类型化载荷
+#[derive(Debug, Clone, PartialEq)]
+pub enum InternalPayload {
+    RuntimeEvent {
+        event: String,
+        message_id: String,
+        channel: String,
+        chat_id: Option<String>,
+        sender_id: String,
+        payload: Value,
+    },
+    WorkerStatus {
+        event: String,
+        worker_id: String,
+        status: String,
+        task_type: String,
+        channel: String,
+        message_id: String,
+        chat_id: Option<String>,
+    },
+    Raw(Value),
+}
+
+impl Default for InternalPayload {
+    fn default() -> Self {
+        Self::Raw(Value::Object(Default::default()))
+    }
+}
+
 /// 内部消息：组件间通信的载体
 #[derive(Debug, Clone, PartialEq)]
 pub struct InternalMessage {
@@ -50,7 +79,7 @@ pub struct InternalMessage {
     pub target: Option<String>,
     pub msg_type: InternalMessageType,
     pub priority: u8,
-    pub payload: Value,
+    pub payload: InternalPayload,
     pub metadata: Value,
     pub timestamp: u64,
     pub ttl: u64,

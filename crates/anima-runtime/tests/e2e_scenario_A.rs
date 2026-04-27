@@ -81,9 +81,8 @@ fn e2e_act2_single_turn_real_llm() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(make_client()),
         None,
-        Some(Arc::new(SdkTaskExecutor)),
+        Arc::new(SdkTaskExecutor::new(make_client())),
     );
     agent.start();
 
@@ -163,9 +162,8 @@ fn e2e_act3_multi_turn_session_reuse() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(client.clone()),
         None,
-        Some(Arc::new(SdkTaskExecutor)),
+        Arc::new(SdkTaskExecutor::new(make_client())),
     );
     agent.start();
 

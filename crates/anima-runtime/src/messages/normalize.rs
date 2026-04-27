@@ -2,7 +2,7 @@
 //!
 //! 对标 claude-code-main 的 `normalize_messages_for_api()`：过滤/清洗/合并消息列表。
 
-use super::types::{ApiMsg, InternalMsg, MessageRole};
+use super::types::{value_from_blocks, ApiMsg, InternalMsg, MessageRole};
 
 /// 将内部消息列表标准化为 API 消息列表
 ///
@@ -20,7 +20,7 @@ pub fn normalize_messages_for_api(messages: &[InternalMsg]) -> Vec<ApiMsg> {
 
         let api_msg = ApiMsg {
             role: msg.role.clone(),
-            content: msg.content.clone(),
+            content: value_from_blocks(&msg.blocks),
         };
 
         // 合并连续同角色消息
@@ -66,6 +66,7 @@ fn merge_content(existing: &mut serde_json::Value, new: &serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messages::types::ContentBlock;
     use serde_json::json;
 
     #[test]
@@ -73,7 +74,9 @@ mod tests {
         let msgs = vec![
             InternalMsg {
                 role: MessageRole::User,
-                content: json!("hello"),
+                blocks: vec![ContentBlock::Text {
+                    text: "hello".into(),
+                }],
                 message_id: "1".into(),
                 tool_use_id: None,
                 filtered: false,
@@ -81,7 +84,9 @@ mod tests {
             },
             InternalMsg {
                 role: MessageRole::Assistant,
-                content: json!("filtered"),
+                blocks: vec![ContentBlock::Text {
+                    text: "filtered".into(),
+                }],
                 message_id: "2".into(),
                 tool_use_id: None,
                 filtered: true,
@@ -98,7 +103,7 @@ mod tests {
         let msgs = vec![
             InternalMsg {
                 role: MessageRole::User,
-                content: json!("a"),
+                blocks: vec![ContentBlock::Text { text: "a".into() }],
                 message_id: "1".into(),
                 tool_use_id: None,
                 filtered: false,
@@ -106,7 +111,7 @@ mod tests {
             },
             InternalMsg {
                 role: MessageRole::User,
-                content: json!("b"),
+                blocks: vec![ContentBlock::Text { text: "b".into() }],
                 message_id: "2".into(),
                 tool_use_id: None,
                 filtered: false,

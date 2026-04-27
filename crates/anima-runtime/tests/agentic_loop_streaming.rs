@@ -1,6 +1,5 @@
 use anima_runtime::agent::TaskExecutor;
 use anima_runtime::agent::{make_task, MakeTask, WorkerPool};
-use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,23 +32,19 @@ impl StreamingApiCallExecutor {
 
 impl TaskExecutor for StreamingApiCallExecutor {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
+        &self,        _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         self.sync_call_count.fetch_add(1, Ordering::SeqCst);
         Ok(self.sync_response.clone())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "worker-stream-session"}))
     }
 
     fn send_prompt_streaming(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
+        &self,        _session_id: &str,
         _content: Value,
     ) -> Result<anima_runtime::worker::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
         let idx = self.streaming_call_count.fetch_add(1, Ordering::SeqCst);
@@ -70,8 +65,7 @@ fn make_pool(
     executor: Arc<dyn TaskExecutor>,
     events: Arc<Mutex<Vec<(String, Value)>>>,
 ) -> WorkerPool {
-    let client = SdkClient::new("http://127.0.0.1:9711");
-    WorkerPool::new(client, executor, Some(1), None, Some(200)).with_runtime_event_publisher(
+    WorkerPool::new(executor, Some(1), None, Some(200)).with_runtime_event_publisher(
         Arc::new(move |_trace_id, event, payload| {
             events.lock().unwrap().push((event.to_string(), payload));
         }),

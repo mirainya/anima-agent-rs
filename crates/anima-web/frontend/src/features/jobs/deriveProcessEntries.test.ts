@@ -282,6 +282,8 @@ describe('deriveProcessEntries', () => {
         tool_name: 'bash_exec',
         tool_use_id: 'toolu_123',
         phase: 'permission_requested',
+        invocation_status: 'pending',
+        status_text: 'awaiting permission',
         permission_state: 'requested',
         input_preview: '{"command":"ls"}',
         result_preview: null,

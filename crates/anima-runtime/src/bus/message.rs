@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 pub use anima_types::message::{
     ControlMessage, ControlSignal, InboundMessage, InternalMessage, InternalMessageType,
-    OutboundMessage,
+    InternalPayload, OutboundMessage,
 };
 
 /// 构建入站消息的参数
@@ -43,7 +43,7 @@ pub struct MakeInternal {
     pub target: Option<String>,
     pub msg_type: Option<InternalMessageType>,
     pub priority: Option<u8>,
-    pub payload: serde_json::Value,
+    pub payload: InternalPayload,
     pub metadata: Option<serde_json::Value>,
     pub ttl: Option<u64>,
     pub trace_id: Option<String>,

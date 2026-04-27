@@ -1,6 +1,8 @@
 use reqwest::blocking::Client as HttpClient;
 use std::time::Duration;
 
+use anima_types::config::SdkConfig;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientOptions {
     pub request_timeout_ms: u64,
@@ -106,5 +108,17 @@ impl Client {
     pub fn with_directory(mut self, directory: impl Into<String>) -> Self {
         self.directory = Some(directory.into());
         self
+    }
+}
+
+impl From<&SdkConfig> for ClientOptions {
+    fn from(c: &SdkConfig) -> Self {
+        Self {
+            request_timeout_ms: c.request_timeout_ms,
+            connect_timeout_ms: c.connect_timeout_ms,
+            max_retries: c.max_retries,
+            retry_backoff_ms: c.retry_backoff_ms,
+            retry_backoff_cap_ms: c.retry_backoff_cap_ms,
+        }
     }
 }

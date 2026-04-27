@@ -35,6 +35,30 @@ pub enum SseEvent {
     /// 系统指标更新
     #[serde(rename = "metrics")]
     Metrics { data: serde_json::Value },
+    /// 执行计划待审批
+    #[serde(rename = "plan_proposed")]
+    PlanProposed {
+        job_id: String,
+        proposal_id: String,
+        summary: String,
+        task_count: usize,
+    },
+    /// 流式 token 增量
+    #[serde(rename = "stream_delta")]
+    StreamDelta {
+        job_id: String,
+        index: usize,
+        kind: String,
+        delta: String,
+    },
+    /// 流式内容块生命周期
+    #[serde(rename = "stream_block_lifecycle")]
+    StreamBlockLifecycle {
+        job_id: String,
+        index: usize,
+        phase: String,
+        kind: String,
+    },
 }
 
 /// Web 通道：通过 SSE 将消息推送给浏览器
@@ -102,5 +126,39 @@ impl Channel for WebChannel {
 
     fn health_check(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_delta_serializes_correctly() {
+        let event = SseEvent::StreamDelta {
+            job_id: "j1".into(),
+            index: 0,
+            kind: "text".into(),
+            delta: "hello".into(),
+        };
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        assert_eq!(json["type"], "stream_delta");
+        assert_eq!(json["kind"], "text");
+        assert_eq!(json["delta"], "hello");
+        assert_eq!(json["index"], 0);
+    }
+
+    #[test]
+    fn stream_block_lifecycle_serializes_correctly() {
+        let event = SseEvent::StreamBlockLifecycle {
+            job_id: "j1".into(),
+            index: 1,
+            phase: "started".into(),
+            kind: "thinking".into(),
+        };
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        assert_eq!(json["type"], "stream_block_lifecycle");
+        assert_eq!(json["phase"], "started");
+        assert_eq!(json["kind"], "thinking");
     }
 }

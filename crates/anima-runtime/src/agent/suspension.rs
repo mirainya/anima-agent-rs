@@ -50,6 +50,7 @@ pub enum PendingQuestionSourceKind {
     UpstreamQuestion,
     ToolPermission,
     SubtaskBlocked,
+    PlanApproval,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -131,6 +132,15 @@ pub fn question_decision_mode_str(mode: &QuestionDecisionMode) -> &'static str {
     match mode {
         QuestionDecisionMode::AutoAllowed => "auto_allowed",
         QuestionDecisionMode::UserRequired => "user_required",
+    }
+}
+
+pub fn source_kind_str(kind: &PendingQuestionSourceKind) -> &'static str {
+    match kind {
+        PendingQuestionSourceKind::UpstreamQuestion => "upstream_question",
+        PendingQuestionSourceKind::ToolPermission => "tool_permission",
+        PendingQuestionSourceKind::SubtaskBlocked => "subtask_blocked",
+        PendingQuestionSourceKind::PlanApproval => "plan_approval",
     }
 }
 
@@ -319,6 +329,7 @@ impl SuspensionCoordinator {
         let suspension_kind = match question.source_kind {
             PendingQuestionSourceKind::ToolPermission => SuspensionKind::ToolPermission,
             PendingQuestionSourceKind::SubtaskBlocked => SuspensionKind::SubtaskBlocked,
+            PendingQuestionSourceKind::PlanApproval => SuspensionKind::HumanApproval,
             _ => SuspensionKind::Question,
         };
         let is_tool_permission =
@@ -355,6 +366,63 @@ impl SuspensionCoordinator {
             );
         }
         self.pending_questions.lock().insert(job_id, question);
+    }
+
+    pub fn register_plan_approval(
+        &self,
+        job_id: &str,
+        inbound: &InboundMessage,
+        opencode_session_id: &str,
+        proposal: &anima_types::approval::PlanProposal,
+    ) {
+        let question_id = Uuid::new_v4().to_string();
+        let prompt = format!(
+            "执行计划待审批：{}（共 {} 个子任务）",
+            proposal.summary,
+            proposal.plan.tasks.len()
+        );
+        let question = PendingQuestion {
+            question_id: question_id.clone(),
+            job_id: job_id.to_string(),
+            opencode_session_id: opencode_session_id.to_string(),
+            question_kind: QuestionKind::Confirm,
+            prompt: prompt.clone(),
+            options: vec!["approved".into(), "rejected".into()],
+            raw_question: json!({
+                "type": "plan_approval",
+                "proposal_id": proposal.proposal_id,
+                "plan": serde_json::to_value(&proposal.plan).unwrap_or_default(),
+                "summary": proposal.summary,
+            }),
+            decision_mode: QuestionDecisionMode::UserRequired,
+            risk_level: QuestionRiskLevel::High,
+            requires_user_confirmation: true,
+            source_kind: PendingQuestionSourceKind::PlanApproval,
+            continuation_token: Some(question_id),
+            asked_at_ms: now_ms(),
+            answer_submitted: false,
+            answer_summary: None,
+            resolution_source: None,
+            inbound: Some(inbound.clone()),
+        };
+        let task_id = self.emitter.upsert_task(
+            inbound,
+            RuntimeTaskPhase::Question,
+            TaskStatus::Suspended,
+            prompt,
+            None,
+        );
+        self.emitter.upsert_suspension(
+            inbound,
+            &question,
+            Some(task_id),
+            None,
+            SuspensionKind::HumanApproval,
+            SuspensionStatus::Active,
+        );
+        self.pending_questions
+            .lock()
+            .insert(job_id.to_string(), question);
     }
 
     pub fn register_subtask_blocked(
@@ -930,6 +998,7 @@ impl SuspensionCoordinator {
                     "requires_user_confirmation": asked_payload.requires_user_confirmation,
                     "opencode_session_id": asked_payload.opencode_session_id.clone(),
                     "raw_question": asked_payload.raw_question.clone(),
+                    "source_kind": source_kind_str(&question.source_kind),
                 }),
             );
         }
@@ -952,6 +1021,7 @@ impl SuspensionCoordinator {
                 "requires_user_confirmation": asked_payload.requires_user_confirmation,
                 "opencode_session_id": asked_payload.opencode_session_id,
                 "raw_question": asked_payload.raw_question,
+                "source_kind": source_kind_str(&question.source_kind),
             }),
         );
     }

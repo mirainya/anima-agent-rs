@@ -200,6 +200,7 @@ impl CoreAgent {
             system_prompt: Some({
                 let mut asm = PromptAssembler::new();
                 asm.add_text("identity", "你是 Anima 智能助手。", 0);
+                asm.add_section(crate::prompt::sections::completion_status_section());
                 asm.build().text
             }),
             tool_definitions: Some(self.tool_registry.tool_definitions()),
@@ -559,8 +560,7 @@ impl CoreAgent {
         let suspended = preparation.suspended;
         let config = preparation.config;
         let outcome = continue_agentic_loop(
-            &self._client,
-            self.executor.as_ref(),
+            self.provider.as_ref(),
             &self.tool_registry,
             self.permission_checker.as_deref(),
             self.hook_registry.as_deref(),
@@ -636,7 +636,72 @@ impl CoreAgent {
             PendingQuestionSourceKind::ToolPermission => {
                 self.continue_tool_permission_answer(job_id, pending, answer.answer.trim())
             }
+            PendingQuestionSourceKind::PlanApproval => {
+                self.continue_plan_approval_answer(job_id, inbound, key, pending, answer)
+            }
         }
+    }
+
+    pub(crate) fn continue_plan_approval_answer(
+        &self,
+        job_id: &str,
+        inbound: &InboundMessage,
+        key: &str,
+        pending: &PendingQuestion,
+        answer: &QuestionAnswerInput,
+    ) -> Result<PendingQuestion, String> {
+        let verdict = answer.answer.trim();
+        if verdict.starts_with("rejected") {
+            let reason = verdict.strip_prefix("rejected:").unwrap_or("user rejected");
+            self.emitter.publish(
+                "plan_rejected",
+                inbound,
+                json!({ "job_id": job_id, "reason": reason }),
+            );
+            return Ok(pending.clone());
+        }
+
+        self.emitter.publish(
+            "plan_approved",
+            inbound,
+            json!({ "job_id": job_id }),
+        );
+
+        let plan_value = pending
+            .raw_question
+            .get("plan")
+            .cloned()
+            .unwrap_or_default();
+        let plan: super::types::ExecutionPlan =
+            serde_json::from_value(plan_value).map_err(|e| format!("failed to restore plan: {e}"))?;
+
+        let outcome = self.execute_initial_message_plan(
+            inbound,
+            &plan,
+            &pending.opencode_session_id,
+            key,
+        );
+
+        let exec_ctx = ExecutionContext {
+            memory_key: key.to_string(),
+            history_session_id: String::new(),
+            opencode_session_id: pending.opencode_session_id.clone(),
+            plan_type: outcome.plan_type.clone(),
+            context_ms: 0,
+            session_ms: 0,
+            classify_ms: 0,
+            execute_ms: outcome.execute_ms,
+            total_ms: outcome.execute_ms,
+            cache_hit: outcome.cache_hit,
+        };
+        let _ = self.handle_upstream_result(
+            inbound,
+            &exec_ctx,
+            outcome.result,
+            SuccessSource::QuestionContinuation,
+            Some(pending),
+        )?;
+        Ok(pending.clone())
     }
 
     pub fn submit_question_answer(

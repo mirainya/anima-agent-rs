@@ -126,3 +126,140 @@ pub(crate) fn extract_response_text(response: Option<&Value>) -> String {
 
     response.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::{make_inbound, MakeInbound};
+    use serde_json::json;
+
+    #[test]
+    fn truncate_ascii_within_limit() {
+        assert_eq!(truncate_preview("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_ascii_over_limit() {
+        assert_eq!(truncate_preview("hello world", 5), "hello…");
+    }
+
+    #[test]
+    fn truncate_unicode() {
+        assert_eq!(truncate_preview("你好世界测试", 3), "你好世…");
+    }
+
+    #[test]
+    fn truncate_exact_boundary() {
+        assert_eq!(truncate_preview("abc", 3), "abc");
+    }
+
+    #[test]
+    fn extract_response_none() {
+        assert_eq!(extract_response_text(None), "");
+    }
+
+    #[test]
+    fn extract_response_parts_text() {
+        let resp = json!({"parts": [{"type": "text", "text": "hello"}]});
+        assert_eq!(extract_response_text(Some(&resp)), "hello");
+    }
+
+    #[test]
+    fn extract_response_parts_reasoning_and_text() {
+        let resp = json!({"parts": [
+            {"type": "reasoning", "text": "think"},
+            {"type": "text", "text": "answer"}
+        ]});
+        let result = extract_response_text(Some(&resp));
+        assert!(result.contains("【Reasoning】"));
+        assert!(result.contains("think"));
+        assert!(result.contains("answer"));
+    }
+
+    #[test]
+    fn extract_response_data_messages() {
+        let resp = json!({"data": {"messages": [
+            {"parts": [{"type": "text", "text": "chunk1"}]},
+            {"parts": [{"type": "text", "text": "chunk2"}]}
+        ]}});
+        assert_eq!(extract_response_text(Some(&resp)), "chunk1\nchunk2");
+    }
+
+    #[test]
+    fn extract_response_content_string() {
+        let resp = json!({"content": "direct"});
+        assert_eq!(extract_response_text(Some(&resp)), "direct");
+    }
+
+    #[test]
+    fn extract_response_plain_string() {
+        let resp = json!("plain");
+        assert_eq!(extract_response_text(Some(&resp)), "plain");
+    }
+
+    #[test]
+    fn extract_response_fallback() {
+        let resp = json!(42);
+        assert_eq!(extract_response_text(Some(&resp)), "42");
+    }
+
+    #[test]
+    fn merge_metadata_injects_keys() {
+        let msg = make_inbound(MakeInbound {
+            channel: "ch".into(),
+            content: "hi".into(),
+            metadata: Some(json!({"parent_job_id": "pj1", "subtask_id": "st1", "plan_id": "pl1"})),
+            ..Default::default()
+        });
+        let result = merge_runtime_metadata(&msg, json!({"existing": true}));
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj["existing"], json!(true));
+        assert_eq!(obj["parent_job_id"], json!("pj1"));
+        assert_eq!(obj["subtask_id"], json!("st1"));
+        assert_eq!(obj["plan_id"], json!("pl1"));
+    }
+
+    #[test]
+    fn merge_metadata_does_not_overwrite_existing() {
+        let msg = make_inbound(MakeInbound {
+            channel: "ch".into(),
+            content: "hi".into(),
+            metadata: Some(json!({"plan_id": "from_meta"})),
+            ..Default::default()
+        });
+        let result = merge_runtime_metadata(&msg, json!({"plan_id": "from_payload"}));
+        assert_eq!(result["plan_id"], json!("from_payload"));
+    }
+
+    #[test]
+    fn merge_metadata_wraps_non_object() {
+        let msg = make_inbound(MakeInbound {
+            channel: "ch".into(),
+            content: "hi".into(),
+            ..Default::default()
+        });
+        let result = merge_runtime_metadata(&msg, json!("raw_string"));
+        assert_eq!(result["value"], json!("raw_string"));
+    }
+
+    #[test]
+    fn runtime_message_id_prefers_subtask() {
+        let msg = make_inbound(MakeInbound {
+            channel: "ch".into(),
+            content: "hi".into(),
+            metadata: Some(json!({"subtask_id": "sub1"})),
+            ..Default::default()
+        });
+        assert_eq!(runtime_message_id(&msg), "sub1");
+    }
+
+    #[test]
+    fn runtime_message_id_falls_back_to_id() {
+        let msg = make_inbound(MakeInbound {
+            channel: "ch".into(),
+            content: "hi".into(),
+            ..Default::default()
+        });
+        assert_eq!(runtime_message_id(&msg), msg.id);
+    }
+}

@@ -1,11 +1,13 @@
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use super::core::{AgentOrchestrator, OrchestrationPlan, PlanProgress, SubTask};
+use crate::messages::types::ContentBlock;
+use crate::provider::{ChatMessage, ChatRequest, ChatRole};
 use crate::support::now_ms;
 
 #[derive(Debug, Deserialize)]
@@ -34,39 +36,56 @@ impl AgentOrchestrator {
         request: &str,
         session_id: &str,
     ) -> Option<Vec<LlmSubtaskSpec>> {
-        let executor = self.executor.as_ref()?;
-        let client = self.client.as_ref()?;
+        let provider = self.provider.as_ref()?;
 
         let prompt = format!(
-            "你是任务分解引擎。分析用户请求，将其拆解为可并行/串行执行的子任务。\n\n\
+            "你是任务分解引擎。分析用户请求，判断是否需要拆解为多个子任务。\n\n\
              用户请求: {request}\n\n\
-             请输出 JSON 数组，每个元素包含:\n\
+             ## 判断标准\n\
+             以下情况不需要拆解，直接返回空数组 []：\n\
+             - 简单问答、闲聊、知识查询\n\
+             - 单步操作（如：翻译一段话、解释一个概念、写一个函数）\n\
+             - 请求本身已经足够具体，不需要分工协作\n\n\
+             以下情况需要拆解：\n\
+             - 请求包含多个独立或有依赖关系的工作项\n\
+             - 需要不同专业能力协作完成（如设计+实现+测试）\n\
+             - 工作量大到需要分阶段推进\n\n\
+             ## 输出格式\n\
+             输出 JSON 数组，每个元素包含:\n\
              - name: 子任务名称（英文短横线命名）\n\
              - task_type: 类型（design/frontend/backend/testing/data-collection/analysis/generic）\n\
              - specialist_type: 专家类型（designer/frontend-dev/backend-dev/tester/data-engineer/analyst/default）\n\
-             - dependencies: 依赖的子任务 name 数组\n\
+             - dependencies: 依赖的子任务 name 数组（禁止循环依赖）\n\
              - description: 简短描述\n\n\
-             只输出 JSON 数组，不要其他内容。如果请求太简单不需要拆解，输出空数组 []。"
+             约束：子任务数量不超过 6 个。只输出 JSON 数组，不要其他内容。"
         );
 
-        let content = json!([{"type": "text", "text": prompt}]);
-        let result = executor.send_prompt(client, session_id, content).ok()?;
+        let chat_request = ChatRequest {
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: vec![ContentBlock::Text { text: prompt }],
+            }],
+            metadata: json!({ "session_id": session_id }),
+            ..Default::default()
+        };
+        let response = provider.chat(chat_request).ok()?;
 
-        let text = result
-            .get("content")
-            .and_then(|c| c.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|block| block.get("text"))
-            .and_then(Value::as_str)
-            .or_else(|| result.get("text").and_then(Value::as_str))
+        let text = response
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
             .unwrap_or("")
             .trim();
 
         let json_str = extract_json_array(text)?;
-        let specs: Vec<LlmSubtaskSpec> = serde_json::from_str(json_str).ok()?;
+        let mut specs: Vec<LlmSubtaskSpec> = serde_json::from_str(json_str).ok()?;
         if specs.is_empty() {
             return None;
         }
+        specs.truncate(6);
         Some(specs)
     }
 

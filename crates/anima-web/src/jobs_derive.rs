@@ -95,6 +95,9 @@ pub(crate) fn source_kind_label(kind: &anima_runtime::agent::PendingQuestionSour
         anima_runtime::agent::PendingQuestionSourceKind::SubtaskBlocked => {
             "subtask_blocked".into()
         }
+        anima_runtime::agent::PendingQuestionSourceKind::PlanApproval => {
+            "plan_approval".into()
+        }
     }
 }
 
@@ -569,6 +572,13 @@ pub(crate) fn derive_job_status(
     }
 
     if let Some(question) = pending_question {
+        if question.source_kind == "plan_approval" {
+            return (
+                JobStatus::AwaitingPlanApproval,
+                "awaiting_plan_approval".into(),
+                "执行计划待审批".into(),
+            );
+        }
         let is_tool_permission =
             question.raw_question.get("type").and_then(Value::as_str) == Some("tool_permission");
         let current_step = if has_event(events, "question_answer_submitted") {

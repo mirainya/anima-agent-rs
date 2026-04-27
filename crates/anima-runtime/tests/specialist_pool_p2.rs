@@ -2,16 +2,13 @@ use anima_runtime::worker::executor::TaskExecutor;
 use anima_runtime::orchestrator::specialist_pool::*;
 use anima_runtime::agent::types::*;
 use anima_runtime::worker::WorkerPool;
-use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 struct EchoExecutor;
 impl TaskExecutor for EchoExecutor {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        session_id: &str,
+        &self,        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
@@ -19,15 +16,13 @@ impl TaskExecutor for EchoExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "echo-session-1"}))
     }
 }
 
 fn make_pool() -> Arc<WorkerPool> {
-    let client = SdkClient::new("http://127.0.0.1:9711");
     let pool = Arc::new(WorkerPool::new(
-        client,
         Arc::new(EchoExecutor),
         Some(2),
         None,

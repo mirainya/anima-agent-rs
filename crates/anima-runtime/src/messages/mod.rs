@@ -15,4 +15,6 @@ pub use compact::{
 pub use lookup::{build_message_lookups, MessageLookups};
 pub use normalize::normalize_messages_for_api;
 pub use pairing::ensure_tool_result_pairing;
-pub use types::{ApiMsg, InternalMsg, MessageRole, SdkMsg};
+pub use types::{
+    blocks_from_value, value_from_blocks, ApiMsg, ContentBlock, InternalMsg, MessageRole, SdkMsg,
+};

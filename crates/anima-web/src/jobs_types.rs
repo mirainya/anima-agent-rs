@@ -15,6 +15,7 @@ pub enum JobStatus {
     PreparingContext,
     CreatingSession,
     Planning,
+    AwaitingPlanApproval,
     Executing,
     WaitingUserInput,
     Stalled,
@@ -101,6 +102,21 @@ pub struct OrchestrationView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlanProposalView {
+    pub proposal_id: String,
+    pub summary: String,
+    pub tasks: Vec<PlanTaskView>,
+    pub proposed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlanTaskView {
+    pub id: String,
+    pub task_type: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JobView {
     pub job_id: String,
     pub trace_id: String,
@@ -125,6 +141,7 @@ pub struct JobView {
     pub execution_summary: Option<Value>,
     pub failure: Option<Value>,
     pub review: Option<JobReviewView>,
+    pub pending_plan: Option<PlanProposalView>,
     pub orchestration: Option<OrchestrationView>,
 }
 

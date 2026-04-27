@@ -1,5 +1,5 @@
 use anima_runtime::messages::types::MessageRole;
-use anima_runtime::runtime::{build_projection, RuntimeDomainEvent, RuntimeStateStore};
+use anima_runtime::runtime::{build_projection, RuntimeDomainEvent, RuntimeStateStore, StateStore};
 use anima_runtime::support::now_ms;
 use std::path::PathBuf;
 use anima_runtime::tasks::{
@@ -7,7 +7,8 @@ use anima_runtime::tasks::{
     SuspensionStatus, TaskKind, TaskRecord, TaskStatus, ToolInvocationRuntimeRecord, TurnRecord,
     TurnStatus,
 };
-use anima_runtime::transcript::{validate_pairing, ContentBlock, MessageRecord};
+use anima_runtime::messages::ContentBlock;
+use anima_runtime::transcript::{validate_pairing, MessageRecord};
 use serde_json::json;
 
 #[test]

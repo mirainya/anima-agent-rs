@@ -1,6 +1,6 @@
 //! CoreAgent 核心定义：struct、构造函数、消息处理方法
 
-use anima_sdk::facade::Client as SdkClient;
+use anima_types::approval::ApprovalMode;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::atomic::AtomicBool;
@@ -13,6 +13,7 @@ use super::context_types::{
 };
 use super::event_emitter::RuntimeEventEmitter;
 use crate::worker::executor::TaskExecutor;
+use crate::provider::{Provider, OpenCodeProvider};
 use super::requirement::RequirementCoordinator;
 use super::runtime_helpers::truncate_preview;
 use crate::worker::{WorkerPool, WorkerPoolStatus};
@@ -62,7 +63,6 @@ const MAX_SESSION_HISTORY: usize = 200;
 
 pub struct CoreAgent {
     pub(crate) bus: Arc<Bus>,
-    pub(crate) _client: SdkClient,
     session_store: Arc<SessionStore>,
     pub(crate) worker_pool: Arc<WorkerPool>,
     pub(crate) orchestrator: Arc<AgentOrchestrator>,
@@ -75,14 +75,16 @@ pub struct CoreAgent {
     pub(crate) permission_checker: Option<Arc<PermissionChecker>>,
     /// Agentic loop 用：钩子注册中心
     pub(crate) hook_registry: Option<Arc<HookRegistry>>,
-    /// Agentic loop 用：保存 executor 引用以便在循环中直接使用
-    pub(crate) executor: Arc<dyn TaskExecutor>,
+    /// Agentic loop 用：Provider 抽象（包装 executor）
+    pub(crate) provider: Arc<dyn Provider>,
+    pub(crate) judge_provider: Mutex<Option<Arc<dyn Provider>>>,
     pub(crate) memory: Mutex<indexmap::IndexMap<String, SessionContext>>,
     pub(crate) emitter: Arc<RuntimeEventEmitter>,
     pub(crate) runtime_state_store: SharedRuntimeStateStore,
     /// 挂起状态协调器
     pub(crate) suspension: Arc<SuspensionCoordinator>,
     pub(crate) requirement: Arc<RequirementCoordinator>,
+    pub(crate) approval_mode: Arc<Mutex<ApprovalMode>>,
     pub(crate) running: AtomicBool,
     pub(crate) loop_handle: Mutex<Option<thread::JoinHandle<()>>>,
     pub(crate) control_handle: Mutex<Option<thread::JoinHandle<()>>>,
@@ -110,14 +112,12 @@ impl CoreAgent {
     /// 创建 CoreAgent，初始化 WorkerPool、缓存、指标采集器等组件
     pub fn new(
         bus: Arc<Bus>,
-        client: SdkClient,
         session_store: Option<Arc<SessionStore>>,
         executor: Arc<dyn TaskExecutor>,
         pool_size: Option<usize>,
     ) -> Self {
         Self::new_with_runtime_state_store(
             bus,
-            client,
             session_store,
             executor,
             pool_size,
@@ -127,7 +127,6 @@ impl CoreAgent {
 
     pub fn new_with_runtime_state_store(
         bus: Arc<Bus>,
-        client: SdkClient,
         session_store: Option<Arc<SessionStore>>,
         executor: Arc<dyn TaskExecutor>,
         pool_size: Option<usize>,
@@ -180,28 +179,29 @@ impl CoreAgent {
                 let _ = bus_for_worker_events.publish_internal(make_internal(MakeInternal {
                     source: "worker-agent".into(),
                     trace_id: Some(trace_id.to_string()),
-                    payload: json!({
-                        "event": event,
-                        "message_id": trace_id,
-                        "channel": channel,
-                        "chat_id": chat_id,
-                        "sender_id": sender_id,
-                        "payload": payload,
-                    }),
+                    payload: crate::bus::InternalPayload::RuntimeEvent {
+                        event: event.to_string(),
+                        message_id: trace_id.to_string(),
+                        channel: channel.clone(),
+                        chat_id: chat_id.clone(),
+                        sender_id: sender_id.clone(),
+                        payload,
+                    },
                     ..Default::default()
                 }));
             });
         let worker_pool = Arc::new(
-            WorkerPool::new(client.clone(), executor.clone(), pool_size, None, None)
+            WorkerPool::new(executor.clone(), pool_size, None, None)
                 .with_runtime_event_publisher(worker_runtime_event_publisher),
         );
         let specialist_pool = Arc::new(SpecialistPool::new(worker_pool.clone()));
+        let provider: Arc<dyn Provider> = Arc::new(OpenCodeProvider::new(executor.clone()));
         let orchestrator = Arc::new(AgentOrchestrator::new(
             worker_pool.clone(),
             specialist_pool,
             runtime_state_store.clone(),
             OrchestratorConfig::default(),
-        ).with_llm(executor.clone(), client.clone()));
+        ).with_llm(provider.clone()));
         let emitter = Arc::new(RuntimeEventEmitter::new(
             bus.clone(),
             worker_timeline.clone(),
@@ -209,7 +209,6 @@ impl CoreAgent {
         ));
         Self {
             bus,
-            _client: client.clone(),
             session_store,
             worker_pool,
             orchestrator,
@@ -219,7 +218,8 @@ impl CoreAgent {
             tool_registry: Arc::new(ToolRegistry::new()),
             permission_checker: None,
             hook_registry: None,
-            executor,
+            provider: provider.clone(),
+            judge_provider: Mutex::new(None),
             memory: Mutex::new(indexmap::IndexMap::new()),
             emitter: emitter.clone(),
             runtime_state_store: runtime_state_store.clone(),
@@ -231,10 +231,15 @@ impl CoreAgent {
                 runtime_state_store,
                 emitter.clone(),
             )),
+            approval_mode: Arc::new(Mutex::new(ApprovalMode::default())),
             running: AtomicBool::new(false),
             loop_handle: Mutex::new(None),
             control_handle: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn enable_llm_judge(&self) {
+        *self.judge_provider.lock() = Some(Arc::clone(&self.provider));
     }
 
     pub(crate) fn upsert_runtime_run(

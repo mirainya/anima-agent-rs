@@ -1,5 +1,6 @@
 use serde_json::json;
 
+use anima_types::approval::{ApprovalMode, PlanProposal};
 use crate::bus::InboundMessage;
 use crate::execution::context_assembly::ContextAssemblyMode;
 use crate::support::now_ms;
@@ -62,6 +63,27 @@ impl CoreAgent {
                 context_ms,
                 session_ms,
                 classify_ms,
+            );
+            return;
+        }
+
+        let mode = self.approval_mode.lock().clone();
+        if matches!(mode, ApprovalMode::Supervised | ApprovalMode::Manual) {
+            let proposal = PlanProposal::from_execution_plan(&plan);
+            self.suspension.register_plan_approval(
+                &inbound_msg.id,
+                &inbound_msg,
+                &opencode_session_id,
+                &proposal,
+            );
+            self.emitter.publish(
+                "plan_proposed",
+                &inbound_msg,
+                json!({
+                    "proposal_id": proposal.proposal_id,
+                    "summary": proposal.summary,
+                    "task_count": proposal.plan.tasks.len(),
+                }),
             );
             return;
         }

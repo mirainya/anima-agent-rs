@@ -7,6 +7,7 @@ export const jobStatusSchema = z.enum([
   'planning',
   'executing',
   'waiting_user_input',
+  'awaiting_plan_approval',
   'stalled',
   'completed',
   'failed',
@@ -216,6 +217,15 @@ export const jobViewSchema = z.object({
   failure: failureSchema.nullable().optional(),
   review: jobReviewSchema.nullable().optional(),
   orchestration: orchestrationSchema.nullable().optional(),
+  pending_plan: z.object({
+    proposal_id: z.string(),
+    summary: z.string(),
+    tasks: z.array(z.object({
+      id: z.string(),
+      task_type: z.string(),
+      payload: z.record(z.unknown()),
+    })),
+  }).nullable().optional(),
 });
 
 export const jobsResponseSchema = z.object({
@@ -397,11 +407,29 @@ export const sseMetricsEventSchema = z.object({
   data: z.unknown(),
 });
 
+export const sseStreamDeltaEventSchema = z.object({
+  type: z.literal('stream_delta'),
+  job_id: z.string(),
+  index: z.number(),
+  kind: z.string(),
+  delta: z.string(),
+});
+
+export const sseStreamBlockLifecycleEventSchema = z.object({
+  type: z.literal('stream_block_lifecycle'),
+  job_id: z.string(),
+  index: z.number(),
+  phase: z.string(),
+  kind: z.string(),
+});
+
 export const sseEventSchema = z.union([
   sseMessageEventSchema,
   sseWorkerStatusEventSchema,
   sseRuntimeEventSchema,
   sseMetricsEventSchema,
+  sseStreamDeltaEventSchema,
+  sseStreamBlockLifecycleEventSchema,
 ]);
 
 export type JobStatus = z.infer<typeof jobStatusSchema>;

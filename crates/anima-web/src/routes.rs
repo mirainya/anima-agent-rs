@@ -28,5 +28,13 @@ pub fn create_routes() -> Router<Arc<AppState>> {
             "/api/jobs/{job_id}/question-answer",
             post(routes_commands::answer_job_question),
         )
+        .route(
+            "/api/approval-mode",
+            get(routes_commands::get_approval_mode).post(routes_commands::set_approval_mode),
+        )
+        .route(
+            "/api/jobs/{job_id}/plan-verdict",
+            post(routes_commands::submit_plan_verdict),
+        )
         .fallback(routes_static::spa_fallback)
 }

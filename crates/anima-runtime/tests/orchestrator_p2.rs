@@ -3,9 +3,10 @@ use anima_runtime::orchestrator::core::*;
 use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
 use anima_runtime::agent::types::*;
 use anima_runtime::worker::WorkerPool;
-use anima_runtime::runtime::RuntimeStateStore;
+use anima_runtime::runtime::{RuntimeStateStore, StateStore};
 use anima_runtime::tasks::{TaskKind, TaskStatus};
-use anima_sdk::facade::Client as SdkClient;
+use anima_runtime::provider::{Provider, ProviderError, ChatRequest, ChatResponse, StopReason};
+use anima_runtime::messages::types::ContentBlock;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,9 +22,7 @@ struct QuestionExecutor;
 
 impl TaskExecutor for EchoExecutor {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        session_id: &str,
+        &self,        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
@@ -31,16 +30,14 @@ impl TaskExecutor for EchoExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "echo-session-1"}))
     }
 }
 
 impl TaskExecutor for SlowEchoExecutor {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        session_id: &str,
+        &self,        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
@@ -54,7 +51,7 @@ impl TaskExecutor for SlowEchoExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "slow-echo-session-1"}))
     }
 }
@@ -78,9 +75,7 @@ impl RecordingExecutorState {
 
 impl TaskExecutor for RecordingExecutorState {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        session_id: &str,
+        &self,        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("").to_string();
@@ -93,16 +88,14 @@ impl TaskExecutor for RecordingExecutorState {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "recording-session-1"}))
     }
 }
 
 impl TaskExecutor for ConditionalFailureExecutor {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        session_id: &str,
+        &self,        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
@@ -115,16 +108,14 @@ impl TaskExecutor for ConditionalFailureExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "conditional-failure-session-1"}))
     }
 }
 
 impl TaskExecutor for QuestionExecutor {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
+        &self,        _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
@@ -137,15 +128,71 @@ impl TaskExecutor for QuestionExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "question-session-1"}))
     }
 }
 
+fn extract_request_text(req: &ChatRequest) -> String {
+    req.messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .find_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn text_response(text: &str) -> ChatResponse {
+    ChatResponse {
+        content: vec![ContentBlock::Text { text: text.to_string() }],
+        stop_reason: StopReason::EndTurn,
+        usage: None,
+        raw: json!({}),
+    }
+}
+
+struct DecomposeProvider;
+
+impl Provider for DecomposeProvider {
+    fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        let text = extract_request_text(&req);
+        if !text.contains("任务分解引擎") {
+            return Ok(text_response(&format!("echo: {text}")));
+        }
+        let json = if text.contains("data analysis") {
+            r#"[
+                {"name":"collect-data","task_type":"data-collection","specialist_type":"data-engineer","dependencies":[],"description":"collect data"},
+                {"name":"analyze-data","task_type":"analysis","specialist_type":"analyst","dependencies":["collect-data"],"description":"analyze data"},
+                {"name":"generate-report","task_type":"reporting","specialist_type":"analyst","dependencies":["analyze-data"],"description":"generate report"}
+            ]"#
+        } else if text.contains("web app") {
+            r#"[
+                {"name":"design","task_type":"design","specialist_type":"designer","dependencies":[],"description":"design"},
+                {"name":"implement-frontend","task_type":"frontend","specialist_type":"frontend-dev","dependencies":["design"],"description":"frontend"},
+                {"name":"implement-backend","task_type":"backend","specialist_type":"backend-dev","dependencies":["design"],"description":"backend"},
+                {"name":"testing","task_type":"testing","specialist_type":"tester","dependencies":["implement-frontend","implement-backend"],"description":"testing"}
+            ]"#
+        } else if text.contains("REST API") || text.contains("api endpoint") {
+            r#"[
+                {"name":"design-api","task_type":"design","specialist_type":"designer","dependencies":[],"description":"design api"},
+                {"name":"implement-api","task_type":"backend","specialist_type":"backend-dev","dependencies":["design-api"],"description":"implement api"}
+            ]"#
+        } else if text.contains("random") {
+            r#"[
+                {"name":"task-a","task_type":"generic","specialist_type":"default","dependencies":[],"description":"A"},
+                {"name":"task-b","task_type":"generic","specialist_type":"default","dependencies":[],"description":"B"}
+            ]"#
+        } else {
+            "[]"
+        };
+        Ok(text_response(json))
+    }
+}
+
 fn make_pool() -> Arc<WorkerPool> {
-    let client = SdkClient::new("http://127.0.0.1:9711");
     let pool = Arc::new(WorkerPool::new(
-        client,
         Arc::new(EchoExecutor),
         Some(2),
         None,
@@ -164,12 +211,11 @@ fn make_orchestrator() -> AgentOrchestrator {
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
     )
+    .with_llm(Arc::new(DecomposeProvider))
 }
 
 fn make_pool_with_executor(executor: Arc<dyn TaskExecutor>, size: usize) -> Arc<WorkerPool> {
-    let client = SdkClient::new("http://127.0.0.1:9711");
     let pool = Arc::new(WorkerPool::new(
-        client,
         executor,
         Some(size),
         None,
@@ -277,7 +323,8 @@ fn orchestrator_status_active_plans_comes_from_runtime_store() {
         sp,
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
-    ));
+    )
+    .with_llm(Arc::new(DecomposeProvider)));
     orch.start();
 
     let orchestrator = Arc::clone(&orch);
@@ -488,7 +535,8 @@ fn orchestration_main_chain_stops_and_surfaces_question_result() {
         sp,
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
-    );
+    )
+    .with_llm(Arc::new(DecomposeProvider));
     let execution = orch
         .execute_orchestration_for_main_chain(
             "create REST API endpoint",
@@ -575,7 +623,8 @@ fn orchestration_main_chain_falls_back_to_serial_for_mixed_groups() {
         sp,
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
-    );
+    )
+    .with_llm(Arc::new(DecomposeProvider));
     let mut events = Vec::new();
 
     let execution = orch
@@ -627,7 +676,7 @@ fn orchestration_main_chain_parallelizes_query_only_group() {
         .iter()
         .find(|(event, _)| event == "orchestration_subtask_started")
         .expect("should emit started event");
-    assert_eq!(started_event.1["execution_mode"], "serial");
+    assert_eq!(started_event.1["execution_mode"], "whitelist_parallel");
     assert_eq!(started_event.1["parallel_safe"], true);
     assert_eq!(started_event.1["lowered_task_type"], "query");
 }
@@ -637,7 +686,8 @@ fn orchestration_runtime_subtask_records_preserve_original_type_and_lowering_met
     let store = Arc::new(RuntimeStateStore::new());
     let wp = make_pool();
     let sp = Arc::new(SpecialistPool::new(wp.clone()));
-    let orch = AgentOrchestrator::new(wp, sp, store.clone(), OrchestratorConfig::default());
+    let orch = AgentOrchestrator::new(wp, sp, store.clone(), OrchestratorConfig::default())
+        .with_llm(Arc::new(DecomposeProvider));
 
     let execution = orch
         .execute_orchestration_for_main_chain(
@@ -714,7 +764,8 @@ fn orchestration_main_chain_respects_parallel_disable_switch() {
         enable_parallel: false,
         ..OrchestratorConfig::default()
     };
-    let orch = AgentOrchestrator::new(wp, sp, Arc::new(RuntimeStateStore::new()), config);
+    let orch = AgentOrchestrator::new(wp, sp, Arc::new(RuntimeStateStore::new()), config)
+        .with_llm(Arc::new(DecomposeProvider));
     let mut events = Vec::new();
 
     let execution = orch
@@ -789,66 +840,34 @@ fn execute_plan_parallel_runs_truly_concurrently() {
 
 // ── Phase: LLM Decompose ─────────────────────────────────────────
 
-struct LlmDecomposeExecutor;
+struct LlmDecomposeProvider;
 
-impl TaskExecutor for LlmDecomposeExecutor {
-    fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
-        content: Value,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        let text = content
-            .as_array()
-            .and_then(|a| a.first())
-            .and_then(|b| b.get("text"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
+impl Provider for LlmDecomposeProvider {
+    fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        let text = extract_request_text(&req);
         if text.contains("任务分解引擎") {
-            Ok(json!({
-                "content": [{"type": "text", "text": r#"[
+            Ok(text_response(r#"[
                     {"name": "design-schema", "task_type": "design", "specialist_type": "designer", "dependencies": [], "description": "设计数据库 schema"},
                     {"name": "implement-api", "task_type": "backend", "specialist_type": "backend-dev", "dependencies": ["design-schema"], "description": "实现 REST API"},
                     {"name": "write-tests", "task_type": "testing", "specialist_type": "tester", "dependencies": ["implement-api"], "description": "编写集成测试"}
-                ]"#}]
-            }))
+                ]"#))
         } else {
-            Ok(json!({"content": format!("echo: {text}")}))
+            Ok(text_response(&format!("echo: {text}")))
         }
-    }
-
-    fn create_session(
-        &self,
-        _client: &SdkClient,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        Ok(json!({"id": "llm-session"}))
     }
 }
 
-struct LlmDecomposeFailExecutor;
+struct LlmDecomposeFailProvider;
 
-impl TaskExecutor for LlmDecomposeFailExecutor {
-    fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
-        _content: Value,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        Ok(json!({"content": [{"type": "text", "text": "抱歉，我无法理解这个请求"}]}))
-    }
-
-    fn create_session(
-        &self,
-        _client: &SdkClient,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        Ok(json!({"id": "llm-session"}))
+impl Provider for LlmDecomposeFailProvider {
+    fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        Ok(text_response("抱歉，我无法理解这个请求"))
     }
 }
 
 #[test]
 fn llm_decompose_produces_valid_plan() {
-    let client = SdkClient::new("http://127.0.0.1:9711");
-    let executor: Arc<dyn TaskExecutor> = Arc::new(LlmDecomposeExecutor);
+    let provider: Arc<dyn Provider> = Arc::new(LlmDecomposeProvider);
     let wp = make_pool();
     let sp = Arc::new(SpecialistPool::new(wp.clone()));
     let orch = AgentOrchestrator::new(
@@ -857,7 +876,7 @@ fn llm_decompose_produces_valid_plan() {
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
     )
-    .with_llm(executor, client);
+    .with_llm(provider);
 
     let plan = orch.decompose_task("创建用户管理 API", "trace-llm-1", "job-llm-1", Some("sess-1"));
 
@@ -878,8 +897,7 @@ fn llm_decompose_produces_valid_plan() {
 
 #[test]
 fn llm_decompose_fallback_to_regex_on_invalid_response() {
-    let client = SdkClient::new("http://127.0.0.1:9711");
-    let executor: Arc<dyn TaskExecutor> = Arc::new(LlmDecomposeFailExecutor);
+    let provider: Arc<dyn Provider> = Arc::new(LlmDecomposeFailProvider);
     let wp = make_pool();
     let sp = Arc::new(SpecialistPool::new(wp.clone()));
     let orch = AgentOrchestrator::new(
@@ -888,19 +906,18 @@ fn llm_decompose_fallback_to_regex_on_invalid_response() {
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
     )
-    .with_llm(executor, client);
+    .with_llm(provider);
 
     let plan = orch.decompose_task("build a web app", "trace-llm-2", "job-llm-2", Some("sess-2"));
 
-    // LLM failed → falls back to regex "web-app" rule
-    assert_eq!(plan.matched_rule.as_deref(), Some("web-app"));
-    assert_eq!(plan.subtasks.len(), 4);
+    // LLM failed → falls back to single generic subtask
+    assert_eq!(plan.matched_rule, None);
+    assert_eq!(plan.subtasks.len(), 1);
 }
 
 #[test]
 fn llm_decompose_skipped_without_session_id() {
-    let client = SdkClient::new("http://127.0.0.1:9711");
-    let executor: Arc<dyn TaskExecutor> = Arc::new(LlmDecomposeExecutor);
+    let provider: Arc<dyn Provider> = Arc::new(LlmDecomposeProvider);
     let wp = make_pool();
     let sp = Arc::new(SpecialistPool::new(wp.clone()));
     let orch = AgentOrchestrator::new(
@@ -909,95 +926,54 @@ fn llm_decompose_skipped_without_session_id() {
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
     )
-    .with_llm(executor, client);
+    .with_llm(provider);
 
-    // session_id = None → LLM skipped, falls back to regex
+    // session_id = None → LLM skipped, falls back to single generic subtask
     let plan = orch.decompose_task("build a web app", "trace-llm-3", "job-llm-3", None);
-    assert_eq!(plan.matched_rule.as_deref(), Some("web-app"));
+    assert_eq!(plan.matched_rule, None);
+    assert_eq!(plan.subtasks.len(), 1);
 }
 
 // ── LLM context inference tests ──────────────────────────────────────
 
-struct ContextInferExecutor;
+struct ContextInferProvider;
 
-impl TaskExecutor for ContextInferExecutor {
-    fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
-        content: Value,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        let text = content
-            .as_array()
-            .and_then(|a| a.first())
-            .and_then(|b| b.get("text"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
+impl Provider for ContextInferProvider {
+    fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        let text = extract_request_text(&req);
         if text.contains("上下文完整性分析器") {
-            Ok(json!({
-                "content": [{"type": "text", "text": r#"{"needs_question": true, "prompt": "请问您的目标用户群体是什么？", "options": ["企业用户", "个人用户", "开发者"]}"#}]
-            }))
+            Ok(text_response(r#"{"needs_question": true, "prompt": "请问您的目标用户群体是什么？", "options": ["企业用户", "个人用户", "开发者"]}"#))
         } else if text.contains("任务分解引擎") {
-            Ok(json!({
-                "content": [{"type": "text", "text": r#"[
+            Ok(text_response(r#"[
                     {"name": "task-a", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "A"},
                     {"name": "task-b", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "B"}
-                ]"#}]
-            }))
+                ]"#))
         } else {
-            Ok(json!({"content": format!("echo: {text}")}))
+            Ok(text_response(&format!("echo: {text}")))
         }
-    }
-
-    fn create_session(
-        &self,
-        _client: &SdkClient,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        Ok(json!({"id": "ctx-session"}))
     }
 }
 
-struct ContextInferFailExecutor;
+struct ContextInferFailProvider;
 
-impl TaskExecutor for ContextInferFailExecutor {
-    fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
-        content: Value,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        let text = content
-            .as_array()
-            .and_then(|a| a.first())
-            .and_then(|b| b.get("text"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
+impl Provider for ContextInferFailProvider {
+    fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        let text = extract_request_text(&req);
         if text.contains("任务分解引擎") {
-            Ok(json!({
-                "content": [{"type": "text", "text": r#"[
+            Ok(text_response(r#"[
                     {"name": "task-a", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "A"},
                     {"name": "task-b", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "B"}
-                ]"#}]
-            }))
+                ]"#))
         } else {
-            Ok(json!({"content": [{"type": "text", "text": "无法分析"}]}))
+            Ok(text_response("无法分析"))
         }
-    }
-
-    fn create_session(
-        &self,
-        _client: &SdkClient,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        Ok(json!({"id": "ctx-fail-session"}))
     }
 }
 
 #[test]
 fn llm_context_infer_generates_question() {
     use anima_runtime::orchestrator::llm_context_infer::try_llm_infer_missing_context;
-
-    let client = SdkClient::new("http://127.0.0.1:9711");
-    let executor: Arc<dyn TaskExecutor> = Arc::new(ContextInferExecutor);
+    let provider: Arc<dyn Provider> = Arc::new(ContextInferProvider);
     let wp = make_pool();
     let sp = Arc::new(SpecialistPool::new(wp.clone()));
     let orch = AgentOrchestrator::new(
@@ -1006,7 +982,7 @@ fn llm_context_infer_generates_question() {
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
     )
-    .with_llm(executor.clone(), client.clone());
+    .with_llm(provider.clone());
 
     let plan = orch.decompose_task("build a complex system", "t1", "j1", Some("s1"));
 
@@ -1034,7 +1010,7 @@ fn llm_context_infer_generates_question() {
         .collect();
 
     let result = try_llm_infer_missing_context(
-        &executor, &client, "s1", &plan, &lowered, &subtask_results,
+        &provider, "s1", &plan, &lowered, &subtask_results,
     );
 
     assert!(result.is_some());
@@ -1054,9 +1030,7 @@ fn llm_context_infer_generates_question() {
 #[test]
 fn llm_context_infer_fallback_on_invalid_response() {
     use anima_runtime::orchestrator::llm_context_infer::try_llm_infer_missing_context;
-
-    let client = SdkClient::new("http://127.0.0.1:9711");
-    let executor: Arc<dyn TaskExecutor> = Arc::new(ContextInferFailExecutor);
+    let provider: Arc<dyn Provider> = Arc::new(ContextInferFailProvider);
     let wp = make_pool();
     let sp = Arc::new(SpecialistPool::new(wp.clone()));
     let orch = AgentOrchestrator::new(
@@ -1065,7 +1039,7 @@ fn llm_context_infer_fallback_on_invalid_response() {
         Arc::new(RuntimeStateStore::new()),
         OrchestratorConfig::default(),
     )
-    .with_llm(executor.clone(), client.clone());
+    .with_llm(provider.clone());
 
     let plan = orch.decompose_task("build a complex system", "t2", "j2", Some("s2"));
 
@@ -1093,7 +1067,7 @@ fn llm_context_infer_fallback_on_invalid_response() {
         .collect();
 
     let result = try_llm_infer_missing_context(
-        &executor, &client, "s2", &plan, &lowered, &subtask_results,
+        &provider, "s2", &plan, &lowered, &subtask_results,
     );
 
     // LLM returned invalid JSON → None (fallback path)

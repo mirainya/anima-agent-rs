@@ -3,6 +3,7 @@ members = [
     "crates/anima-types",
     "crates/anima-sdk",
     "crates/anima-runtime",
+    "crates/anima-store",
     "crates/anima-cli",
     "crates/anima-web",
     "crates/anima-testkit",
@@ -20,7 +21,8 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["rt", "time", "macros"] }
 indexmap = { version = "2", features = ["serde"] }
 crossbeam-channel = "0.5"
 uuid = { version = "1", features = ["v4"] }

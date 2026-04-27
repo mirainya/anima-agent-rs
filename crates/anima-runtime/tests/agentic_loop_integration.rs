@@ -2,19 +2,20 @@
 //!
 //! 验证 agentic loop 与 ToolRegistry、MockExecutor、EchoTool 的端到端集成。
 
-use anima_runtime::agent::TaskExecutor;
+use anima_runtime::provider::{Provider, ProviderError, ChatResponse, StopReason};
+use anima_runtime::provider::types::ChatRequest;
+use anima_runtime::messages::types::blocks_from_value;
 use anima_runtime::execution::agentic_loop::{
     continue_agentic_loop, resume_suspended_tool_invocation, run_agentic_loop, AgenticLoopConfig,
     AgenticLoopOutcome,
 };
 use anima_runtime::hooks::{HookEvent, HookHandler, HookRegistry, HookResult, StopHook};
-use anima_runtime::messages::types::{InternalMsg, MessageRole};
+use anima_runtime::messages::types::{ContentBlock, InternalMsg, MessageRole};
 use anima_runtime::permissions::{PermissionChecker, PermissionMode};
 use anima_runtime::tools::definition::{Tool, ToolContext};
 use anima_runtime::tools::registry::ToolRegistry;
 use anima_runtime::tools::result::{ToolError, ToolResult};
 
-use anima_sdk::facade::Client as SdkClient;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -40,22 +41,16 @@ impl SequenceExecutor {
     }
 }
 
-impl TaskExecutor for SequenceExecutor {
-    fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
-        _content: Value,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+impl Provider for SequenceExecutor {
+    fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-        self.responses
-            .get(idx)
-            .cloned()
-            .ok_or_else(|| "no more mock responses".into())
-    }
-
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        Ok(json!({"id": "integration-session"}))
+        let raw = self.responses.get(idx).cloned()
+            .ok_or_else(|| ProviderError::internal("no more mock responses"))?;
+        let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
+        let blocks = blocks_from_value(&content_value, None);
+        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let stop_reason = if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn };
+        Ok(ChatResponse { content: blocks, stop_reason, usage: None, raw })
     }
 }
 
@@ -194,14 +189,11 @@ impl Tool for FailingTool {
 // 辅助
 // ---------------------------------------------------------------------------
 
-fn make_client() -> SdkClient {
-    SdkClient::new("http://localhost:0")
-}
 
 fn make_user_msg(text: &str) -> InternalMsg {
     InternalMsg {
         role: MessageRole::User,
-        content: json!(text),
+        blocks: vec![ContentBlock::Text { text: text.into() }],
         message_id: "user-1".into(),
         tool_use_id: None,
         filtered: false,
@@ -232,8 +224,6 @@ fn agentic_loop_echo_tool_integration() {
 
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "integration-session".into(),
@@ -242,7 +232,6 @@ fn agentic_loop_echo_tool_integration() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -289,7 +278,6 @@ fn agentic_loop_unknown_tool_returns_error_result() {
 
     // 空 registry，不注册任何工具
     let registry = ToolRegistry::new();
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "test".into(),
@@ -298,7 +286,6 @@ fn agentic_loop_unknown_tool_returns_error_result() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -316,8 +303,10 @@ fn agentic_loop_unknown_tool_returns_error_result() {
 
     // 验证 tool_result 消息包含 is_error
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert_eq!(blocks[0]["is_error"], true);
+    let ContentBlock::ToolResult { is_error, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(*is_error);
 }
 
 /// 多工具同轮调用
@@ -340,8 +329,6 @@ fn agentic_loop_multiple_tools_in_one_turn() {
 
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "test".into(),
@@ -350,7 +337,6 @@ fn agentic_loop_multiple_tools_in_one_turn() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -395,8 +381,6 @@ fn agentic_loop_runs_safe_tools_concurrently_and_preserves_result_order() {
         delay_ms: 200,
         concurrency_safe: true,
     }));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "safe-concurrent-session".into(),
@@ -406,7 +390,6 @@ fn agentic_loop_runs_safe_tools_concurrently_and_preserves_result_order() {
 
     let started = Instant::now();
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -429,18 +412,16 @@ fn agentic_loop_runs_safe_tools_concurrently_and_preserves_result_order() {
 
     let first_tool_result = &result.messages[2];
     let second_tool_result = &result.messages[3];
-    let first_blocks = first_tool_result.content.as_array().expect("should be array");
-    let second_blocks = second_tool_result.content.as_array().expect("should be array");
-    assert_eq!(first_blocks[0]["tool_use_id"], "tu_safe_1");
-    assert!(first_blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("slow_read_a:first"));
-    assert_eq!(second_blocks[0]["tool_use_id"], "tu_safe_2");
-    assert!(second_blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("slow_read_b:second"));
+    let ContentBlock::ToolResult { tool_use_id: id1, content: c1, .. } = &first_tool_result.blocks[0] else {
+        panic!("expected ToolResult");
+    };
+    let ContentBlock::ToolResult { tool_use_id: id2, content: c2, .. } = &second_tool_result.blocks[0] else {
+        panic!("expected ToolResult");
+    };
+    assert_eq!(id1, "tu_safe_1");
+    assert!(c1.as_str().unwrap_or_default().contains("slow_read_a:first"));
+    assert_eq!(id2, "tu_safe_2");
+    assert!(c2.as_str().unwrap_or_default().contains("slow_read_b:second"));
 }
 
 #[test]
@@ -481,8 +462,6 @@ fn agentic_loop_mixed_safe_and_unsafe_segments_preserve_order() {
         delay_ms: 200,
         concurrency_safe: true,
     }));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "mixed-segment-session".into(),
@@ -492,7 +471,6 @@ fn agentic_loop_mixed_safe_and_unsafe_segments_preserve_order() {
 
     let started = Instant::now();
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -520,15 +498,11 @@ fn agentic_loop_mixed_safe_and_unsafe_segments_preserve_order() {
         ("tu_mixed_4", "slow_read_c:fourth"),
     ];
     for (offset, (tool_use_id, content_fragment)) in expected.iter().enumerate() {
-        let blocks = result.messages[2 + offset]
-            .content
-            .as_array()
-            .expect("tool_result should be array");
-        assert_eq!(blocks[0]["tool_use_id"], *tool_use_id);
-        assert!(blocks[0]["content"]
-            .as_str()
-            .unwrap_or_default()
-            .contains(content_fragment));
+        let ContentBlock::ToolResult { tool_use_id: tid, content, .. } = &result.messages[2 + offset].blocks[0] else {
+            panic!("expected ToolResult block");
+        };
+        assert_eq!(tid, tool_use_id);
+        assert!(content.as_str().unwrap_or_default().contains(content_fragment));
     }
 }
 
@@ -558,8 +532,6 @@ fn agentic_loop_keeps_unsafe_tools_serial() {
         delay_ms: 200,
         concurrency_safe: false,
     }));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "unsafe-serial-session".into(),
@@ -569,7 +541,6 @@ fn agentic_loop_keeps_unsafe_tools_serial() {
 
     let started = Instant::now();
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -598,7 +569,7 @@ fn agentic_loop_keeps_unsafe_tools_serial() {
 struct CapturingExecutor {
     responses: Vec<Value>,
     call_count: AtomicUsize,
-    captured_payloads: Mutex<Vec<Value>>,
+    captured_requests: Mutex<Vec<ChatRequest>>,
 }
 
 impl CapturingExecutor {
@@ -606,32 +577,26 @@ impl CapturingExecutor {
         Self {
             responses,
             call_count: AtomicUsize::new(0),
-            captured_payloads: Mutex::new(Vec::new()),
+            captured_requests: Mutex::new(Vec::new()),
         }
     }
 
-    fn payloads(&self) -> Vec<Value> {
-        self.captured_payloads.lock().clone()
+    fn requests(&self) -> Vec<ChatRequest> {
+        self.captured_requests.lock().clone()
     }
 }
 
-impl TaskExecutor for CapturingExecutor {
-    fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
-        content: Value,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        self.captured_payloads.lock().push(content);
+impl Provider for CapturingExecutor {
+    fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        self.captured_requests.lock().push(req);
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-        self.responses
-            .get(idx)
-            .cloned()
-            .ok_or_else(|| "no more mock responses".into())
-    }
-
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        Ok(json!({"id": "capture-session"}))
+        let raw = self.responses.get(idx).cloned()
+            .ok_or_else(|| ProviderError::internal("no more mock responses"))?;
+        let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
+        let blocks = blocks_from_value(&content_value, None);
+        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let stop_reason = if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn };
+        Ok(ChatResponse { content: blocks, stop_reason, usage: None, raw })
     }
 }
 
@@ -643,7 +608,6 @@ fn test_system_prompt_passed_in_payload() {
     })]);
 
     let registry = ToolRegistry::new();
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "test".into(),
@@ -653,7 +617,6 @@ fn test_system_prompt_passed_in_payload() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -668,11 +631,11 @@ fn test_system_prompt_passed_in_payload() {
     };
     assert_eq!(result.final_text, "ok");
 
-    let payloads = executor.payloads();
-    assert_eq!(payloads.len(), 1);
-    let payload = &payloads[0];
-    assert_eq!(payload["system"], "You are a helpful assistant.");
-    assert!(payload.get("tools").is_none());
+    let requests = executor.requests();
+    assert_eq!(requests.len(), 1);
+    let req = &requests[0];
+    assert_eq!(req.system.as_deref(), Some("You are a helpful assistant."));
+    assert!(req.tools.is_none());
 }
 
 #[test]
@@ -687,7 +650,6 @@ fn agentic_loop_suspends_when_permission_requires_confirmation() {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
     let checker = PermissionChecker::new(PermissionMode::RuleBased);
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "perm-session".into(),
@@ -696,7 +658,6 @@ fn agentic_loop_suspends_when_permission_requires_confirmation() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         Some(&checker),
@@ -739,7 +700,6 @@ fn agentic_loop_allow_resumes_original_tool_invocation() {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
     let checker = PermissionChecker::new(PermissionMode::RuleBased);
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "perm-allow-session".into(),
@@ -748,7 +708,6 @@ fn agentic_loop_allow_resumes_original_tool_invocation() {
     };
 
     let initial = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         Some(&checker),
@@ -766,7 +725,6 @@ fn agentic_loop_allow_resumes_original_tool_invocation() {
         resume_suspended_tool_invocation(&suspension, true, &registry, None, &config)
             .expect("approval should resume tool invocation");
     let resumed = continue_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -783,16 +741,12 @@ fn agentic_loop_allow_resumes_original_tool_invocation() {
     };
     assert_eq!(result.final_text, "Approval finished.");
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg
-        .content
-        .as_array()
-        .expect("tool_result should be array");
-    assert_eq!(blocks[0]["tool_use_id"], "tu_perm_allow");
-    assert_eq!(blocks[0]["is_error"], false);
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("echoed: approved"));
+    let ContentBlock::ToolResult { tool_use_id, content, is_error } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert_eq!(tool_use_id, "tu_perm_allow");
+    assert!(!is_error);
+    assert!(content.as_str().unwrap_or_default().contains("echoed: approved"));
 }
 
 #[test]
@@ -816,8 +770,6 @@ fn agentic_loop_pre_tool_transform_changes_actual_tool_input() {
     hook_registry.register_pre_hook(Arc::new(TransformingHook {
         replacement_text: "transformed",
     }));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "transform-session".into(),
@@ -826,7 +778,6 @@ fn agentic_loop_pre_tool_transform_changes_actual_tool_input() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -840,12 +791,11 @@ fn agentic_loop_pre_tool_transform_changes_actual_tool_input() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert_eq!(blocks[0]["is_error"], true == false);
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("echoed: transformed"));
+    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(!is_error);
+    assert!(content.as_str().unwrap_or_default().contains("echoed: transformed"));
 }
 
 #[test]
@@ -870,8 +820,6 @@ fn agentic_loop_post_tool_stop_hook_transforms_failing_output() {
 
     let mut hook_registry = HookRegistry::new();
     hook_registry.register_post_hook(Arc::new(StopHook));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "stop-hook-session".into(),
@@ -880,7 +828,6 @@ fn agentic_loop_post_tool_stop_hook_transforms_failing_output() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -894,16 +841,12 @@ fn agentic_loop_post_tool_stop_hook_transforms_failing_output() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert_eq!(blocks[0]["is_error"], true);
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("测试失败"));
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("原始输出"));
+    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(*is_error);
+    assert!(content.as_str().unwrap_or_default().contains("测试失败"));
+    assert!(content.as_str().unwrap_or_default().contains("原始输出"));
 }
 
 #[test]
@@ -930,8 +873,6 @@ fn agentic_loop_post_tool_stop_hook_passthrough_for_non_matching_error_output() 
 
     let mut hook_registry = HookRegistry::new();
     hook_registry.register_post_hook(Arc::new(StopHook));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "stop-hook-passthrough-session".into(),
@@ -940,7 +881,6 @@ fn agentic_loop_post_tool_stop_hook_passthrough_for_non_matching_error_output() 
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -954,9 +894,11 @@ fn agentic_loop_post_tool_stop_hook_passthrough_for_non_matching_error_output() 
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert_eq!(blocks[0]["is_error"], true);
-    assert_eq!(blocks[0]["content"], original_error);
+    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(*is_error);
+    assert_eq!(content.as_str().unwrap_or_default(), original_error);
 }
 
 #[test]
@@ -981,8 +923,6 @@ fn agentic_loop_post_tool_stop_hook_transforms_clippy_output() {
 
     let mut hook_registry = HookRegistry::new();
     hook_registry.register_post_hook(Arc::new(StopHook));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "stop-hook-clippy-session".into(),
@@ -991,7 +931,6 @@ fn agentic_loop_post_tool_stop_hook_transforms_clippy_output() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -1005,16 +944,12 @@ fn agentic_loop_post_tool_stop_hook_transforms_clippy_output() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert_eq!(blocks[0]["is_error"], true);
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("lint 检查失败"));
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("cargo clippy"));
+    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(*is_error);
+    assert!(content.as_str().unwrap_or_default().contains("lint 检查失败"));
+    assert!(content.as_str().unwrap_or_default().contains("cargo clippy"));
 }
 
 #[test]
@@ -1039,8 +974,6 @@ fn agentic_loop_post_tool_stop_hook_transforms_npm_lint_output() {
 
     let mut hook_registry = HookRegistry::new();
     hook_registry.register_post_hook(Arc::new(StopHook));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "stop-hook-npm-lint-session".into(),
@@ -1049,7 +982,6 @@ fn agentic_loop_post_tool_stop_hook_transforms_npm_lint_output() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -1063,16 +995,12 @@ fn agentic_loop_post_tool_stop_hook_transforms_npm_lint_output() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert_eq!(blocks[0]["is_error"], true);
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("前端 lint 检查失败"));
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("npm run lint"));
+    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(*is_error);
+    assert!(content.as_str().unwrap_or_default().contains("前端 lint 检查失败"));
+    assert!(content.as_str().unwrap_or_default().contains("npm run lint"));
 }
 
 #[test]
@@ -1094,8 +1022,6 @@ fn agentic_loop_post_tool_block_converts_output_to_error_result() {
 
     let mut hook_registry = HookRegistry::new();
     hook_registry.register_post_hook(Arc::new(PostBlockingHook));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "post-block-session".into(),
@@ -1104,7 +1030,6 @@ fn agentic_loop_post_tool_block_converts_output_to_error_result() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -1118,12 +1043,11 @@ fn agentic_loop_post_tool_block_converts_output_to_error_result() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert_eq!(blocks[0]["is_error"], true);
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("stop hook blocked output"));
+    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(*is_error);
+    assert!(content.as_str().unwrap_or_default().contains("stop hook blocked output"));
 }
 
 #[test]
@@ -1145,8 +1069,6 @@ fn agentic_loop_pre_tool_block_returns_error_tool_result() {
 
     let mut hook_registry = HookRegistry::new();
     hook_registry.register_pre_hook(Arc::new(BlockingHook));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "block-session".into(),
@@ -1155,7 +1077,6 @@ fn agentic_loop_pre_tool_block_returns_error_tool_result() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -1169,12 +1090,11 @@ fn agentic_loop_pre_tool_block_returns_error_tool_result() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert_eq!(blocks[0]["is_error"], true);
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("blocked by hook: policy denied"));
+    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(*is_error);
+    assert!(content.as_str().unwrap_or_default().contains("blocked by hook: policy denied"));
 }
 
 #[test]
@@ -1193,7 +1113,6 @@ fn agentic_loop_resume_path_applies_pre_tool_transform() {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
     let checker = PermissionChecker::new(PermissionMode::RuleBased);
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "perm-transform-session".into(),
@@ -1202,7 +1121,6 @@ fn agentic_loop_resume_path_applies_pre_tool_transform() {
     };
 
     let initial = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         Some(&checker),
@@ -1230,7 +1148,6 @@ fn agentic_loop_resume_path_applies_pre_tool_transform() {
     )
     .expect("approval should resume tool invocation");
     let resumed = continue_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -1246,11 +1163,10 @@ fn agentic_loop_resume_path_applies_pre_tool_transform() {
         panic!("loop should complete after allow");
     };
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("echoed: transformed-on-resume"));
+    let ContentBlock::ToolResult { content, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(content.as_str().unwrap_or_default().contains("echoed: transformed-on-resume"));
 }
 
 #[test]
@@ -1272,7 +1188,6 @@ fn agentic_loop_resume_path_applies_post_tool_stop_hook() {
         message: "exit code 1\n--- stderr ---\ncargo test failed",
     }));
     let checker = PermissionChecker::new(PermissionMode::RuleBased);
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "perm-stop-hook-session".into(),
@@ -1281,7 +1196,6 @@ fn agentic_loop_resume_path_applies_post_tool_stop_hook() {
     };
 
     let initial = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         Some(&checker),
@@ -1307,7 +1221,6 @@ fn agentic_loop_resume_path_applies_post_tool_stop_hook() {
     )
     .expect("approval should resume tool invocation");
     let resumed = continue_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -1323,12 +1236,11 @@ fn agentic_loop_resume_path_applies_post_tool_stop_hook() {
         panic!("loop should complete after allow");
     };
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg.content.as_array().expect("should be array");
-    assert_eq!(blocks[0]["is_error"], true);
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("测试失败"));
+    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert!(*is_error);
+    assert!(content.as_str().unwrap_or_default().contains("测试失败"));
 }
 
 #[test]
@@ -1347,7 +1259,6 @@ fn agentic_loop_deny_injects_error_tool_result_and_continues() {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
     let checker = PermissionChecker::new(PermissionMode::RuleBased);
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "perm-deny-session".into(),
@@ -1356,7 +1267,6 @@ fn agentic_loop_deny_injects_error_tool_result_and_continues() {
     };
 
     let initial = run_agentic_loop(
-        &client,
         &executor,
         &registry,
         Some(&checker),
@@ -1374,7 +1284,6 @@ fn agentic_loop_deny_injects_error_tool_result_and_continues() {
         resume_suspended_tool_invocation(&suspension, false, &registry, None, &config)
             .expect("denial should still produce a tool_result");
     let resumed = continue_agentic_loop(
-        &client,
         &executor,
         &registry,
         None,
@@ -1391,16 +1300,12 @@ fn agentic_loop_deny_injects_error_tool_result_and_continues() {
     };
     assert_eq!(result.final_text, "Denied path finished.");
     let tool_result_msg = &result.messages[2];
-    let blocks = tool_result_msg
-        .content
-        .as_array()
-        .expect("tool_result should be array");
-    assert_eq!(blocks[0]["tool_use_id"], "tu_perm_deny");
-    assert_eq!(blocks[0]["is_error"], true);
-    assert!(blocks[0]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("denied by user"));
+    let ContentBlock::ToolResult { tool_use_id, is_error, content } = &tool_result_msg.blocks[0] else {
+        panic!("expected ToolResult block");
+    };
+    assert_eq!(tool_use_id, "tu_perm_deny");
+    assert!(*is_error);
+    assert!(content.as_str().unwrap_or_default().contains("denied by user"));
 }
 
 /// 验证 payload 中包含 tool definitions
@@ -1413,8 +1318,6 @@ fn test_tool_definitions_passed_in_payload() {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
     let tool_defs = registry.tool_definitions();
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 5,
         session_id: "test".into(),
@@ -1425,7 +1328,6 @@ fn test_tool_definitions_passed_in_payload() {
     };
 
     let result = run_agentic_loop(
-        &client,
         &executor,
         &ToolRegistry::new(),
         None,
@@ -1440,15 +1342,15 @@ fn test_tool_definitions_passed_in_payload() {
     };
     assert_eq!(result.final_text, "done");
 
-    let payloads = executor.payloads();
-    assert_eq!(payloads.len(), 1);
-    let payload = &payloads[0];
+    let requests = executor.requests();
+    assert_eq!(requests.len(), 1);
+    let req = &requests[0];
 
     // system 字段存在
-    assert_eq!(payload["system"], "identity");
+    assert_eq!(req.system.as_deref(), Some("identity"));
 
     // tools 字段存在且包含 echo 工具
-    let tools = payload["tools"].as_array().expect("tools should be array");
+    let tools = req.tools.as_ref().expect("tools should be present");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0]["name"], "echo");
     assert!(tools[0].get("description").is_some());

@@ -1,5 +1,7 @@
 use crate::web_channel::{SseEvent, WebChannel};
 use anima_runtime::bus::Bus;
+use anima_types::message::InternalPayload;
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,123 +14,88 @@ pub fn start_internal_bus_forwarder(bus: Arc<Bus>, web_channel: Arc<WebChannel>)
                 break;
             }
             match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(msg) => {
-                    // 解析 internal 消息中的 worker 状态事件
-                    if let Some(event_type) = msg.payload.get("event").and_then(|v| v.as_str()) {
-                        match event_type {
-                            "worker_task_start" | "worker_task_end" => {
-                                let worker_id = msg
-                                    .payload
-                                    .get("worker_id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-                                let status = msg
-                                    .payload
-                                    .get("status")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-                                let task_type = msg
-                                    .payload
-                                    .get("task_type")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string());
-                                web_channel.broadcast(SseEvent::WorkerStatus {
-                                    worker_id,
-                                    status,
-                                    task_type,
-                                });
-                            }
-                            "message_received"
-                            | "session_ready"
-                            | "session_create_failed"
-                            | "plan_built"
-                            | "cache_hit"
-                            | "cache_miss"
-                            | "worker_task_assigned"
-                            | "api_call_started"
-                            | "message_completed"
-                            | "message_failed"
-                            | "bus_message_dropped"
-                            | "question_asked"
-                            | "question_answer_submitted"
-                            | "question_resolved"
-                            | "question_escalated_to_user"
-                            | "upstream_response_observed"
-                            | "requirement_evaluation_started"
-                            | "requirement_satisfied"
-                            | "requirement_unsatisfied"
-                            | "requirement_followup_scheduled"
-                            | "requirement_followup_exhausted"
-                            | "user_input_required"
-                            | "tool_call_detected"
-                            | "tool_permission_requested"
-                            | "tool_permission_resolved"
-                            | "orchestration_wait_started"
-                            | "orchestration_wait_finished"
-                            | "orchestration_plan_finalize_started"
-                            | "orchestration_plan_finalize_finished"
-                            | "orchestration_plan_cleanup_incomplete"
-                            | "worker_api_call_started"
-                            | "worker_api_call_finished"
-                            | "worker_api_call_failed"
-                            | "worker_api_call_streaming_started"
-                            | "worker_api_call_streaming_finished"
-                            | "worker_api_call_streaming_failed"
-                            | "worker_task_cleanup_finished"
-                            | "sdk_send_prompt_started"
-                            | "sdk_send_prompt_finished"
-                            | "sdk_send_prompt_failed"
-                            | "sdk_stream_http_request_started"
-                            | "sdk_stream_http_response_opened"
-                            | "sdk_stream_sse_consume_started"
-                            | "sdk_stream_first_event_observed"
-                            | "sdk_stream_message_started"
-                            | "sdk_stream_content_block_started"
-                            | "sdk_stream_content_block_delta"
-                            | "sdk_stream_message_delta"
-                            | "sdk_stream_content_block_stopped"
-                            | "sdk_stream_message_stopped"
-                            | "subtask_blocked"
-                            | "subtask_auto_resolved" => {
-                                web_channel.broadcast(SseEvent::RuntimeEvent {
-                                    event: event_type.to_string(),
-                                    message_id: msg
-                                        .payload
-                                        .get("message_id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    channel: msg
-                                        .payload
-                                        .get("channel")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    chat_id: msg
-                                        .payload
-                                        .get("chat_id")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()),
-                                    sender_id: msg
-                                        .payload
-                                        .get("sender_id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    trace_id: msg.trace_id.clone(),
-                                    payload: msg
-                                        .payload
-                                        .get("payload")
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                });
-                            }
-                            _ => {}
+                Ok(msg) => match &msg.payload {
+                    InternalPayload::WorkerStatus {
+                        event,
+                        worker_id,
+                        status,
+                        task_type,
+                        ..
+                    } if event == "worker_task_start" || event == "worker_task_end" => {
+                        web_channel.broadcast(SseEvent::WorkerStatus {
+                            worker_id: worker_id.clone(),
+                            status: status.clone(),
+                            task_type: Some(task_type.clone()),
+                        });
+                    }
+                    InternalPayload::RuntimeEvent {
+                        event,
+                        message_id,
+                        channel,
+                        chat_id,
+                        sender_id,
+                        payload,
+                    } if event == "plan_proposed" => {
+                        let proposal_id = payload.get("proposal_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let summary = payload.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let task_count = payload.get("task_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        web_channel.broadcast(SseEvent::PlanProposed {
+                            job_id: message_id.clone(),
+                            proposal_id,
+                            summary,
+                            task_count,
+                        });
+                    }
+                    InternalPayload::RuntimeEvent {
+                        event,
+                        message_id,
+                        payload,
+                        ..
+                    } if event == "sdk_stream_content_block_delta" => {
+                        if let Some(sse) = map_stream_delta(message_id, payload) {
+                            web_channel.broadcast(sse);
                         }
                     }
-                }
+                    InternalPayload::RuntimeEvent {
+                        event,
+                        message_id,
+                        payload,
+                        ..
+                    } if event == "sdk_stream_content_block_started"
+                        || event == "sdk_stream_content_block_stopped" =>
+                    {
+                        let phase = if event.ends_with("started") { "started" } else { "stopped" };
+                        let index = payload.get("content_block_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        let kind = payload.get("content_block_kind").and_then(|v| v.as_str())
+                            .or_else(|| payload.get("delta_kind").and_then(|v| v.as_str()))
+                            .unwrap_or("unknown").to_string();
+                        web_channel.broadcast(SseEvent::StreamBlockLifecycle {
+                            job_id: message_id.clone(),
+                            index,
+                            phase: phase.to_string(),
+                            kind,
+                        });
+                    }
+                    InternalPayload::RuntimeEvent {
+                        event,
+                        message_id,
+                        channel,
+                        chat_id,
+                        sender_id,
+                        payload,
+                    } => {
+                        web_channel.broadcast(SseEvent::RuntimeEvent {
+                            event: event.clone(),
+                            message_id: message_id.clone(),
+                            channel: channel.clone(),
+                            chat_id: chat_id.clone(),
+                            sender_id: sender_id.clone(),
+                            trace_id: msg.trace_id.clone(),
+                            payload: payload.clone(),
+                        });
+                    }
+                    _ => {}
+                },
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     if bus.is_closed() {
                         break;
@@ -138,4 +105,69 @@ pub fn start_internal_bus_forwarder(bus: Arc<Bus>, web_channel: Arc<WebChannel>)
             }
         }
     });
+}
+
+fn map_stream_delta(message_id: &str, payload: &Value) -> Option<SseEvent> {
+    let index = payload.get("content_block_index").and_then(|v| v.as_u64())? as usize;
+    let delta_kind = payload.get("delta_kind").and_then(|v| v.as_str())?;
+    let (kind, delta) = match delta_kind {
+        "text_delta" => ("text", payload.get("text_delta").and_then(|v| v.as_str())?),
+        "thinking_delta" => ("thinking", payload.get("thinking_delta").and_then(|v| v.as_str())?),
+        "input_json_delta" => ("tool_input", payload.get("partial_json").and_then(|v| v.as_str())?),
+        _ => return None,
+    };
+    Some(SseEvent::StreamDelta {
+        job_id: message_id.to_string(),
+        index,
+        kind: kind.to_string(),
+        delta: delta.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn map_text_delta() {
+        let payload = json!({
+            "content_block_index": 1,
+            "delta_kind": "text_delta",
+            "text_delta": "hello"
+        });
+        let sse = map_stream_delta("msg1", &payload).unwrap();
+        assert!(matches!(sse, SseEvent::StreamDelta { kind, delta, index, .. } if kind == "text" && delta == "hello" && index == 1));
+    }
+
+    #[test]
+    fn map_thinking_delta() {
+        let payload = json!({
+            "content_block_index": 0,
+            "delta_kind": "thinking_delta",
+            "thinking_delta": "step 1"
+        });
+        let sse = map_stream_delta("msg2", &payload).unwrap();
+        assert!(matches!(sse, SseEvent::StreamDelta { kind, delta, .. } if kind == "thinking" && delta == "step 1"));
+    }
+
+    #[test]
+    fn map_tool_input_delta() {
+        let payload = json!({
+            "content_block_index": 2,
+            "delta_kind": "input_json_delta",
+            "partial_json": "{\"key\":"
+        });
+        let sse = map_stream_delta("msg3", &payload).unwrap();
+        assert!(matches!(sse, SseEvent::StreamDelta { kind, .. } if kind == "tool_input"));
+    }
+
+    #[test]
+    fn map_unknown_delta_returns_none() {
+        let payload = json!({
+            "content_block_index": 0,
+            "delta_kind": "unknown_delta"
+        });
+        assert!(map_stream_delta("msg4", &payload).is_none());
+    }
 }

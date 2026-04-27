@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use super::core::{AgentOrchestrator, LoweredTask, OrchestrationPlan};
-use crate::worker::executor::TaskExecutor;
-use anima_sdk::facade::Client as SdkClient;
+use crate::messages::types::ContentBlock;
+use crate::provider::{ChatMessage, ChatRequest, ChatRole, Provider};
 
 #[derive(Debug, Deserialize)]
 struct LlmContextInferResult {
@@ -16,8 +16,7 @@ struct LlmContextInferResult {
 }
 
 pub fn try_llm_infer_missing_context(
-    executor: &Arc<dyn TaskExecutor>,
-    client: &SdkClient,
+    provider: &Arc<dyn Provider>,
     session_id: &str,
     plan: &OrchestrationPlan,
     lowered_tasks: &[LoweredTask],
@@ -53,16 +52,23 @@ pub fn try_llm_infer_missing_context(
         plan.original_request, joined
     );
 
-    let content = json!([{"type": "text", "text": prompt}]);
-    let result = executor.send_prompt(client, session_id, content).ok()?;
+    let chat_request = ChatRequest {
+        messages: vec![ChatMessage {
+            role: ChatRole::User,
+            content: vec![ContentBlock::Text { text: prompt }],
+        }],
+        metadata: json!({ "session_id": session_id }),
+        ..Default::default()
+    };
+    let response = provider.chat(chat_request).ok()?;
 
-    let text = result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|block| block.get("text"))
-        .and_then(Value::as_str)
-        .or_else(|| result.get("text").and_then(Value::as_str))
+    let text = response
+        .content
+        .iter()
+        .find_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
         .unwrap_or("")
         .trim();
 

@@ -57,7 +57,7 @@ impl Default for BusConfig {
         Self {
             inbound_capacity: 1000,
             outbound_capacity: 1000,
-            internal_capacity: 100,
+            internal_capacity: 2000,
             control_capacity: 10,
         }
     }
@@ -188,7 +188,7 @@ impl Bus {
                 source: "bus".into(),
                 target: None,
                 msg_type: Some(InternalMessageType::Event),
-                payload,
+                payload: crate::bus::message::InternalPayload::Raw(payload),
                 metadata: Some(json!({ "event": "bus_message_dropped" })),
                 ..Default::default()
             }));

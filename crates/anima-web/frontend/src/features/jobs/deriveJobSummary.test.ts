@@ -92,6 +92,8 @@ describe('deriveJobSummary', () => {
         tool_name: 'read_file',
         tool_use_id: 'toolu_456',
         phase: 'result_recorded',
+        invocation_status: 'completed',
+        status_text: 'done',
         permission_state: 'allowed',
         input_preview: '/tmp/demo.txt',
         result_preview: 'line 1\nline 2',
@@ -134,7 +136,7 @@ describe('deriveJobSummary', () => {
   it('derives failed from failure snapshot', () => {
     const summary = deriveJobSummary(makeJob({
       status: 'failed',
-      failure: { error_code: 'worker_timeout', error_stage: 'execute' },
+      failure: { error_code: 'worker_timeout', error_stage: 'execute', message_id: 'msg-1', channel: 'web', occurred_at_ms: 1710000000000, internal_message: 'timeout' },
     }));
 
     expect(summary.statusTone).toBe('failed');

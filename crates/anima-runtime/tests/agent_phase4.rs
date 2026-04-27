@@ -1,7 +1,7 @@
 use anima_runtime::agent::{Agent, QuestionAnswerInput, TaskExecutor, WorkerAgent, WorkerPool};
 use anima_runtime::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
 use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
-use anima_runtime::bus::{make_inbound, Bus, MakeInbound};
+use anima_runtime::bus::{make_inbound, Bus, InternalPayload, MakeInbound};
 use anima_runtime::channel::{
     start_outbound_dispatch, Channel, ChannelRegistry, DispatchStats, TestChannel,
 };
@@ -11,7 +11,7 @@ use anima_runtime::tasks::{
     invocation_by_question_id, run_by_job_id, suspension_by_question_id, RequirementStatus,
     RunStatus, SuspensionKind, SuspensionStatus, TaskKind, TaskStatus,
 };
-use anima_sdk::facade::Client as SdkClient;
+
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -66,10 +66,13 @@ impl StreamingSequenceExecutor {
 impl TaskExecutor for StreamingSequenceExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        let text = content.as_str().unwrap_or("");
+        if text.contains("任务分解引擎") {
+            return Ok(json!({"content": "[]"}));
+        }
         self.payloads
             .lock()
             .expect("payloads lock poisoned")
@@ -81,17 +84,16 @@ impl TaskExecutor for StreamingSequenceExecutor {
             .ok_or_else(|| "no more mock responses".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-tool-permission"}))
     }
 
     fn send_prompt_streaming(
         &self,
-        client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<anima_runtime::worker::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
-        let response = self.send_prompt(client, session_id, content)?;
+        let response = self.send_prompt(session_id, content)?;
         Ok(Box::new(response_to_sse_lines(&response).into_iter().map(Ok)))
     }
 }
@@ -286,7 +288,6 @@ fn timeline_event_names_for_message(agent: &Agent, job_id: &str) -> Vec<String> 
 impl TaskExecutor for MockExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -295,7 +296,7 @@ impl TaskExecutor for MockExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-1"}))
     }
 }
@@ -309,14 +310,13 @@ struct QuestionLookingErrorExecutor;
 impl TaskExecutor for FailingExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("upstream exploded".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-err"}))
     }
 }
@@ -324,14 +324,13 @@ impl TaskExecutor for FailingExecutor {
 impl TaskExecutor for QuestionLookingErrorExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err(r#"{"question":{"id":"fake-question","prompt":"请确认是否继续","options":["继续","取消"]}}"#.into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-question-looking-error"}))
     }
 }
@@ -339,7 +338,6 @@ impl TaskExecutor for QuestionLookingErrorExecutor {
 impl TaskExecutor for QuestionFlowExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -360,7 +358,7 @@ impl TaskExecutor for QuestionFlowExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-question"}))
     }
 }
@@ -368,7 +366,6 @@ impl TaskExecutor for QuestionFlowExecutor {
 impl TaskExecutor for FollowupExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -384,7 +381,7 @@ impl TaskExecutor for FollowupExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-followup"}))
     }
 }
@@ -392,12 +389,15 @@ impl TaskExecutor for FollowupExecutor {
 impl TaskExecutor for OrchestrationQuestionExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
-        if text.contains("[orchestration/") {
+        if text.contains("任务分解引擎") {
+            Ok(json!({
+                "content": r#"[{"name":"design","task_type":"design","specialist_type":"designer","dependencies":[],"description":"design phase"}]"#
+            }))
+        } else if text.contains("[orchestration/") {
             Ok(json!({
                 "question": {
                     "id": "orch-question-1",
@@ -413,7 +413,7 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-orch-question"}))
     }
 }
@@ -421,12 +421,15 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
 impl TaskExecutor for OrchestrationFollowupExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
-        if text.contains("[orchestration/") {
+        if text.contains("任务分解引擎") {
+            Ok(json!({
+                "content": r#"[{"name":"design","task_type":"design","specialist_type":"designer","dependencies":[],"description":"design phase"}]"#
+            }))
+        } else if text.contains("[orchestration/") {
             Ok(json!({
                 "content": "I need more information before I can conclude this task."
             }))
@@ -437,7 +440,7 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-orch-followup"}))
     }
 }
@@ -445,7 +448,6 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
 impl TaskExecutor for RepeatingUnsatisfiedExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -454,7 +456,7 @@ impl TaskExecutor for RepeatingUnsatisfiedExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-repeat"}))
     }
 }
@@ -462,7 +464,6 @@ impl TaskExecutor for RepeatingUnsatisfiedExecutor {
 impl TaskExecutor for RepeatedQuestionExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -488,7 +489,7 @@ impl TaskExecutor for RepeatedQuestionExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-repeated-question"}))
     }
 }
@@ -499,14 +500,13 @@ struct SessionCreateErrorExecutor;
 impl TaskExecutor for SessionCreateErrorExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"content": "unused"}))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("create session upstream exploded".into())
     }
 }
@@ -517,14 +517,13 @@ struct MissingSessionIdExecutor;
 impl TaskExecutor for MissingSessionIdExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"content": "unused"}))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"ok": true}))
     }
 }
@@ -535,14 +534,13 @@ struct SessionTransportErrorExecutor;
 impl TaskExecutor for SessionTransportErrorExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"content": "unused"}))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err(
             "HTTP transport error: error sending request for url (http://127.0.0.1:9711/session)"
                 .into(),
@@ -556,14 +554,13 @@ struct UpstreamStreamErrorExecutor;
 impl TaskExecutor for UpstreamStreamErrorExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("empty_stream: upstream stream closed before first payload".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-stream-fail"}))
     }
 }
@@ -574,14 +571,13 @@ struct UpstreamTimeoutExecutor;
 impl TaskExecutor for UpstreamTimeoutExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("HTTP 408 Request Timeout: stream disconnected before completion: stream closed before response.completed".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-timeout"}))
     }
 }
@@ -589,7 +585,6 @@ impl TaskExecutor for UpstreamTimeoutExecutor {
 impl TaskExecutor for SlowExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -599,7 +594,7 @@ impl TaskExecutor for SlowExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         thread::sleep(Duration::from_millis(50));
         Ok(json!({"id": "slow-session-1"}))
     }
@@ -615,7 +610,6 @@ fn temp_runtime_state_path(name: &str) -> PathBuf {
 #[serial_test::serial]
 fn worker_executes_api_call_task() {
     let worker = Arc::new(WorkerAgent::new(
-        SdkClient::new("http://127.0.0.1:9711"),
         Arc::new(MockExecutor),
         None,
     ));
@@ -645,7 +639,6 @@ fn worker_executes_api_call_task() {
 #[serial_test::serial]
 fn worker_pool_submits_task_to_available_worker() {
     let pool = WorkerPool::new(
-        SdkClient::new("http://127.0.0.1:9711"),
         Arc::new(MockExecutor),
         Some(2),
         None,
@@ -675,9 +668,8 @@ fn agent_processes_messages_and_publishes_outbound() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MockExecutor)),
+        Arc::new(MockExecutor),
     );
     agent.start();
 
@@ -710,9 +702,8 @@ fn agent_reuses_created_session_for_same_chat() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MockExecutor)),
+        Arc::new(MockExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
@@ -773,9 +764,8 @@ fn channel_to_agent_to_dispatch_to_channel_round_trip_succeeds() {
 
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MockExecutor)),
+        Arc::new(MockExecutor),
     );
     agent.start();
 
@@ -824,9 +814,8 @@ fn agent_publishes_error_response_when_worker_execution_fails() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(FailingExecutor)),
+        Arc::new(FailingExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
@@ -898,9 +887,8 @@ fn agent_classifies_upstream_stream_error_during_plan_execution() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(UpstreamStreamErrorExecutor)),
+        Arc::new(UpstreamStreamErrorExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
@@ -963,9 +951,8 @@ fn agent_classifies_upstream_timeout_during_plan_execution() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(UpstreamTimeoutExecutor)),
+        Arc::new(UpstreamTimeoutExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
@@ -1023,9 +1010,8 @@ fn agent_submits_question_answer_and_continues_same_session() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(QuestionFlowExecutor)),
+        Arc::new(QuestionFlowExecutor),
     );
     agent.start();
 
@@ -1176,9 +1162,8 @@ fn agent_rebuilds_pending_question_from_store_after_cache_eviction() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(QuestionFlowExecutor)),
+        Arc::new(QuestionFlowExecutor),
     );
     agent.start();
 
@@ -1240,9 +1225,8 @@ fn agent_submit_question_answer_rebuilds_from_store_without_preloading_cache() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(QuestionFlowExecutor)),
+        Arc::new(QuestionFlowExecutor),
     );
     agent.start();
 
@@ -1298,9 +1282,8 @@ fn agent_continuation_can_return_to_waiting_user_input() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(RepeatedQuestionExecutor)),
+        Arc::new(RepeatedQuestionExecutor),
     );
     agent.start();
 
@@ -1413,9 +1396,8 @@ fn agent_schedules_followup_before_completion_when_result_is_unsatisfied() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(FollowupExecutor)),
+        Arc::new(FollowupExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
@@ -1511,9 +1493,8 @@ fn agent_exhausts_followup_when_result_repeats_without_progress() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(RepeatingUnsatisfiedExecutor)),
+        Arc::new(RepeatingUnsatisfiedExecutor),
     );
     agent.start();
 
@@ -1609,9 +1590,8 @@ fn agent_orchestration_p2_surfaces_question_and_continues_same_session() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(OrchestrationQuestionExecutor)),
+        Arc::new(OrchestrationQuestionExecutor),
     );
     agent.start();
 
@@ -1746,9 +1726,8 @@ fn agent_orchestration_p2_keeps_followup_contract_after_upstream_result() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(OrchestrationFollowupExecutor)),
+        Arc::new(OrchestrationFollowupExecutor),
     );
     agent.start();
 
@@ -1843,9 +1822,8 @@ fn runtime_projection_tracks_question_and_requirement_progress_lifecycle() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(QuestionFlowExecutor)),
+        Arc::new(QuestionFlowExecutor),
     );
     agent.start();
 
@@ -1948,7 +1926,6 @@ fn agent_restores_pending_question_and_completes_after_restart() {
     let store = Arc::new(RuntimeStateStore::with_persistence(path.clone()));
     let core = Arc::new(anima_runtime::agent::CoreAgent::new_with_runtime_state_store(
         bus.clone(),
-        SdkClient::new("http://127.0.0.1:9711"),
         None,
         Arc::new(QuestionFlowExecutor),
         None,
@@ -1998,7 +1975,6 @@ fn agent_restores_pending_question_and_completes_after_restart() {
     let resumed_store = Arc::new(RuntimeStateStore::with_persistence(path.clone()));
     let resumed_core = Arc::new(anima_runtime::agent::CoreAgent::new_with_runtime_state_store(
         resumed_bus.clone(),
-        SdkClient::new("http://127.0.0.1:9711"),
         None,
         Arc::new(QuestionFlowExecutor),
         None,
@@ -2074,9 +2050,8 @@ fn runtime_state_retains_orchestration_plan_and_subtask_records_after_finalize()
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(OrchestrationQuestionExecutor)),
+        Arc::new(OrchestrationQuestionExecutor),
     );
     agent.start();
 
@@ -2197,12 +2172,11 @@ fn agent_tracks_tool_permission_observability_on_allow_via_snapshot_and_query_he
     ]));
     let mut agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(executor.clone()),
+        executor.clone(),
     );
-    agent.register_builtin_tools();
-    agent.set_permission_checker(PermissionChecker::new(PermissionMode::RuleBased));
+    agent.register_builtin_tools().unwrap();
+    agent.set_permission_checker(PermissionChecker::new(PermissionMode::RuleBased)).unwrap();
     agent.start();
 
     let inbound = make_inbound(MakeInbound {
@@ -2376,9 +2350,8 @@ fn agent_tracks_tool_permission_observability_on_deny_via_snapshot_and_query_hel
     let bus = Arc::new(Bus::create());
     let mut agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(StreamingSequenceExecutor::new(vec![
+        Arc::new(StreamingSequenceExecutor::new(vec![
             json!({
                 "content": [
                     {"type": "text", "text": "Need permission"},
@@ -2393,10 +2366,10 @@ fn agent_tracks_tool_permission_observability_on_deny_via_snapshot_and_query_hel
             json!({
                 "content": [{"type": "text", "text": "Denied path observed."}]
             }),
-        ]))),
+        ])),
     );
-    agent.register_builtin_tools();
-    agent.set_permission_checker(PermissionChecker::new(PermissionMode::RuleBased));
+    agent.register_builtin_tools().unwrap();
+    agent.set_permission_checker(PermissionChecker::new(PermissionMode::RuleBased)).unwrap();
     agent.start();
 
     let inbound = make_inbound(MakeInbound {
@@ -2624,9 +2597,8 @@ fn agent_failure_does_not_create_pending_question() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(FailingExecutor)),
+        Arc::new(FailingExecutor),
     );
     agent.start();
 
@@ -2677,9 +2649,8 @@ fn agent_question_like_error_text_does_not_create_pending_question() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(QuestionLookingErrorExecutor)),
+        Arc::new(QuestionLookingErrorExecutor),
     );
     agent.start();
 
@@ -2730,9 +2701,8 @@ fn agent_emits_runtime_events_and_recent_sessions_in_status() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MockExecutor)),
+        Arc::new(MockExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
@@ -2864,9 +2834,8 @@ fn agent_walkthrough_covers_simple_question_and_orchestration_followup_chains() 
 
     let simple_agent = Agent::with_runtime_state_store(
         simple_bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MockExecutor)),
+        Arc::new(MockExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     simple_agent.start();
@@ -3005,9 +2974,8 @@ fn agent_walkthrough_covers_simple_question_and_orchestration_followup_chains() 
     let question_bus = Arc::new(Bus::create());
     let question_agent = Agent::create(
         question_bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(QuestionFlowExecutor)),
+        Arc::new(QuestionFlowExecutor),
     );
     question_agent.start();
 
@@ -3141,9 +3109,8 @@ fn agent_walkthrough_covers_simple_question_and_orchestration_followup_chains() 
     let complex_bus = Arc::new(Bus::create());
     let complex_agent = Agent::create(
         complex_bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(OrchestrationFollowupExecutor)),
+        Arc::new(OrchestrationFollowupExecutor),
     );
     complex_agent.start();
 
@@ -3242,9 +3209,8 @@ fn agent_preserves_executor_session_create_error_across_failure_surfaces() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(SessionCreateErrorExecutor)),
+        Arc::new(SessionCreateErrorExecutor),
     );
     agent.start();
 
@@ -3278,13 +3244,14 @@ fn agent_preserves_executor_session_create_error_across_failure_surfaces() {
             .internal_receiver()
             .recv_timeout(Duration::from_millis(200))
         {
-            if msg.payload.get("event").and_then(|v| v.as_str()) == Some("session_create_failed") {
-                let payload = msg.payload.get("payload").cloned().unwrap_or_default();
-                assert_eq!(payload["error_code"], "session_create_failed");
-                assert_eq!(payload["error_stage"], "session_create");
-                assert_eq!(payload["error_message"], "create session upstream exploded");
-                saw_failed_event = true;
-                break;
+            if let InternalPayload::RuntimeEvent { event, payload, .. } = &msg.payload {
+                if event == "session_create_failed" {
+                    assert_eq!(payload["error_code"], "session_create_failed");
+                    assert_eq!(payload["error_stage"], "session_create");
+                    assert_eq!(payload["error_message"], "create session upstream exploded");
+                    saw_failed_event = true;
+                    break;
+                }
             }
         }
     }
@@ -3339,9 +3306,8 @@ fn agent_preserves_missing_session_id_error_across_failure_surfaces() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MissingSessionIdExecutor)),
+        Arc::new(MissingSessionIdExecutor),
     );
     agent.start();
 
@@ -3368,16 +3334,17 @@ fn agent_preserves_missing_session_id_error_across_failure_surfaces() {
             .internal_receiver()
             .recv_timeout(Duration::from_millis(200))
         {
-            if msg.payload.get("event").and_then(|v| v.as_str()) == Some("session_create_failed") {
-                let payload = msg.payload.get("payload").cloned().unwrap_or_default();
-                assert_eq!(payload["error_code"], "session_create_failed");
-                assert_eq!(payload["error_stage"], "session_create");
-                assert_eq!(
-                    payload["error_message"],
-                    "Failed to create session: no ID returned"
-                );
-                saw_failed_event = true;
-                break;
+            if let InternalPayload::RuntimeEvent { event, payload, .. } = &msg.payload {
+                if event == "session_create_failed" {
+                    assert_eq!(payload["error_code"], "session_create_failed");
+                    assert_eq!(payload["error_stage"], "session_create");
+                    assert_eq!(
+                        payload["error_message"],
+                        "Failed to create session: no ID returned"
+                    );
+                    saw_failed_event = true;
+                    break;
+                }
             }
         }
     }
@@ -3423,9 +3390,8 @@ fn agent_classifies_session_transport_error_as_session_create_failure() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(SessionTransportErrorExecutor)),
+        Arc::new(SessionTransportErrorExecutor),
     );
     agent.start();
 
@@ -3453,16 +3419,17 @@ fn agent_classifies_session_transport_error_as_session_create_failure() {
             .internal_receiver()
             .recv_timeout(Duration::from_millis(200))
         {
-            if msg.payload.get("event").and_then(|v| v.as_str()) == Some("session_create_failed") {
-                let payload = msg.payload.get("payload").cloned().unwrap_or_default();
-                assert_eq!(payload["error_code"], "session_create_failed");
-                assert_eq!(payload["error_stage"], "session_create");
-                assert_eq!(
-                    payload["error_message"],
-                    "HTTP transport error: error sending request for url (http://127.0.0.1:9711/session)"
-                );
-                saw_failed_event = true;
-                break;
+            if let InternalPayload::RuntimeEvent { event, payload, .. } = &msg.payload {
+                if event == "session_create_failed" {
+                    assert_eq!(payload["error_code"], "session_create_failed");
+                    assert_eq!(payload["error_stage"], "session_create");
+                    assert_eq!(
+                        payload["error_message"],
+                        "HTTP transport error: error sending request for url (http://127.0.0.1:9711/session)"
+                    );
+                    saw_failed_event = true;
+                    break;
+                }
             }
         }
     }
@@ -3505,9 +3472,8 @@ fn agent_preserves_worker_pool_unavailable_error_during_session_create() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MockExecutor)),
+        Arc::new(MockExecutor),
     );
 
     agent
@@ -3533,13 +3499,14 @@ fn agent_preserves_worker_pool_unavailable_error_during_session_create() {
             .internal_receiver()
             .recv_timeout(Duration::from_millis(200))
         {
-            if msg.payload.get("event").and_then(|v| v.as_str()) == Some("session_create_failed") {
-                let payload = msg.payload.get("payload").cloned().unwrap_or_default();
-                assert_eq!(payload["error_code"], "worker_unavailable");
-                assert_eq!(payload["error_stage"], "worker_pool");
-                assert_eq!(payload["error_message"], "Worker pool is not running");
-                saw_failed_event = true;
-                break;
+            if let InternalPayload::RuntimeEvent { event, payload, .. } = &msg.payload {
+                if event == "session_create_failed" {
+                    assert_eq!(payload["error_code"], "worker_unavailable");
+                    assert_eq!(payload["error_stage"], "worker_pool");
+                    assert_eq!(payload["error_message"], "Worker pool is not running");
+                    saw_failed_event = true;
+                    break;
+                }
             }
         }
     }
@@ -3582,9 +3549,8 @@ fn agent_exposes_busy_worker_current_task_during_long_execution() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(SlowExecutor)),
+        Arc::new(SlowExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
@@ -3633,7 +3599,6 @@ fn agent_exposes_busy_worker_current_task_during_long_execution() {
 #[serial_test::serial]
 fn runtime_timeline_uses_subtask_metadata_as_job_identity() {
     let worker_pool = Arc::new(WorkerPool::new(
-        SdkClient::new("http://127.0.0.1:9711"),
         Arc::new(MockExecutor),
         Some(2),
         None,
@@ -3653,9 +3618,8 @@ fn runtime_timeline_uses_subtask_metadata_as_job_identity() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MockExecutor)),
+        Arc::new(MockExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
@@ -3733,9 +3697,8 @@ fn integration_routes_to_named_channel_when_multiple_channels_are_registered() {
 
     let agent = Agent::create(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MockExecutor)),
+        Arc::new(MockExecutor),
     );
     agent.start();
 
@@ -3796,9 +3759,8 @@ fn integration_mixed_dispatch_outcomes_do_not_block_successful_messages() {
 
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(MockExecutor)),
+        Arc::new(MockExecutor),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();

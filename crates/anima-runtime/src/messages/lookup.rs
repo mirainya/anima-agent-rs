@@ -36,7 +36,7 @@ pub fn build_message_lookups(messages: &[InternalMsg]) -> MessageLookups {
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::{InternalMsg, MessageRole};
+    use super::super::types::{ContentBlock, InternalMsg, MessageRole};
     use super::*;
     use serde_json::json;
 
@@ -45,7 +45,7 @@ mod tests {
         let msgs = vec![
             InternalMsg {
                 role: MessageRole::Assistant,
-                content: json!({}),
+                blocks: vec![],
                 message_id: "m1".into(),
                 tool_use_id: Some("tu_1".into()),
                 filtered: false,
@@ -53,7 +53,9 @@ mod tests {
             },
             InternalMsg {
                 role: MessageRole::User,
-                content: json!("result"),
+                blocks: vec![ContentBlock::Text {
+                    text: "result".into(),
+                }],
                 message_id: "m2".into(),
                 tool_use_id: Some("tu_1".into()),
                 filtered: false,

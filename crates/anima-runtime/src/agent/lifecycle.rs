@@ -12,10 +12,11 @@ use crate::permissions::PermissionChecker;
 use crate::runtime::{build_projection, RuntimeProjectionView, RuntimeStateSnapshot};
 
 impl CoreAgent {
-    pub fn register_builtin_tools(&mut self) {
+    pub fn register_builtin_tools(&mut self) -> Result<(), String> {
         let registry = Arc::get_mut(&mut self.tool_registry)
-            .expect("cannot mutate shared tool_registry — ensure no other Arc references exist");
+            .ok_or("cannot mutate shared tool_registry — ensure no other Arc references exist")?;
         crate::tools::builtins::register_all(registry);
+        Ok(())
     }
 
     pub fn set_tool_registry(&mut self, registry: crate::tools::registry::ToolRegistry) {

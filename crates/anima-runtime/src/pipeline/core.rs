@@ -34,26 +34,26 @@ pub enum PipelineState {
 ///
 /// 各阶段组件通过 Mutex 保护以支持并发访问，
 /// 统计计数器使用 AtomicU64 实现无锁更新。
-pub struct Pipeline {
+pub struct Pipeline<T: Send + Sync + Clone + 'static = Value> {
     pub id: String,
     source: Mutex<Option<Box<dyn Source>>>,
-    transforms: Mutex<Vec<Box<dyn Transform>>>,
-    filters: Mutex<Vec<Box<dyn Filter>>>,
-    aggregate: Mutex<Option<Box<dyn Aggregate>>>,
-    sink: Mutex<Option<Box<dyn Sink>>>,
+    transforms: Mutex<Vec<Box<dyn Transform<T>>>>,
+    filters: Mutex<Vec<Box<dyn Filter<T>>>>,
+    aggregate: Mutex<Option<Box<dyn Aggregate<T>>>>,
+    sink: Mutex<Option<Box<dyn Sink<T>>>>,
     state: Mutex<PipelineState>,
     items_processed: AtomicU64,
     items_filtered: AtomicU64,
     errors: AtomicU64,
 }
 
-impl Default for Pipeline {
+impl Default for Pipeline<Value> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Pipeline {
+impl<T: Send + Sync + Clone + 'static> Pipeline<T> {
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -79,33 +79,32 @@ impl Pipeline {
         self
     }
 
-    pub fn add_transform(self, transform: Box<dyn Transform>) -> Self {
+    pub fn add_transform(self, transform: Box<dyn Transform<T>>) -> Self {
         self.transforms.lock().push(transform);
         self
     }
 
-    pub fn add_filter(self, filter: Box<dyn Filter>) -> Self {
+    pub fn add_filter(self, filter: Box<dyn Filter<T>>) -> Self {
         self.filters.lock().push(filter);
         self
     }
 
-    pub fn add_aggregate(self, aggregate: Box<dyn Aggregate>) -> Self {
+    pub fn add_aggregate(self, aggregate: Box<dyn Aggregate<T>>) -> Self {
         *self.aggregate.lock() = Some(aggregate);
         self
     }
 
-    pub fn add_sink(self, sink: Box<dyn Sink>) -> Self {
+    pub fn add_sink(self, sink: Box<dyn Sink<T>>) -> Self {
         *self.sink.lock() = Some(sink);
         self
     }
 
     /// 处理单个数据项，依次经过 Filter → Transform → Aggregate/Sink 各阶段。
     /// 返回 Ok(None) 表示数据被过滤或被聚合器吸收，Ok(Some) 表示处理完成的输出。
-    pub fn process(&self, data: Value) -> Result<Option<Value>, String> {
+    pub fn process(&self, data: T) -> Result<Option<T>, String> {
         let ctx = PipelineContext::new(&self.id);
         self.items_processed.fetch_add(1, Ordering::Relaxed);
 
-        // 1. 过滤阶段：任一 filter 不通过则直接丢弃
         let filters = self.filters.lock();
         for filter in filters.iter() {
             if !filter.passes(&data, &ctx) {
@@ -113,10 +112,8 @@ impl Pipeline {
                 return Ok(None);
             }
         }
-        // 提前释放锁，避免在后续阶段持有 filter 锁
         drop(filters);
 
-        // 2. 转换阶段：依次应用所有 transform，任一返回 None 则丢弃
         let transforms = self.transforms.lock();
         let mut current = data;
         for transform in transforms.iter() {
@@ -134,7 +131,6 @@ impl Pipeline {
         }
         drop(transforms);
 
-        // 3. 聚合阶段：如果存在聚合器，数据被吸收，不产生单条输出
         let agg = self.aggregate.lock();
         if let Some(ref aggregate) = *agg {
             aggregate.add_data(current, &ctx)?;
@@ -142,7 +138,6 @@ impl Pipeline {
         }
         drop(agg);
 
-        // 4. 输出阶段：将最终数据写入 Sink
         let sink = self.sink.lock();
         if let Some(ref sink) = *sink {
             sink.write(current.clone(), &ctx)?;
@@ -152,7 +147,7 @@ impl Pipeline {
     }
 
     /// Process a batch of items.
-    pub fn process_batch(&self, items: Vec<Value>) -> Vec<Result<Option<Value>, String>> {
+    pub fn process_batch(&self, items: Vec<T>) -> Vec<Result<Option<T>, String>> {
         items.into_iter().map(|item| self.process(item)).collect()
     }
 
@@ -192,7 +187,7 @@ impl Pipeline {
         }
     }
 
-    pub fn aggregation_result(&self) -> Option<Value> {
+    pub fn aggregation_result(&self) -> Option<T> {
         self.aggregate.lock().as_ref().and_then(|a| a.get_result())
     }
 }

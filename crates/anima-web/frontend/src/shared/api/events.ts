@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { sseEventSchema, type SseEvent } from '@/shared/utils/types';
+import { useStreamStore } from '@/shared/state/useStreamStore';
 
 const TERMINAL_RUNTIME_EVENTS = new Set([
   'message_completed',
@@ -63,8 +64,16 @@ export function useEventsSync() {
       try {
         const raw = JSON.parse(message.data) as unknown;
         const event = sseEventSchema.parse(raw);
-        if (shouldRefresh(event)) {
+        if (event.type === 'stream_delta') {
+          useStreamStore.getState().appendDelta(event.job_id, event.index, event.kind, event.delta);
+        } else if (event.type === 'stream_block_lifecycle') {
+          useStreamStore.getState().setBlockPhase(event.job_id, event.index, event.kind, event.phase);
+        } else if (shouldRefresh(event)) {
           scheduleRefresh();
+        }
+        if (event.type === 'runtime_event' && event.event === 'message_completed') {
+          const jobId = (event.payload as Record<string, unknown>)?.job_id as string | undefined;
+          if (jobId) useStreamStore.getState().clearJob(jobId);
         }
       } catch {
         // 忽略无法解析的事件，避免中断 SSE 主流程

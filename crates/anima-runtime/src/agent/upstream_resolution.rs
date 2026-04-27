@@ -169,8 +169,10 @@ impl CoreAgent {
             }),
         );
 
+        let judge_provider = self.judge_provider.lock().clone();
         let judgement = crate::execution::requirement_judge::judge_requirement(
             &requirement_preparation.judge_context,
+            judge_provider.as_deref(),
         );
         let turn_plan = crate::execution::turn_coordinator::plan_turn_outcome(
             judgement,
@@ -606,15 +608,16 @@ impl CoreAgent {
         branch: crate::execution::turn_coordinator::CompletedBranchData,
     ) -> Result<Option<PendingQuestion>, String> {
         if let Some(resolved_payload) = branch.resolved_question.as_ref() {
-            let pending = ctx.resolved_question.expect(
-                "resolved question should exist when completed branch includes resolved payload",
-            );
-            self.publish_resolved_question(
-                ctx.inbound_msg,
-                ctx.exec_ctx,
-                pending,
-                resolved_payload,
-            );
+            if let Some(pending) = ctx.resolved_question {
+                self.publish_resolved_question(
+                    ctx.inbound_msg,
+                    ctx.exec_ctx,
+                    pending,
+                    resolved_payload,
+                );
+            } else {
+                tracing::warn!("branch has resolved_question payload but ctx.resolved_question is None — skipping publish");
+            }
         }
         let satisfied_progress = self.requirement.state(&ctx.inbound_msg.id, false);
         self.suspension.clear_question(&ctx.inbound_msg.id);
@@ -694,15 +697,16 @@ impl CoreAgent {
         branch: crate::execution::turn_coordinator::WaitingUserInputBranchData,
     ) -> Result<Option<PendingQuestion>, String> {
         if let Some(resolved_payload) = branch.resolved_question.as_ref() {
-            let resolved = ctx.resolved_question.expect(
-                "resolved question should exist when waiting branch includes resolved payload",
-            );
-            self.publish_resolved_question(
-                ctx.inbound_msg,
-                ctx.exec_ctx,
-                resolved,
-                resolved_payload,
-            );
+            if let Some(resolved) = ctx.resolved_question {
+                self.publish_resolved_question(
+                    ctx.inbound_msg,
+                    ctx.exec_ctx,
+                    resolved,
+                    resolved_payload,
+                );
+            } else {
+                tracing::warn!("branch has resolved_question payload but ctx.resolved_question is None — skipping publish");
+            }
         }
         self.emitter.publish(
             "requirement_unsatisfied",

@@ -6,7 +6,7 @@
 use serde_json::json;
 
 use super::lookup::build_message_lookups;
-use super::types::{InternalMsg, MessageRole};
+use super::types::{ContentBlock, InternalMsg, MessageRole};
 
 /// 确保 tool_use 和 tool_result 正确配对
 ///
@@ -20,14 +20,13 @@ pub fn ensure_tool_result_pairing(messages: &mut Vec<InternalMsg>) {
         if msg.role == MessageRole::Assistant {
             if let Some(ref tool_use_id) = msg.tool_use_id {
                 if !lookups.tool_result_by_use_id.contains_key(tool_use_id) {
-                    // 缺失 tool_result，需要在 tool_use 后面插入
                     let placeholder = InternalMsg {
                         role: MessageRole::User,
-                        content: json!([{
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": ""
-                        }]),
+                        blocks: vec![ContentBlock::ToolResult {
+                            tool_use_id: tool_use_id.clone(),
+                            content: serde_json::Value::String(String::new()),
+                            is_error: false,
+                        }],
                         message_id: format!("{}_auto_result", msg.message_id),
                         tool_use_id: Some(tool_use_id.clone()),
                         filtered: false,
@@ -54,7 +53,7 @@ mod tests {
     fn inserts_missing_tool_result() {
         let mut msgs = vec![InternalMsg {
             role: MessageRole::Assistant,
-            content: json!({}),
+            blocks: vec![],
             message_id: "m1".into(),
             tool_use_id: Some("tu_1".into()),
             filtered: false,
@@ -72,7 +71,7 @@ mod tests {
         let mut msgs = vec![
             InternalMsg {
                 role: MessageRole::Assistant,
-                content: json!({}),
+                blocks: vec![],
                 message_id: "m1".into(),
                 tool_use_id: Some("tu_1".into()),
                 filtered: false,
@@ -80,7 +79,9 @@ mod tests {
             },
             InternalMsg {
                 role: MessageRole::User,
-                content: json!("result"),
+                blocks: vec![ContentBlock::Text {
+                    text: "result".into(),
+                }],
                 message_id: "m2".into(),
                 tool_use_id: Some("tu_1".into()),
                 filtered: false,
@@ -89,6 +90,6 @@ mod tests {
         ];
 
         ensure_tool_result_pairing(&mut msgs);
-        assert_eq!(msgs.len(), 2); // 不变
+        assert_eq!(msgs.len(), 2);
     }
 }

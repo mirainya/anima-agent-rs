@@ -1,28 +1,7 @@
-use crate::messages::types::{InternalMsg, MessageRole};
+use crate::messages::types::{ContentBlock, InternalMsg, MessageRole};
 use crate::streaming::types::{ContentBlock as StreamContentBlock, ContentDelta};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "type")]
-pub enum ContentBlock {
-    Text {
-        text: String,
-    },
-    ToolUse {
-        id: String,
-        name: String,
-        input: Value,
-    },
-    ToolResult {
-        tool_use_id: String,
-        content: Value,
-        is_error: bool,
-    },
-    Json {
-        value: Value,
-    },
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageRecord {
@@ -56,7 +35,7 @@ impl MessageRecord {
             run_id,
             turn_id,
             role: msg.role.clone(),
-            blocks: blocks_from_value(&msg.content, msg.tool_use_id.as_deref()),
+            blocks: msg.blocks.clone(),
             tool_use_id: msg.tool_use_id.clone(),
             metadata: msg.metadata.clone(),
             filtered: msg.filtered,
@@ -67,88 +46,13 @@ impl MessageRecord {
     pub fn to_internal(&self) -> InternalMsg {
         InternalMsg {
             role: self.role.clone(),
-            content: value_from_blocks(&self.blocks),
+            blocks: self.blocks.clone(),
             message_id: self.message_id.clone(),
             tool_use_id: self.tool_use_id.clone(),
             filtered: self.filtered,
             metadata: self.metadata.clone(),
         }
     }
-}
-
-pub fn blocks_from_value(content: &Value, fallback_tool_use_id: Option<&str>) -> Vec<ContentBlock> {
-    match content {
-        Value::Array(items) => items
-            .iter()
-            .map(|item| match item.get("type").and_then(Value::as_str) {
-                Some("text") => ContentBlock::Text {
-                    text: item
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                },
-                Some("tool_use") => ContentBlock::ToolUse {
-                    id: item
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    name: item
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    input: item.get("input").cloned().unwrap_or(Value::Null),
-                },
-                Some("tool_result") => ContentBlock::ToolResult {
-                    tool_use_id: item
-                        .get("tool_use_id")
-                        .and_then(Value::as_str)
-                        .or(fallback_tool_use_id)
-                        .unwrap_or_default()
-                        .to_string(),
-                    content: item.get("content").cloned().unwrap_or(Value::Null),
-                    is_error: item
-                        .get("is_error")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                },
-                _ => ContentBlock::Json {
-                    value: item.clone(),
-                },
-            })
-            .collect(),
-        Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
-        other => vec![ContentBlock::Json {
-            value: other.clone(),
-        }],
-    }
-}
-
-pub fn value_from_blocks(blocks: &[ContentBlock]) -> Value {
-    Value::Array(
-        blocks
-            .iter()
-            .map(|block| match block {
-                ContentBlock::Text { text } => serde_json::json!({"type": "text", "text": text}),
-                ContentBlock::ToolUse { id, name, input } => {
-                    serde_json::json!({"type": "tool_use", "id": id, "name": name, "input": input})
-                }
-                ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } => serde_json::json!({
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": content,
-                    "is_error": is_error,
-                }),
-                ContentBlock::Json { value } => value.clone(),
-            })
-            .collect(),
-    )
 }
 
 pub fn stream_block_to_transcript(block: &StreamContentBlock) -> ContentBlock {
@@ -159,20 +63,132 @@ pub fn stream_block_to_transcript(block: &StreamContentBlock) -> ContentBlock {
             name: name.clone(),
             input: input.clone(),
         },
+        StreamContentBlock::Thinking { thinking } => ContentBlock::Thinking {
+            thinking: thinking.clone(),
+        },
     }
 }
 
 pub fn apply_delta(block: &mut ContentBlock, delta: &ContentDelta) {
     match (block, delta) {
-        (ContentBlock::Text { text }, ContentDelta::TextDelta { text: chunk }) => {
-            text.push_str(chunk)
+        (ContentBlock::Text { text }, ContentDelta::TextDelta { text: dt }) => {
+            text.push_str(dt);
         }
         (ContentBlock::ToolUse { input, .. }, ContentDelta::InputJsonDelta { partial_json }) => {
-            *input = Value::String(match input {
-                Value::String(current) => format!("{current}{partial_json}"),
-                _ => partial_json.clone(),
-            });
+            match input {
+                Value::String(s) => s.push_str(partial_json),
+                _ => *input = Value::String(partial_json.clone()),
+            }
+        }
+        (ContentBlock::Thinking { thinking }, ContentDelta::ThinkingDelta { thinking: dt }) => {
+            thinking.push_str(dt);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn from_internal_round_trip() {
+        let msg = InternalMsg {
+            role: MessageRole::User,
+            blocks: vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+            message_id: "m1".into(),
+            tool_use_id: None,
+            filtered: false,
+            metadata: json!({}),
+        };
+        let record = MessageRecord::from_internal("r1".into(), None, 100, &msg);
+        let back = record.to_internal();
+        assert_eq!(back.role, msg.role);
+        assert_eq!(back.blocks, msg.blocks);
+        assert_eq!(back.message_id, msg.message_id);
+    }
+
+    #[test]
+    fn apply_text_delta() {
+        let mut block = ContentBlock::Text {
+            text: "hel".into(),
+        };
+        apply_delta(
+            &mut block,
+            &ContentDelta::TextDelta {
+                text: "lo".into(),
+            },
+        );
+        assert_eq!(
+            block,
+            ContentBlock::Text {
+                text: "hello".into()
+            }
+        );
+    }
+
+    #[test]
+    fn apply_input_json_delta() {
+        let mut block = ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "bash".into(),
+            input: Value::String("{\"cmd\":".into()),
+        };
+        apply_delta(
+            &mut block,
+            &ContentDelta::InputJsonDelta {
+                partial_json: "\"ls\"}".into(),
+            },
+        );
+        if let ContentBlock::ToolUse { input, .. } = &block {
+            assert_eq!(input, &Value::String("{\"cmd\":\"ls\"}".into()));
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn apply_input_json_delta_from_non_string() {
+        let mut block = ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "bash".into(),
+            input: Value::Null,
+        };
+        apply_delta(
+            &mut block,
+            &ContentDelta::InputJsonDelta {
+                partial_json: "{\"a\":1}".into(),
+            },
+        );
+        if let ContentBlock::ToolUse { input, .. } = &block {
+            assert_eq!(input, &Value::String("{\"a\":1}".into()));
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn stream_block_to_transcript_maps_correctly() {
+        let text = StreamContentBlock::Text {
+            text: "hi".into(),
+        };
+        assert_eq!(
+            stream_block_to_transcript(&text),
+            ContentBlock::Text {
+                text: "hi".into()
+            }
+        );
+
+        let tool = StreamContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "bash".into(),
+            input: json!({}),
+        };
+        assert!(
+            matches!(stream_block_to_transcript(&tool), ContentBlock::ToolUse { id, .. } if id == "t1")
+        );
     }
 }

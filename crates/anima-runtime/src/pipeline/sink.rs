@@ -1,19 +1,10 @@
 use crate::pipeline::traits::*;
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
-use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 // ── Channel Sink ────────────────────────────────────────────────────
-
-pub struct ChannelSink {
-    #[allow(dead_code)]
-    id: String,
-    tx: Sender<Value>,
-    state: Mutex<SinkState>,
-    items: AtomicU64,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 enum SinkState {
@@ -21,8 +12,16 @@ enum SinkState {
     Closed,
 }
 
-impl ChannelSink {
-    pub fn new(tx: Sender<Value>) -> Self {
+pub struct ChannelSink<T: Send + 'static = serde_json::Value> {
+    #[allow(dead_code)]
+    id: String,
+    tx: Sender<T>,
+    state: Mutex<SinkState>,
+    items: AtomicU64,
+}
+
+impl<T: Send + 'static> ChannelSink<T> {
+    pub fn new(tx: Sender<T>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             tx,
@@ -32,8 +31,8 @@ impl ChannelSink {
     }
 }
 
-impl Sink for ChannelSink {
-    fn write(&self, data: Value, _ctx: &PipelineContext) -> Result<(), String> {
+impl<T: Send + Sync + 'static> Sink<T> for ChannelSink<T> {
+    fn write(&self, data: T, _ctx: &PipelineContext) -> Result<(), String> {
         if *self.state.lock() != SinkState::Open {
             return Err("sink closed".into());
         }
@@ -52,18 +51,18 @@ impl Sink for ChannelSink {
 
 // ── Collection Sink ─────────────────────────────────────────────────
 
-pub struct CollectionSink {
-    items: Mutex<Vec<Value>>,
+pub struct CollectionSink<T: Send + 'static = serde_json::Value> {
+    items: Mutex<Vec<T>>,
     state: Mutex<SinkState>,
 }
 
-impl Default for CollectionSink {
+impl<T: Send + 'static> Default for CollectionSink<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CollectionSink {
+impl<T: Send + 'static> CollectionSink<T> {
     pub fn new() -> Self {
         Self {
             items: Mutex::new(Vec::new()),
@@ -71,7 +70,10 @@ impl CollectionSink {
         }
     }
 
-    pub fn items(&self) -> Vec<Value> {
+    pub fn items(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
         self.items.lock().clone()
     }
 
@@ -84,8 +86,8 @@ impl CollectionSink {
     }
 }
 
-impl Sink for CollectionSink {
-    fn write(&self, data: Value, _ctx: &PipelineContext) -> Result<(), String> {
+impl<T: Send + Sync + 'static> Sink<T> for CollectionSink<T> {
+    fn write(&self, data: T, _ctx: &PipelineContext) -> Result<(), String> {
         if *self.state.lock() != SinkState::Open {
             return Err("sink closed".into());
         }
@@ -103,14 +105,14 @@ impl Sink for CollectionSink {
 
 // ── Callback Sink ───────────────────────────────────────────────────
 
-pub struct CallbackSink {
-    callback: Box<dyn Fn(Value) + Send + Sync>,
+pub struct CallbackSink<T: Send + Sync + 'static = serde_json::Value> {
+    callback: Box<dyn Fn(T) + Send + Sync>,
     state: Mutex<SinkState>,
     items: AtomicU64,
 }
 
-impl CallbackSink {
-    pub fn new(callback: impl Fn(Value) + Send + Sync + 'static) -> Self {
+impl<T: Send + Sync + 'static> CallbackSink<T> {
+    pub fn new(callback: impl Fn(T) + Send + Sync + 'static) -> Self {
         Self {
             callback: Box::new(callback),
             state: Mutex::new(SinkState::Open),
@@ -119,8 +121,8 @@ impl CallbackSink {
     }
 }
 
-impl Sink for CallbackSink {
-    fn write(&self, data: Value, _ctx: &PipelineContext) -> Result<(), String> {
+impl<T: Send + Sync + 'static> Sink<T> for CallbackSink<T> {
+    fn write(&self, data: T, _ctx: &PipelineContext) -> Result<(), String> {
         if *self.state.lock() != SinkState::Open {
             return Err("sink closed".into());
         }
@@ -161,8 +163,8 @@ impl NullSink {
     }
 }
 
-impl Sink for NullSink {
-    fn write(&self, _data: Value, _ctx: &PipelineContext) -> Result<(), String> {
+impl<T: Send + Sync + 'static> Sink<T> for NullSink {
+    fn write(&self, _data: T, _ctx: &PipelineContext) -> Result<(), String> {
         self.items.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

@@ -1,16 +1,16 @@
 //! 集成测试：Agentic Loop 上下文压缩
 
-use anima_runtime::worker::executor::TaskExecutor;
 use anima_runtime::execution::agentic_loop::{
     run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome,
 };
 use anima_runtime::messages::compact::CompactConfig;
-use anima_runtime::messages::types::{InternalMsg, MessageRole};
+use anima_runtime::messages::types::{blocks_from_value, ContentBlock, InternalMsg, MessageRole};
+use anima_runtime::provider::{ChatResponse, Provider, ProviderError, StopReason};
+use anima_runtime::provider::types::ChatRequest;
 use anima_runtime::tools::definition::{Tool, ToolContext};
 use anima_runtime::tools::registry::ToolRegistry;
 use anima_runtime::tools::result::{ToolError, ToolResult};
 
-use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -34,22 +34,16 @@ impl MockExecutor {
     }
 }
 
-impl TaskExecutor for MockExecutor {
-    fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
-        _content: Value,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+impl Provider for MockExecutor {
+    fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-        self.responses
-            .get(idx)
-            .cloned()
-            .ok_or_else(|| anima_runtime::agent::runtime_error::RuntimeError::from("no more mock responses"))
-    }
-
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        Ok(json!({"id": "mock-session"}))
+        let raw = self.responses.get(idx).cloned()
+            .ok_or_else(|| ProviderError::internal("no more mock responses"))?;
+        let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
+        let blocks = blocks_from_value(&content_value, None);
+        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let stop_reason = if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn };
+        Ok(ChatResponse { content: blocks, stop_reason, usage: None, raw })
     }
 }
 
@@ -75,14 +69,11 @@ impl Tool for BigEchoTool {
     }
 }
 
-fn make_client() -> SdkClient {
-    SdkClient::new("http://localhost:0")
-}
 
 fn make_user_msg(text: &str) -> InternalMsg {
     InternalMsg {
         role: MessageRole::User,
-        content: json!(text),
+        blocks: vec![ContentBlock::Text { text: text.into() }],
         message_id: Uuid::new_v4().to_string(),
         tool_use_id: None,
         filtered: false,
@@ -102,7 +93,6 @@ fn test_loop_compact_enabled_no_trigger() {
     })]);
 
     let registry = ToolRegistry::new();
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 10,
         session_id: "test".into(),
@@ -113,7 +103,7 @@ fn test_loop_compact_enabled_no_trigger() {
     let initial = vec![make_user_msg("hello")];
 
     let result =
-        run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
+        run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
     let AgenticLoopOutcome::Completed(result) = result else {
         panic!("loop should complete");
@@ -142,8 +132,6 @@ fn test_loop_compact_triggered() {
     let executor = MockExecutor::new(responses);
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(BigEchoTool));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 10,
         session_id: "test".into(),
@@ -159,7 +147,7 @@ fn test_loop_compact_triggered() {
     let initial = vec![make_user_msg("run big echo 5 times")];
 
     let result =
-        run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
+        run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
     let AgenticLoopOutcome::Completed(result) = result else {
         panic!("loop should complete");
@@ -193,8 +181,6 @@ fn test_loop_compact_preserves_latest_turn() {
     let executor = MockExecutor::new(responses);
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(BigEchoTool));
-
-    let client = make_client();
     let config = AgenticLoopConfig {
         max_iterations: 10,
         session_id: "test".into(),
@@ -210,7 +196,7 @@ fn test_loop_compact_preserves_latest_turn() {
     let initial = vec![make_user_msg("test")];
 
     let result =
-        run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
+        run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
     let AgenticLoopOutcome::Completed(result) = result else {
         panic!("loop should complete");

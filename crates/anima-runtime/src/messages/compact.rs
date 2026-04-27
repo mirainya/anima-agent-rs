@@ -7,7 +7,7 @@
 
 use serde_json::json;
 
-use super::types::{InternalMsg, MessageRole};
+use super::types::{value_from_blocks, ContentBlock, InternalMsg, MessageRole};
 
 // ---------------------------------------------------------------------------
 // 配置与结果类型
@@ -53,7 +53,7 @@ pub struct CompactResult {
 
 /// 估算单条消息的 token 数（bytes / 4 + 20 固定开销）
 pub fn estimate_msg_tokens(msg: &InternalMsg) -> usize {
-    let bytes = serde_json::to_string(&msg.content)
+    let bytes = serde_json::to_string(&value_from_blocks(&msg.blocks))
         .unwrap_or_default()
         .len();
     bytes / 4 + 20
@@ -130,12 +130,11 @@ pub fn clear_old_tool_results(messages: &mut [InternalMsg], boundary: usize) -> 
         let tool_use_id = msg.tool_use_id.clone().unwrap_or_default();
 
         // 替换 content
-        msg.content = json!([{
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": format!("[cleared: {original_tokens} tokens]"),
-            "is_error": false
-        }]);
+        msg.blocks = vec![ContentBlock::ToolResult {
+            tool_use_id,
+            content: serde_json::Value::String(format!("[cleared: {original_tokens} tokens]")),
+            is_error: false,
+        }];
 
         // 标记 metadata
         msg.metadata = json!({
@@ -270,7 +269,7 @@ mod tests {
     fn make_user_msg(text: &str) -> InternalMsg {
         InternalMsg {
             role: MessageRole::User,
-            content: json!(text),
+            blocks: vec![ContentBlock::Text { text: text.into() }],
             message_id: Uuid::new_v4().to_string(),
             tool_use_id: None,
             filtered: false,
@@ -281,7 +280,7 @@ mod tests {
     fn make_assistant_msg(text: &str) -> InternalMsg {
         InternalMsg {
             role: MessageRole::Assistant,
-            content: json!([{"type": "text", "text": text}]),
+            blocks: vec![ContentBlock::Text { text: text.into() }],
             message_id: Uuid::new_v4().to_string(),
             tool_use_id: None,
             filtered: false,
@@ -292,10 +291,14 @@ mod tests {
     fn make_assistant_with_tool_use(text: &str, tool_use_id: &str) -> InternalMsg {
         InternalMsg {
             role: MessageRole::Assistant,
-            content: json!([
-                {"type": "text", "text": text},
-                {"type": "tool_use", "id": tool_use_id, "name": "echo", "input": {"text": "hi"}}
-            ]),
+            blocks: vec![
+                ContentBlock::Text { text: text.into() },
+                ContentBlock::ToolUse {
+                    id: tool_use_id.into(),
+                    name: "echo".into(),
+                    input: json!({"text": "hi"}),
+                },
+            ],
             message_id: Uuid::new_v4().to_string(),
             tool_use_id: None,
             filtered: false,
@@ -306,12 +309,11 @@ mod tests {
     fn make_tool_result(tool_use_id: &str, content: &str) -> InternalMsg {
         InternalMsg {
             role: MessageRole::User,
-            content: json!([{
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": content,
-                "is_error": false
-            }]),
+            blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.into(),
+                content: serde_json::Value::String(content.into()),
+                is_error: false,
+            }],
             message_id: Uuid::new_v4().to_string(),
             tool_use_id: Some(tool_use_id.to_string()),
             filtered: false,

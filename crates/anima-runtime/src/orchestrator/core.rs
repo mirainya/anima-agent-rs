@@ -7,7 +7,7 @@
 //! - 同时提供静态方法 `execute_plan` / `execute_single_task` 用于直接执行 ExecutionPlan
 
 use crate::agent::detect_pending_question;
-use crate::worker::executor::TaskExecutor;
+use crate::provider::Provider;
 use crate::agent::types::{
     make_task, make_task_result, ExecutionPlan, ExecutionPlanKind, MakeTask, MakeTaskResult, Task,
     TaskResult,
@@ -20,9 +20,6 @@ use crate::support::now_ms;
 use crate::tasks::query::{plan_task, subtasks_for_plan};
 use crate::tasks::{TaskKind, TaskRecord, TaskStatus};
 use indexmap::IndexMap;
-use anima_sdk::facade::Client as SdkClient;
-use lazy_static::lazy_static;
-use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -133,6 +130,7 @@ pub struct LoweredTask {
 pub struct OrchestrationExecutionResult {
     pub result: TaskResult,
     pub lowered_tasks: Vec<LoweredTask>,
+    pub was_decomposed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -197,137 +195,6 @@ pub struct OrchestratorMetrics {
     pub total_duration_ms: u64,
 }
 
-// ── Decomposition Rules ───────────────────────────────────────────────
-
-/// 分解规则：通过正则匹配请求文本，决定如何拆分子任务
-struct DecompositionRule {
-    pattern: Regex,
-    name: String,
-    subtask_templates: Vec<SubTaskTemplate>,
-}
-
-/// 子任务模板：定义子任务的名称、类型、专家类型和依赖关系
-struct SubTaskTemplate {
-    name: String,
-    task_type: String,
-    specialist_type: String,
-    dependencies: Vec<String>,
-}
-
-// 预定义的任务分解规则表（web-app、api、refactor 等场景）
-lazy_static! {
-    static ref TASK_DECOMPOSITION_RULES: Vec<DecompositionRule> = vec![
-        DecompositionRule {
-            pattern: Regex::new(r"(?i)web.?app|website|frontend").unwrap(),
-            name: "web-app".into(),
-            subtask_templates: vec![
-                SubTaskTemplate {
-                    name: "design".into(),
-                    task_type: "design".into(),
-                    specialist_type: "designer".into(),
-                    dependencies: vec![],
-                },
-                SubTaskTemplate {
-                    name: "implement-frontend".into(),
-                    task_type: "frontend".into(),
-                    specialist_type: "frontend-dev".into(),
-                    dependencies: vec!["design".into()],
-                },
-                SubTaskTemplate {
-                    name: "implement-backend".into(),
-                    task_type: "backend".into(),
-                    specialist_type: "backend-dev".into(),
-                    dependencies: vec!["design".into()],
-                },
-                SubTaskTemplate {
-                    name: "testing".into(),
-                    task_type: "testing".into(),
-                    specialist_type: "tester".into(),
-                    dependencies: vec!["implement-frontend".into(), "implement-backend".into()],
-                },
-            ],
-        },
-        DecompositionRule {
-            pattern: Regex::new(r"(?i)api|endpoint|rest").unwrap(),
-            name: "api".into(),
-            subtask_templates: vec![
-                SubTaskTemplate {
-                    name: "design-api".into(),
-                    task_type: "design".into(),
-                    specialist_type: "api-designer".into(),
-                    dependencies: vec![],
-                },
-                SubTaskTemplate {
-                    name: "implement-api".into(),
-                    task_type: "backend".into(),
-                    specialist_type: "backend-dev".into(),
-                    dependencies: vec!["design-api".into()],
-                },
-                SubTaskTemplate {
-                    name: "testing-api".into(),
-                    task_type: "testing".into(),
-                    specialist_type: "tester".into(),
-                    dependencies: vec!["implement-api".into()],
-                },
-            ],
-        },
-        DecompositionRule {
-            pattern: Regex::new(r"(?i)data.?analy|report|dashboard").unwrap(),
-            name: "data-analysis".into(),
-            subtask_templates: vec![
-                SubTaskTemplate {
-                    name: "collect-data".into(),
-                    task_type: "data-collection".into(),
-                    specialist_type: "data-engineer".into(),
-                    dependencies: vec![],
-                },
-                SubTaskTemplate {
-                    name: "analyze-data".into(),
-                    task_type: "analysis".into(),
-                    specialist_type: "data-analyst".into(),
-                    dependencies: vec!["collect-data".into()],
-                },
-                SubTaskTemplate {
-                    name: "generate-report".into(),
-                    task_type: "reporting".into(),
-                    specialist_type: "reporter".into(),
-                    dependencies: vec!["analyze-data".into()],
-                },
-            ],
-        },
-        DecompositionRule {
-            pattern: Regex::new(r"(?i)refactor|restructure|clean.?up").unwrap(),
-            name: "refactoring".into(),
-            subtask_templates: vec![
-                SubTaskTemplate {
-                    name: "analyze-code".into(),
-                    task_type: "analysis".into(),
-                    specialist_type: "code-analyst".into(),
-                    dependencies: vec![],
-                },
-                SubTaskTemplate {
-                    name: "plan-refactor".into(),
-                    task_type: "planning".into(),
-                    specialist_type: "architect".into(),
-                    dependencies: vec!["analyze-code".into()],
-                },
-                SubTaskTemplate {
-                    name: "execute-refactor".into(),
-                    task_type: "refactoring".into(),
-                    specialist_type: "developer".into(),
-                    dependencies: vec!["plan-refactor".into()],
-                },
-                SubTaskTemplate {
-                    name: "verify-refactor".into(),
-                    task_type: "testing".into(),
-                    specialist_type: "tester".into(),
-                    dependencies: vec!["execute-refactor".into()],
-                },
-            ],
-        },
-    ];
-}
-
 // ── AgentOrchestrator ─────────────────────────────────────────────────
 
 /// 任务编排器：将复杂请求分解为子任务，按依赖关系编排执行
@@ -341,8 +208,7 @@ pub struct AgentOrchestrator {
     config: OrchestratorConfig,
     running: AtomicBool,
     metrics: Mutex<OrchestratorMetrics>,
-    pub(crate) executor: Option<Arc<dyn TaskExecutor>>,
-    pub(crate) client: Option<SdkClient>,
+    pub(crate) provider: Option<Arc<dyn Provider>>,
 }
 
 impl AgentOrchestrator {
@@ -360,14 +226,12 @@ impl AgentOrchestrator {
             config,
             running: AtomicBool::new(false),
             metrics: Mutex::new(OrchestratorMetrics::default()),
-            executor: None,
-            client: None,
+            provider: None,
         }
     }
 
-    pub fn with_llm(mut self, executor: Arc<dyn TaskExecutor>, client: SdkClient) -> Self {
-        self.executor = Some(executor);
-        self.client = Some(client);
+    pub fn with_llm(mut self, provider: Arc<dyn Provider>) -> Self {
+        self.provider = Some(provider);
         self
     }
 
@@ -635,8 +499,7 @@ impl AgentOrchestrator {
 
     /// 将请求文本分解为编排计划
     ///
-    /// 匹配预定义规则生成子任务，无匹配时创建单个 generic 子任务。
-    /// 自动计算拓扑排序和并行分组。
+    /// LLM 分解优先，失败时创建单个 generic 子任务兜底。
     pub fn decompose_task(
         &self,
         request: &str,
@@ -656,66 +519,27 @@ impl AgentOrchestrator {
         }
 
         let plan_id = Uuid::new_v4().to_string();
-        let matched_rule = TASK_DECOMPOSITION_RULES
-            .iter()
-            .find(|rule| rule.pattern.is_match(request));
-        let matched_rule_name = matched_rule.map(|rule| rule.name.clone());
-
         let mut subtasks: IndexMap<String, Arc<SubTask>> = IndexMap::new();
+        let sub_id = Uuid::new_v4().to_string();
+        let subtask = Arc::new(SubTask {
+            id: sub_id.clone(),
+            parent_id: plan_id.clone(),
+            parent_job_id: parent_job_id.to_string(),
+            trace_id: trace_id.to_string(),
+            name: "generic".into(),
+            task_type: "generic".into(),
+            description: format!("Generic task: {}", request),
+            dependencies: HashSet::new(),
+            priority: 5,
+            specialist_type: "default".into(),
+            payload: json!({ "request": request }),
+            result: Mutex::new(None),
+            started_at: Mutex::new(None),
+            completed_at: Mutex::new(None),
+        });
+        subtasks.insert("generic".into(), subtask);
 
-        match matched_rule {
-            Some(rule) => {
-                for template in &rule.subtask_templates {
-                    let sub_id = Uuid::new_v4().to_string();
-                    let subtask = Arc::new(SubTask {
-                        id: sub_id.clone(),
-                        parent_id: plan_id.clone(),
-                        parent_job_id: parent_job_id.to_string(),
-                        trace_id: trace_id.to_string(),
-                        name: template.name.clone(),
-                        task_type: template.task_type.clone(),
-                        description: format!("{} for: {}", template.name, request),
-                        dependencies: template.dependencies.iter().cloned().collect(),
-                        priority: 5,
-                        specialist_type: template.specialist_type.clone(),
-                        payload: json!({
-                            "request": request,
-                            "subtask": template.name,
-                            "rule": rule.name,
-                        }),
-                        result: Mutex::new(None),
-                        started_at: Mutex::new(None),
-                        completed_at: Mutex::new(None),
-                    });
-                    subtasks.insert(template.name.clone(), subtask);
-                }
-            }
-            None => {
-                let sub_id = Uuid::new_v4().to_string();
-                let subtask = Arc::new(SubTask {
-                    id: sub_id.clone(),
-                    parent_id: plan_id.clone(),
-                    parent_job_id: parent_job_id.to_string(),
-                    trace_id: trace_id.to_string(),
-                    name: "generic".into(),
-                    task_type: "generic".into(),
-                    description: format!("Generic task: {}", request),
-                    dependencies: HashSet::new(),
-                    priority: 5,
-                    specialist_type: "default".into(),
-                    payload: json!({ "request": request }),
-                    result: Mutex::new(None),
-                    started_at: Mutex::new(None),
-                    completed_at: Mutex::new(None),
-                });
-                subtasks.insert("generic".into(), subtask);
-            }
-        }
-
-        // Topological sort for execution_order
         let execution_order = Self::topological_sort(&subtasks);
-
-        // Compute parallel groups
         let parallel_groups = Self::compute_parallel_groups(&subtasks, &execution_order);
 
         let total = subtasks.len() as u32;
@@ -724,7 +548,7 @@ impl AgentOrchestrator {
             trace_id: trace_id.to_string(),
             parent_job_id: parent_job_id.to_string(),
             original_request: request.to_string(),
-            matched_rule: matched_rule_name,
+            matched_rule: None,
             subtasks,
             execution_order,
             parallel_groups,
@@ -923,6 +747,11 @@ impl AgentOrchestrator {
         }
 
         let plan = Arc::new(self.decompose_task(request, trace_id, parent_job_id, Some(session_id)));
+        let was_decomposed = plan.subtasks.len() > 1
+            || plan.matched_rule.is_some();
+        if !was_decomposed {
+            return Err("llm_no_decomposition".into());
+        }
         let lowered_tasks = plan
             .execution_order
             .iter()
@@ -1084,6 +913,7 @@ impl AgentOrchestrator {
                         return Ok(OrchestrationExecutionResult {
                             result,
                             lowered_tasks,
+                            was_decomposed: true,
                         });
                     }
                 }
@@ -1091,12 +921,10 @@ impl AgentOrchestrator {
             }
         }
 
-        let mut final_result = if last_success.as_ref().is_some_and(|result| {
+        let mut final_result = if let Some(result) = last_success.as_ref().filter(|result| {
             detect_pending_question(result.result.as_ref(), session_id).is_some()
         }) {
-            last_success
-                .clone()
-                .expect("pending question result should exist")
+            result.clone()
         } else {
             self.build_orchestration_final_result(
                 &plan,
@@ -1144,6 +972,7 @@ impl AgentOrchestrator {
         Ok(OrchestrationExecutionResult {
             result: final_result,
             lowered_tasks,
+            was_decomposed: true,
         })
     }
 
@@ -1652,10 +1481,9 @@ impl AgentOrchestrator {
         lowered_tasks: &[LoweredTask],
         execution_context: &OrchestrationExecutionContext,
     ) -> Option<Value> {
-        if let (Some(executor), Some(client)) = (&self.executor, &self.client) {
+        if let Some(provider) = &self.provider {
             if let Some(question) = super::llm_context_infer::try_llm_infer_missing_context(
-                executor,
-                client,
+                provider,
                 &execution_context.session_id,
                 plan,
                 lowered_tasks,

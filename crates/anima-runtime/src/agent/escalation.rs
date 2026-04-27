@@ -1,6 +1,8 @@
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::bus::InboundMessage;
+use crate::messages::types::ContentBlock;
+use crate::provider::{ChatMessage, ChatRequest, ChatRole};
 use crate::tasks::SubtaskBlockedReason;
 
 use super::context_types::ExecutionContext;
@@ -37,19 +39,23 @@ impl CoreAgent {
             inbound_msg.content, reason_desc
         );
 
-        let content = json!([{"type": "text", "text": prompt}]);
-        let result = self
-            .executor
-            .send_prompt(&self._client, &exec_ctx.opencode_session_id, content)
-            .ok()?;
+        let chat_request = ChatRequest {
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: vec![ContentBlock::Text { text: prompt }],
+            }],
+            metadata: json!({ "session_id": exec_ctx.opencode_session_id }),
+            ..Default::default()
+        };
+        let response = self.provider.chat(chat_request).ok()?;
 
-        let text = result
-            .get("content")
-            .and_then(|c| c.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|block| block.get("text"))
-            .and_then(Value::as_str)
-            .or_else(|| result.get("text").and_then(Value::as_str))
+        let text = response
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
             .unwrap_or("")
             .trim();
 

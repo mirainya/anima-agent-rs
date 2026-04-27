@@ -1,6 +1,7 @@
 use crate::jobs::{AcceptedJob, JobKind, JobReviewInput};
 use crate::AppState;
 use anima_runtime::agent::QuestionAnswerInput;
+use anima_types::approval::ApprovalMode;
 use axum::extract::{Path, State};
 use axum::Json;
 use serde::Deserialize;
@@ -144,6 +145,79 @@ pub async fn answer_job_question(
             "ok": false,
             "job_id": job_id,
             "question_id": input.question_id,
+            "error": error,
+        })),
+    }
+}
+
+// ── Approval Mode ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SetApprovalModeRequest {
+    pub mode: ApprovalMode,
+}
+
+pub async fn get_approval_mode(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let mode = state.approval_mode.lock().clone();
+    Json(serde_json::json!({ "ok": true, "mode": mode }))
+}
+
+pub async fn set_approval_mode(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetApprovalModeRequest>,
+) -> Json<serde_json::Value> {
+    *state.approval_mode.lock() = req.mode.clone();
+    state.runtime.lock().agent.set_approval_mode(req.mode.clone());
+    Json(serde_json::json!({ "ok": true, "mode": req.mode }))
+}
+
+// ── Plan Verdict ───────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct PlanVerdictRequest {
+    pub verdict: String,
+    pub reason: Option<String>,
+}
+
+pub async fn submit_plan_verdict(
+    Path(job_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<PlanVerdictRequest>,
+) -> Json<serde_json::Value> {
+    let answer = match input.verdict.as_str() {
+        "approved" => "approved".to_string(),
+        "rejected" => format!("rejected:{}", input.reason.unwrap_or_default()),
+        _ => return Json(serde_json::json!({ "ok": false, "error": "invalid verdict" })),
+    };
+
+    let result = {
+        let runtime = state.runtime.lock();
+        let pending = runtime.agent.pending_question_for(&job_id);
+        match pending {
+            Some(q) => runtime.agent.submit_question_answer(
+                &job_id,
+                QuestionAnswerInput {
+                    question_id: q.question_id.clone(),
+                    source: "web_plan_verdict".into(),
+                    answer_type: "plan_verdict".into(),
+                    answer,
+                },
+            ),
+            None => Err(format!("no pending plan approval for job {job_id}")),
+        }
+    };
+
+    match result {
+        Ok(question) => Json(serde_json::json!({
+            "ok": true,
+            "job_id": job_id,
+            "question": question,
+        })),
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "job_id": job_id,
             "error": error,
         })),
     }

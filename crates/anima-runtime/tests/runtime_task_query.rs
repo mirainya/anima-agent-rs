@@ -1,4 +1,4 @@
-use anima_runtime::runtime::{RuntimeDomainEvent, RuntimeStateStore};
+use anima_runtime::runtime::{RuntimeDomainEvent, RuntimeStateStore, StateStore};
 use anima_runtime::support::now_ms;
 use anima_runtime::tasks::{
     active_requirement, active_suspension, active_turn, invocation_by_question_id,

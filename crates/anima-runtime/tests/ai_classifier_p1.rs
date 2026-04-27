@@ -192,7 +192,7 @@ fn ai_to_rule_bridge_maps_correctly() {
     };
     assert_eq!(
         ai_to_rule_classification(&complex, &msg).kind,
-        ClassificationKind::Sequential
+        ClassificationKind::Single
     );
 }
 
@@ -218,7 +218,7 @@ fn ai_to_rule_bridge_complex_with_specialist() {
 }
 
 #[test]
-fn ai_to_rule_bridge_complex_with_parallel() {
+fn ai_to_rule_bridge_complex_with_parallel_maps_to_single() {
     let msg = make_inbound(MakeInbound {
         channel: "test".into(),
         content: "process data".into(),
@@ -234,6 +234,6 @@ fn ai_to_rule_bridge_complex_with_parallel() {
     };
     assert_eq!(
         ai_to_rule_classification(&complex, &msg).kind,
-        ClassificationKind::Parallel
+        ClassificationKind::Single
     );
 }

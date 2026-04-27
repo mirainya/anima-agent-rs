@@ -119,8 +119,8 @@ export function explainJobStatus(job: {
 }
 
 export function deriveJobSummary(job: JobView): DerivedJobSummary {
-  const failure = (job.failure ?? null) as FailureView | null;
-  const executionSummary = (job.execution_summary ?? null) as ExecutionSummaryView | null;
+  const failure = job.failure ?? null;
+  const executionSummary = job.execution_summary ?? null;
   const latestMessage = getLatestMessage(job);
   const latestResponseText = latestMessage?.response_text ?? latestMessage?.response_preview ?? '';
   const hasResponse = Boolean(latestResponseText);

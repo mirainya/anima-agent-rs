@@ -36,3 +36,44 @@ pub(crate) fn execution_kind_label(kind: ExecutionKind) -> &'static str {
         ExecutionKind::Followup => "followup",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_id_format() {
+        assert_eq!(runtime_run_id("job123"), "run_job123");
+    }
+
+    #[test]
+    fn turn_id_format() {
+        assert_eq!(runtime_turn_id("job1", "initial"), "turn_job1_initial");
+    }
+
+    #[test]
+    fn task_id_all_phases() {
+        assert_eq!(runtime_task_id("j", RuntimeTaskPhase::Main), "task_j_main");
+        assert_eq!(runtime_task_id("j", RuntimeTaskPhase::Question), "task_j_question");
+        assert_eq!(runtime_task_id("j", RuntimeTaskPhase::ToolPermission), "task_j_tool_permission");
+        assert_eq!(runtime_task_id("j", RuntimeTaskPhase::Followup), "task_j_followup");
+        assert_eq!(runtime_task_id("j", RuntimeTaskPhase::Requirement), "task_j_requirement");
+    }
+
+    #[test]
+    fn requirement_id_format() {
+        assert_eq!(runtime_requirement_id("j1"), "requirement_j1");
+    }
+
+    #[test]
+    fn suspension_id_format() {
+        assert_eq!(runtime_suspension_id("q1"), "suspension_q1");
+    }
+
+    #[test]
+    fn execution_kind_labels() {
+        assert_eq!(execution_kind_label(ExecutionKind::Initial), "initial");
+        assert_eq!(execution_kind_label(ExecutionKind::QuestionContinuation), "question_continuation");
+        assert_eq!(execution_kind_label(ExecutionKind::Followup), "followup");
+    }
+}

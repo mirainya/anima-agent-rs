@@ -1,10 +1,11 @@
-use crate::agent::{Agent, TaskExecutor};
+use crate::agent::{Agent, SdkTaskExecutor, TaskExecutor};
 use crate::channel::{Channel, ChannelRegistry, SessionStore};
 use crate::cli::CliChannel;
 use crate::dispatcher::{start_dispatcher_outbound_loop, Dispatcher};
 use crate::hooks::{HookRegistry, StopHook};
-use crate::runtime::RuntimeStateStore;
+use crate::runtime::{JsonStateStore, RuntimeStateStore, SharedRuntimeStateStore, SqliteStateStore};
 use anima_sdk::facade::{Client as SdkClient, ClientOptions as SdkClientOptions};
+use anima_types::config::AnimaConfig;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -16,7 +17,7 @@ pub struct RuntimeBootstrapBuilder {
     sdk_directory_enabled: bool,
     executor: Option<Arc<dyn TaskExecutor>>,
     sdk_options: SdkClientOptions,
-    runtime_state_store: Option<Arc<RuntimeStateStore>>,
+    runtime_state_store: Option<SharedRuntimeStateStore>,
 }
 
 impl Default for RuntimeBootstrapBuilder {
@@ -37,6 +38,31 @@ impl Default for RuntimeBootstrapBuilder {
 impl RuntimeBootstrapBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn from_config(config: &AnimaConfig) -> Self {
+        let state_path = &config.runtime.state_path;
+        let runtime_state_store: SharedRuntimeStateStore = match config.runtime.store.as_str() {
+            "sqlite" => {
+                let db_path = std::path::PathBuf::from(state_path).with_extension("db");
+                Arc::new(SqliteStateStore::open(&db_path).unwrap_or_else(|_| {
+                    SqliteStateStore::open_in_memory().expect("in-memory sqlite should not fail")
+                }))
+            }
+            _ => Arc::new(JsonStateStore::with_persistence(
+                std::path::PathBuf::from(state_path),
+            )),
+        };
+        Self {
+            url: config.server.url.clone(),
+            prompt: Some(config.cli.prompt.clone()),
+            cli_enabled: config.cli.enabled,
+            builtin_tools_enabled: config.runtime.builtin_tools,
+            sdk_directory_enabled: true,
+            executor: None,
+            sdk_options: SdkClientOptions::from(&config.sdk),
+            runtime_state_store: Some(runtime_state_store),
+        }
     }
 
     pub fn with_url(mut self, url: impl Into<String>) -> Self {
@@ -74,13 +100,13 @@ impl RuntimeBootstrapBuilder {
         self
     }
 
-    pub fn with_runtime_state_store(mut self, store: Arc<RuntimeStateStore>) -> Self {
+    pub fn with_runtime_state_store(mut self, store: SharedRuntimeStateStore) -> Self {
         self.runtime_state_store = Some(store);
         self
     }
 
     pub fn with_in_memory_runtime_state(mut self) -> Self {
-        self.runtime_state_store = Some(Arc::new(RuntimeStateStore::new()));
+        self.runtime_state_store = Some(Arc::new(JsonStateStore::new()));
         self
     }
 
@@ -109,6 +135,10 @@ impl RuntimeBootstrapBuilder {
         } else {
             SdkClient::with_options(self.url, self.sdk_options)
         };
+        let has_custom_executor = self.executor.is_some();
+        let executor: Arc<dyn TaskExecutor> = self
+            .executor
+            .unwrap_or_else(|| Arc::new(SdkTaskExecutor::new(client)));
         let runtime_state_store = self.runtime_state_store.unwrap_or_else(|| {
             Arc::new(RuntimeStateStore::with_persistence(
                 std::path::PathBuf::from(".opencode/runtime/state.json"),
@@ -116,17 +146,19 @@ impl RuntimeBootstrapBuilder {
         });
         let mut agent = Agent::with_runtime_state_store(
             bus.clone(),
-            Some(client),
             Some(session_store),
-            self.executor,
+            executor,
             runtime_state_store,
         );
         if self.builtin_tools_enabled {
-            agent.register_builtin_tools();
+            agent.register_builtin_tools().expect("register_builtin_tools failed: Arc has other references before agent start");
         }
         let mut hook_registry = HookRegistry::new();
         hook_registry.register_post_hook(Arc::new(StopHook));
-        agent.set_hook_registry(hook_registry);
+        agent.set_hook_registry(hook_registry).expect("set_hook_registry failed: Arc has other references before agent start");
+        if !has_custom_executor {
+            agent.enable_llm_judge();
+        }
 
         RuntimeBootstrap {
             bus,

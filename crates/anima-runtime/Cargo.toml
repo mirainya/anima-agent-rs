@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anima-types = { path = "../anima-types" }
 anima-sdk = { path = "../anima-sdk" }
+anima-store = { path = "../anima-store" }
 indexmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

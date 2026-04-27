@@ -6,15 +6,15 @@ use uuid::Uuid;
 
 // ── Map Transform ───────────────────────────────────────────────────
 
-pub struct MapTransform {
+pub struct MapTransform<T: Send + Sync + 'static = Value> {
     #[allow(dead_code)]
     id: String,
-    f: Box<dyn Fn(Value) -> Value + Send + Sync>,
+    f: Box<dyn Fn(T) -> T + Send + Sync>,
     items: AtomicU64,
 }
 
-impl MapTransform {
-    pub fn new(f: impl Fn(Value) -> Value + Send + Sync + 'static) -> Self {
+impl<T: Send + Sync + 'static> MapTransform<T> {
+    pub fn new(f: impl Fn(T) -> T + Send + Sync + 'static) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             f: Box::new(f),
@@ -23,8 +23,8 @@ impl MapTransform {
     }
 }
 
-impl Transform for MapTransform {
-    fn transform(&self, data: Value, _ctx: &PipelineContext) -> Result<Option<Value>, String> {
+impl<T: Send + Sync + 'static> Transform<T> for MapTransform<T> {
+    fn transform(&self, data: T, _ctx: &PipelineContext) -> Result<Option<T>, String> {
         self.items.fetch_add(1, Ordering::Relaxed);
         Ok(Some((self.f)(data)))
     }
@@ -32,14 +32,14 @@ impl Transform for MapTransform {
 
 // ── Filter Transform ────────────────────────────────────────────────
 
-pub struct PredicateFilter {
+pub struct PredicateFilter<T: Send + Sync + 'static = Value> {
     #[allow(dead_code)]
     id: String,
-    predicate: Box<dyn Fn(&Value) -> bool + Send + Sync>,
+    predicate: Box<dyn Fn(&T) -> bool + Send + Sync>,
 }
 
-impl PredicateFilter {
-    pub fn new(predicate: impl Fn(&Value) -> bool + Send + Sync + 'static) -> Self {
+impl<T: Send + Sync + 'static> PredicateFilter<T> {
+    pub fn new(predicate: impl Fn(&T) -> bool + Send + Sync + 'static) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             predicate: Box::new(predicate),
@@ -47,8 +47,8 @@ impl PredicateFilter {
     }
 }
 
-impl Filter for PredicateFilter {
-    fn passes(&self, data: &Value, _ctx: &PipelineContext) -> bool {
+impl<T: Send + Sync + 'static> Filter<T> for PredicateFilter<T> {
+    fn passes(&self, data: &T, _ctx: &PipelineContext) -> bool {
         (self.predicate)(data)
     }
 }
@@ -69,7 +69,7 @@ impl BatchTransform {
     }
 }
 
-impl Transform for BatchTransform {
+impl Transform<Value> for BatchTransform {
     fn transform(&self, data: Value, _ctx: &PipelineContext) -> Result<Option<Value>, String> {
         let mut buf = self.buffer.lock();
         buf.push(data);
@@ -104,7 +104,7 @@ impl SumAggregate {
     }
 }
 
-impl Aggregate for SumAggregate {
+impl Aggregate<Value> for SumAggregate {
     fn add_data(&self, data: Value, _ctx: &PipelineContext) -> Result<(), String> {
         let n = data.as_f64().ok_or("expected number")?;
         *self.state.lock() += n;
@@ -143,7 +143,7 @@ impl CollectAggregate {
     }
 }
 
-impl Aggregate for CollectAggregate {
+impl Aggregate<Value> for CollectAggregate {
     fn add_data(&self, data: Value, _ctx: &PipelineContext) -> Result<(), String> {
         self.items.lock().push(data);
         Ok(())

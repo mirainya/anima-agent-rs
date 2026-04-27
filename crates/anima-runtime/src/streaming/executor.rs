@@ -187,11 +187,32 @@ struct ToolAccState {
 #[derive(Debug, Default)]
 pub struct StreamAccumulator {
     tools: HashMap<usize, ToolAccState>,
+    thinking_bufs: HashMap<usize, String>,
 }
 
 impl StreamAccumulator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn on_thinking_start(&mut self, index: usize, thinking: &str) {
+        self.thinking_bufs.insert(index, thinking.to_string());
+    }
+
+    pub fn on_thinking_delta(&mut self, index: usize, thinking: &str) {
+        if let Some(buf) = self.thinking_bufs.get_mut(&index) {
+            buf.push_str(thinking);
+        }
+    }
+
+    pub fn drain_thinking(&mut self) -> Option<String> {
+        if self.thinking_bufs.is_empty() {
+            return None;
+        }
+        let mut indexed: Vec<(usize, String)> = self.thinking_bufs.drain().collect();
+        indexed.sort_by_key(|(idx, _)| *idx);
+        let combined: String = indexed.into_iter().map(|(_, s)| s).collect::<Vec<_>>().join("\n");
+        if combined.is_empty() { None } else { Some(combined) }
     }
 
     /// 开始追踪一个 tool_use 块
@@ -326,6 +347,9 @@ where
                 ContentBlock::Text { text } => {
                     text_buf.push_str(text);
                 }
+                ContentBlock::Thinking { thinking } => {
+                    acc.on_thinking_start(*index, thinking);
+                }
             },
             StreamEvent::ContentBlockDelta { index, delta } => match delta {
                 ContentDelta::TextDelta { text } => {
@@ -333,6 +357,9 @@ where
                 }
                 ContentDelta::InputJsonDelta { partial_json } => {
                     acc.on_input_delta(*index, partial_json);
+                }
+                ContentDelta::ThinkingDelta { thinking } => {
+                    acc.on_thinking_delta(*index, thinking);
                 }
             },
             StreamEvent::ContentBlockStop { index } => {
@@ -365,6 +392,7 @@ where
             internal_message,
         )
     })?;
+    let thinking = acc.drain_thinking();
 
     // 组装 ParsedResponse
     let tool_uses: Vec<ParsedToolUse> = tools
@@ -379,10 +407,14 @@ where
     let parsed = ParsedResponse {
         text: text_buf.clone(),
         tool_uses,
+        thinking: thinking.clone(),
     };
 
     // 组装等效的 response Value（用于 build_assistant_msg）
     let mut content_parts: Vec<Value> = Vec::new();
+    if let Some(ref t) = thinking {
+        content_parts.push(json!({"type": "thinking", "thinking": t}));
+    }
     if !text_buf.is_empty() {
         content_parts.push(json!({"type": "text", "text": text_buf}));
     }
@@ -405,6 +437,117 @@ where
         parsed,
         response_value,
     })
+}
+
+pub fn consume_stream_events(
+    stream: crate::provider::ChatStream,
+    on_event: Option<&(dyn Fn(StreamEvent) + Send + Sync)>,
+) -> Result<(ParsedResponse, Value), crate::provider::ProviderError> {
+    let mut text_buf = String::new();
+    let mut acc = StreamAccumulator::new();
+    let mut message_id = String::new();
+    let mut stop_reason: Option<String> = None;
+
+    for event_result in stream {
+        let event = event_result?;
+
+        if let Some(cb) = on_event {
+            cb(event.clone());
+        }
+
+        match &event {
+            StreamEvent::MessageStart { message_id: id } => {
+                message_id = id.clone();
+            }
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block,
+            } => match content_block {
+                ContentBlock::ToolUse { id, name, .. } => {
+                    acc.on_tool_start(*index, id.clone(), name.clone());
+                }
+                ContentBlock::Text { text } => {
+                    text_buf.push_str(text);
+                }
+                ContentBlock::Thinking { thinking } => {
+                    acc.on_thinking_start(*index, thinking);
+                }
+            },
+            StreamEvent::ContentBlockDelta { index, delta } => match delta {
+                ContentDelta::TextDelta { text } => {
+                    text_buf.push_str(text);
+                }
+                ContentDelta::InputJsonDelta { partial_json } => {
+                    acc.on_input_delta(*index, partial_json);
+                }
+                ContentDelta::ThinkingDelta { thinking } => {
+                    acc.on_thinking_delta(*index, thinking);
+                }
+            },
+            StreamEvent::ContentBlockStop { index } => {
+                acc.on_tool_stop(*index);
+            }
+            StreamEvent::MessageDelta {
+                stop_reason: sr, ..
+            } => {
+                stop_reason = sr.clone();
+            }
+            StreamEvent::Error {
+                error_type,
+                message,
+            } => {
+                return Err(crate::provider::ProviderError::new(
+                    crate::provider::ProviderErrorKind::StreamFailed,
+                    format!("stream error [{error_type}]: {message}"),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    let tools = acc
+        .drain_ready()
+        .map_err(crate::provider::ProviderError::internal)?;
+    let thinking = acc.drain_thinking();
+
+    let tool_uses: Vec<ParsedToolUse> = tools
+        .iter()
+        .map(|(id, name, input)| ParsedToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input: input.clone(),
+        })
+        .collect();
+
+    let parsed = ParsedResponse {
+        text: text_buf.clone(),
+        tool_uses,
+        thinking: thinking.clone(),
+    };
+
+    let mut content_parts: Vec<Value> = Vec::new();
+    if let Some(ref t) = thinking {
+        content_parts.push(json!({"type": "thinking", "thinking": t}));
+    }
+    if !text_buf.is_empty() {
+        content_parts.push(json!({"type": "text", "text": text_buf}));
+    }
+    for (id, name, input) in &tools {
+        content_parts.push(json!({
+            "type": "tool_use",
+            "id": id,
+            "name": name,
+            "input": input,
+        }));
+    }
+
+    let response_value = json!({
+        "id": message_id,
+        "content": content_parts,
+        "stop_reason": stop_reason,
+    });
+
+    Ok((parsed, response_value))
 }
 
 fn runtime_stream_event_to_stream_event(event: &RuntimeStreamEvent) -> StreamEvent {
@@ -615,5 +758,29 @@ mod tests {
 
         let (parsed, _) = consume_sse_stream(lines, None).unwrap();
         assert_eq!(parsed.text, "ok");
+    }
+
+    #[test]
+    fn test_thinking_block_accumulation() {
+        let lines = make_lines(&[
+            r#"data: {"type":"message_start","message":{"id":"msg_t"}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step 1. "}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step 2."}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}"#,
+            r#"data: {"type":"content_block_stop","index":1}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ]);
+
+        let (parsed, response_value) = consume_sse_stream(lines, None).unwrap();
+        assert_eq!(parsed.text, "answer");
+        assert_eq!(parsed.thinking.as_deref(), Some("step 1. step 2."));
+
+        let content = response_value.get("content").unwrap().as_array().unwrap();
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[0]["thinking"], "step 1. step 2.");
+        assert_eq!(content[1]["type"], "text");
     }
 }

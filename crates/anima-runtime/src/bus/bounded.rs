@@ -160,3 +160,79 @@ pub fn bounded_channel_full<T>(
     let receiver = BoundedReceiver { rx };
     (sender, receiver)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn drop_counter_increments_on_dropping() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let (tx, _rx) = bounded_channel_with_counter(BufferStrategy::Dropping(2), Some(counter.clone()));
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap(); // dropped
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn drop_counter_increments_on_sliding() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let (tx, _rx) = bounded_channel_with_counter(BufferStrategy::Sliding(2), Some(counter.clone()));
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap(); // evicts oldest
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn on_drop_hook_fires() {
+        let fired = Arc::new(AtomicU64::new(0));
+        let fired_clone = fired.clone();
+        let hook: DropHook = Arc::new(move || { fired_clone.fetch_add(1, Ordering::SeqCst); });
+        let (tx, _rx) = bounded_channel_full(BufferStrategy::Dropping(1), None, Some(hook));
+        tx.send(1).unwrap();
+        tx.send(2).unwrap(); // dropped, hook fires
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn is_full_and_is_empty() {
+        let (tx, rx) = bounded_channel::<i32>(BufferStrategy::Dropping(1));
+        assert!(tx.is_empty());
+        assert!(!tx.is_full());
+        tx.send(1).unwrap();
+        assert!(tx.is_full());
+        assert!(!tx.is_empty());
+        rx.recv();
+        assert!(tx.is_empty());
+    }
+
+    #[test]
+    fn len_tracks_queue_depth() {
+        let (tx, rx) = bounded_channel::<i32>(BufferStrategy::Dropping(3));
+        assert_eq!(tx.len(), 0);
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        assert_eq!(tx.len(), 2);
+        rx.recv();
+        assert_eq!(tx.len(), 1);
+    }
+
+    #[test]
+    fn recv_timeout_returns_err() {
+        let (_tx, rx) = bounded_channel::<i32>(BufferStrategy::Dropping(1));
+        let result = rx.recv_timeout(Duration::from_millis(10));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn receiver_clone_shares_channel() {
+        let (tx, rx) = bounded_channel::<i32>(BufferStrategy::Dropping(2));
+        let rx2 = rx.clone();
+        tx.send(42).unwrap();
+        assert_eq!(rx2.recv(), Some(42));
+        assert!(rx.try_recv().is_none());
+    }
+}

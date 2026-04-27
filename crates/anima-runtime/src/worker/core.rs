@@ -9,7 +9,6 @@
 //! - WorkerPool 使用 Condvar 等待可用 Worker，避免忙轮询
 //! - 任务提交后通过 crossbeam channel 异步返回结果
 
-use anima_sdk::facade::Client as SdkClient;
 use parking_lot::{Condvar, Mutex};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -43,7 +42,6 @@ pub struct CurrentTaskInfo {
 /// 通过原子标志 `running` / `busy` 实现无锁的状态管理。
 pub struct WorkerAgent {
     id: String,
-    client: SdkClient,
     executor: Arc<dyn TaskExecutor>,
     running: AtomicBool,
     busy: AtomicBool,
@@ -75,13 +73,11 @@ pub struct WorkerStatus {
 impl WorkerAgent {
     /// 创建新的 WorkerAgent，自动生成 UUID 作为唯一标识
     pub fn new(
-        client: SdkClient,
         executor: Arc<dyn TaskExecutor>,
         timeout_ms: Option<u64>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            client,
             executor,
             running: AtomicBool::new(false),
             busy: AtomicBool::new(false),
@@ -228,6 +224,14 @@ impl WorkerAgent {
                 delta: ContentDelta::InputJsonDelta { .. },
                 ..
             } => "api_call_stream_tool_input",
+            RuntimeStreamEvent::ContentBlockStarted {
+                content_block: ContentBlock::Thinking { .. },
+                ..
+            }
+            | RuntimeStreamEvent::ContentBlockDelta {
+                delta: ContentDelta::ThinkingDelta { .. },
+                ..
+            } => "api_call_stream_thinking",
             RuntimeStreamEvent::ContentBlockStopped { .. } => "api_call_stream_block_completed",
             RuntimeStreamEvent::MessageDelta { .. } => "api_call_stream_message_delta",
             RuntimeStreamEvent::MessageStopped => "api_call_stream_completed",
@@ -277,6 +281,14 @@ impl WorkerAgent {
                         payload["partial_json"] = input.clone();
                         payload["raw_event_type"] = Value::String("content_block_start".into());
                     }
+                    ContentBlock::Thinking { thinking } => {
+                        payload["content_block_kind"] = Value::String("thinking".into());
+                        payload["part_id"] = Value::String(format!("thinking-{index}"));
+                        payload["raw_event_type"] = Value::String("content_block_start".into());
+                        if !thinking.is_empty() {
+                            payload["thinking_delta"] = Value::String(thinking.clone());
+                        }
+                    }
                 }
                 "sdk_stream_content_block_started"
             }
@@ -295,6 +307,11 @@ impl WorkerAgent {
                         payload["delta_kind"] = Value::String("input_json_delta".into());
                         payload["part_id"] = Value::String(format!("tool-{index}"));
                         payload["partial_json"] = Value::String(partial_json.clone());
+                    }
+                    ContentDelta::ThinkingDelta { thinking } => {
+                        payload["delta_kind"] = Value::String("thinking_delta".into());
+                        payload["part_id"] = Value::String(format!("thinking-{index}"));
+                        payload["thinking_delta"] = Value::String(thinking.clone());
                     }
                 }
                 "sdk_stream_content_block_delta"
@@ -347,7 +364,7 @@ impl WorkerAgent {
         let mut sdk_started_payload =
             self.api_call_event_payload(task, &session_id, "api_call_inflight", sdk_started_at_ms);
         sdk_started_payload["sdk_operation"] = Value::String("send_prompt".into());
-        sdk_started_payload["sdk_base_url"] = Value::String(self.client.base_url.clone());
+        sdk_started_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
         sdk_started_payload["started_at_ms"] = json!(sdk_started_at_ms);
         self.publish_runtime_event(
             &task.trace_id,
@@ -357,7 +374,7 @@ impl WorkerAgent {
 
         match self
             .executor
-            .send_prompt(&self.client, &session_id, content)
+            .send_prompt(&session_id, content)
         {
             Ok(result) => {
                 let sdk_finished_at_ms = now_ms();
@@ -368,7 +385,7 @@ impl WorkerAgent {
                     sdk_finished_at_ms,
                 );
                 sdk_finished_payload["sdk_operation"] = Value::String("send_prompt".into());
-                sdk_finished_payload["sdk_base_url"] = Value::String(self.client.base_url.clone());
+                sdk_finished_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
                 sdk_finished_payload["started_at_ms"] = json!(sdk_started_at_ms);
                 sdk_finished_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                 sdk_finished_payload["sdk_duration_ms"] =
@@ -410,7 +427,7 @@ impl WorkerAgent {
                     sdk_finished_at_ms,
                 );
                 sdk_failed_payload["sdk_operation"] = Value::String("send_prompt".into());
-                sdk_failed_payload["sdk_base_url"] = Value::String(self.client.base_url.clone());
+                sdk_failed_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
                 sdk_failed_payload["started_at_ms"] = json!(sdk_started_at_ms);
                 sdk_failed_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                 sdk_failed_payload["sdk_duration_ms"] =
@@ -485,7 +502,7 @@ impl WorkerAgent {
             sdk_started_at_ms,
         );
         sdk_started_payload["sdk_operation"] = Value::String("send_prompt_streaming".into());
-        sdk_started_payload["sdk_base_url"] = Value::String(self.client.base_url.clone());
+        sdk_started_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
         sdk_started_payload["started_at_ms"] = json!(sdk_started_at_ms);
         self.publish_runtime_event(
             &task.trace_id,
@@ -500,13 +517,13 @@ impl WorkerAgent {
             Some(sdk_started_at_ms),
             Some(json!({
                 "sdk_operation": "send_prompt_streaming",
-                "sdk_base_url": self.client.base_url.clone(),
+                "sdk_base_url": self.executor.provider_label().to_string(),
             })),
         );
 
         match self
             .executor
-            .send_prompt_streaming(&self.client, &session_id, content.clone())
+            .send_prompt_streaming(&session_id, content.clone())
         {
             Ok(lines) => {
                 self.publish_streaming_diagnostic_event(
@@ -517,7 +534,7 @@ impl WorkerAgent {
                     Some(sdk_started_at_ms),
                     Some(json!({
                         "sdk_operation": "send_prompt_streaming",
-                        "sdk_base_url": self.client.base_url.clone(),
+                        "sdk_base_url": self.executor.provider_label().to_string(),
                     })),
                 );
                 self.publish_streaming_diagnostic_event(
@@ -528,7 +545,7 @@ impl WorkerAgent {
                     Some(sdk_started_at_ms),
                     Some(json!({
                         "sdk_operation": "send_prompt_streaming",
-                        "sdk_base_url": self.client.base_url.clone(),
+                        "sdk_base_url": self.executor.provider_label().to_string(),
                     })),
                 );
                 let saw_first_event = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -543,7 +560,7 @@ impl WorkerAgent {
                             Some(sdk_started_at_ms),
                             Some(json!({
                                 "sdk_operation": "send_prompt_streaming",
-                                "sdk_base_url": self.client.base_url.clone(),
+                                "sdk_base_url": self.executor.provider_label().to_string(),
                                 "stream_event_kind": match &event {
                                     RuntimeStreamEvent::MessageStarted { .. } => "message_start",
                                     RuntimeStreamEvent::ContentBlockStarted { .. } => "content_block_start",
@@ -572,7 +589,7 @@ impl WorkerAgent {
                         sdk_finished_payload["sdk_operation"] =
                             Value::String("send_prompt_streaming".into());
                         sdk_finished_payload["sdk_base_url"] =
-                            Value::String(self.client.base_url.clone());
+                            Value::String(self.executor.provider_label().to_string());
                         sdk_finished_payload["started_at_ms"] = json!(sdk_started_at_ms);
                         sdk_finished_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                         sdk_finished_payload["sdk_duration_ms"] =
@@ -637,7 +654,7 @@ impl WorkerAgent {
                         sdk_failed_payload["sdk_operation"] =
                             Value::String("send_prompt_streaming".into());
                         sdk_failed_payload["sdk_base_url"] =
-                            Value::String(self.client.base_url.clone());
+                            Value::String(self.executor.provider_label().to_string());
                         sdk_failed_payload["started_at_ms"] = json!(sdk_started_at_ms);
                         sdk_failed_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                         sdk_failed_payload["sdk_duration_ms"] =
@@ -710,7 +727,7 @@ impl WorkerAgent {
                     sdk_finished_at_ms,
                 );
                 sdk_failed_payload["sdk_operation"] = Value::String("send_prompt_streaming".into());
-                sdk_failed_payload["sdk_base_url"] = Value::String(self.client.base_url.clone());
+                sdk_failed_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
                 sdk_failed_payload["started_at_ms"] = json!(sdk_started_at_ms);
                 sdk_failed_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                 sdk_failed_payload["sdk_duration_ms"] =
@@ -926,7 +943,7 @@ impl WorkerAgent {
                 }
             }
             // 创建新的 SDK 会话
-            "session-create" => match self.executor.create_session(&self.client) {
+            "session-create" => match self.executor.create_session() {
                 Ok(result) => {
                     if let Some(session_id) = result.get("id").and_then(Value::as_str) {
                         ExecuteResult::success(json!({"opencode-session-id": session_id}))
@@ -1045,7 +1062,6 @@ fn is_streaming_unsupported(error: &TaskExecutorError) -> bool {
 pub struct WorkerPool {
     workers: Mutex<Vec<Arc<WorkerAgent>>>,
     worker_available: Arc<Condvar>,
-    client: SdkClient,
     executor: Arc<dyn TaskExecutor>,
     runtime_event_publisher: Option<RuntimeEventPublisher>,
     worker_timeout_ms: Option<u64>,
@@ -1067,7 +1083,6 @@ pub struct WorkerPoolStatus {
 impl WorkerPool {
     /// 创建工作者池，初始化 `initial_size` 个 Worker（默认 2，最少 1）
     pub fn new(
-        client: SdkClient,
         executor: Arc<dyn TaskExecutor>,
         initial_size: Option<usize>,
         timeout_ms: Option<u64>,
@@ -1077,7 +1092,6 @@ impl WorkerPool {
         let mut workers = Vec::with_capacity(size);
         for _ in 0..size {
             workers.push(Arc::new(WorkerAgent::new(
-                client.clone(),
                 executor.clone(),
                 timeout_ms,
             )));
@@ -1085,7 +1099,6 @@ impl WorkerPool {
         Self {
             workers: Mutex::new(workers),
             worker_available: Arc::new(Condvar::new()),
-            client,
             executor,
             runtime_event_publisher: None,
             worker_timeout_ms: timeout_ms,
@@ -1165,7 +1178,6 @@ impl WorkerPool {
             // Scale up
             for _ in current..target {
                 let mut worker = WorkerAgent::new(
-                    self.client.clone(),
                     self.executor.clone(),
                     self.worker_timeout_ms,
                 );

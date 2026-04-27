@@ -2,15 +2,16 @@
 //!
 //! 验证 register_all 注册、以及内置工具与 agentic loop 的端到端集成。
 
-use anima_runtime::agent::TaskExecutor;
+use anima_runtime::provider::{Provider, ProviderError, ChatResponse, StopReason};
+use anima_runtime::provider::types::ChatRequest;
+use anima_runtime::messages::types::blocks_from_value;
 use anima_runtime::execution::agentic_loop::{
     run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome,
 };
-use anima_runtime::messages::types::{InternalMsg, MessageRole};
+use anima_runtime::messages::types::{ContentBlock, InternalMsg, MessageRole};
 use anima_runtime::tools::builtins::register_all;
 use anima_runtime::tools::registry::ToolRegistry;
 
-use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -32,22 +33,16 @@ impl SequenceExecutor {
     }
 }
 
-impl TaskExecutor for SequenceExecutor {
-    fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        _session_id: &str,
-        _content: Value,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+impl Provider for SequenceExecutor {
+    fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-        self.responses
-            .get(idx)
-            .cloned()
-            .ok_or_else(|| "no more mock responses".into())
-    }
-
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
-        Ok(json!({"id": "mock-session"}))
+        let raw = self.responses.get(idx).cloned()
+            .ok_or_else(|| ProviderError::internal("no more mock responses"))?;
+        let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
+        let blocks = blocks_from_value(&content_value, None);
+        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let stop_reason = if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn };
+        Ok(ChatResponse { content: blocks, stop_reason, usage: None, raw })
     }
 }
 
@@ -125,7 +120,6 @@ fn test_agentic_loop_with_bash_tool() {
     ];
 
     let executor = SequenceExecutor::new(responses);
-    let client = SdkClient::new("test-key");
 
     let mut registry = ToolRegistry::new();
     register_all(&mut registry);
@@ -140,7 +134,9 @@ fn test_agentic_loop_with_bash_tool() {
 
     let initial = vec![InternalMsg {
         role: MessageRole::User,
-        content: json!([{"type": "text", "text": "run echo"}]),
+        blocks: vec![ContentBlock::Text {
+            text: "run echo".into(),
+        }],
         message_id: "msg_init".into(),
         tool_use_id: None,
         filtered: false,
@@ -148,7 +144,7 @@ fn test_agentic_loop_with_bash_tool() {
     }];
 
     let result = run_agentic_loop(
-        &client, &executor, &registry, None, // no permission checker
+        &executor, &registry, None, // no permission checker
         None, // no hook registry
         initial, &config,
     );
@@ -162,7 +158,7 @@ fn test_agentic_loop_with_bash_tool() {
     assert_eq!(loop_result.iterations, 2);
     // 消息历史中应包含工具结果
     let has_tool_result = loop_result.messages.iter().any(|msg| {
-        let content_str = msg.content.to_string();
+        let content_str = serde_json::to_string(&msg.blocks).unwrap_or_default();
         content_str.contains("integration_test_ok")
     });
     assert!(has_tool_result, "tool result should be in message history");

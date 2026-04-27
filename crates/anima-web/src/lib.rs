@@ -10,6 +10,7 @@ pub mod sse;
 pub mod web_channel;
 pub mod web_snapshot;
 
+use anima_types::approval::ApprovalMode;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -18,4 +19,5 @@ pub struct AppState {
     pub bus: Arc<anima_runtime::bus::Bus>,
     pub web_channel: Arc<web_channel::WebChannel>,
     pub jobs: Mutex<jobs::JobStore>,
+    pub approval_mode: Mutex<ApprovalMode>,
 }

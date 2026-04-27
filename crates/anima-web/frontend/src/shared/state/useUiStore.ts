@@ -1,10 +1,24 @@
 import { create } from 'zustand';
 
 export type WorkbenchScope = 'global' | 'session' | 'job';
-export type InspectorTab = 'overview' | 'assignments' | 'timeline' | 'failure' | 'execution';
-export type JobListFilter = 'all' | 'active' | 'review' | 'failed';
+export type Theme = 'pink' | 'blue' | 'green' | 'dark';
+
+const THEME_KEY = 'anima-theme';
+
+function getInitialTheme(): Theme {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === 'pink' || saved === 'blue' || saved === 'green' || saved === 'dark') return saved;
+  return 'pink';
+}
+
+function applyTheme(theme: Theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem(THEME_KEY, theme);
+}
 
 interface UiState {
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
   selectedScope: WorkbenchScope;
   setSelectedScope: (scope: WorkbenchScope) => void;
   selectedSessionId: string | null;
@@ -13,19 +27,14 @@ interface UiState {
   setSelectedJobId: (jobId: string | null) => void;
   selectNewestJob: boolean;
   setSelectNewestJob: (value: boolean) => void;
-  activeInspectorTab: InspectorTab;
-  setActiveInspectorTab: (tab: InspectorTab) => void;
-  isInspectorOpen: boolean;
-  setIsInspectorOpen: (open: boolean) => void;
-  toggleInspector: () => void;
-  isJobsDrawerOpen: boolean;
-  setIsJobsDrawerOpen: (open: boolean) => void;
-  toggleJobsDrawer: () => void;
-  jobListFilter: JobListFilter;
-  setJobListFilter: (filter: JobListFilter) => void;
 }
 
+const initialTheme = getInitialTheme();
+applyTheme(initialTheme);
+
 export const useUiStore = create<UiState>((set) => ({
+  theme: initialTheme,
+  setTheme: (theme) => { applyTheme(theme); set({ theme }); },
   selectedScope: 'global',
   setSelectedScope: (selectedScope) => set({ selectedScope }),
   selectedSessionId: null,
@@ -43,14 +52,4 @@ export const useUiStore = create<UiState>((set) => ({
   })),
   selectNewestJob: true,
   setSelectNewestJob: (selectNewestJob) => set({ selectNewestJob }),
-  activeInspectorTab: 'overview',
-  setActiveInspectorTab: (activeInspectorTab) => set({ activeInspectorTab }),
-  isInspectorOpen: true,
-  setIsInspectorOpen: (isInspectorOpen) => set({ isInspectorOpen }),
-  toggleInspector: () => set((state) => ({ isInspectorOpen: !state.isInspectorOpen })),
-  isJobsDrawerOpen: false,
-  setIsJobsDrawerOpen: (isJobsDrawerOpen) => set({ isJobsDrawerOpen }),
-  toggleJobsDrawer: () => set((state) => ({ isJobsDrawerOpen: !state.isJobsDrawerOpen })),
-  jobListFilter: 'all',
-  setJobListFilter: (jobListFilter) => set({ jobListFilter }),
 }));

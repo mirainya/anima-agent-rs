@@ -1,7 +1,6 @@
 use anima_runtime::worker::executor::TaskExecutor;
 use anima_runtime::agent::types::{make_task, MakeTask};
 use anima_runtime::worker::WorkerPool;
-use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -9,29 +8,25 @@ struct TestExecutor;
 
 impl TaskExecutor for TestExecutor {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        session_id: &str,
+        &self,        session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"content": format!("reply[{session_id}]")}))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "test-session-1"}))
     }
 }
 
 fn make_pool(size: usize) -> WorkerPool {
-    let client = SdkClient::new("http://127.0.0.1:9711");
     let executor: Arc<dyn TaskExecutor> = Arc::new(TestExecutor);
-    WorkerPool::new(client, executor, Some(size), None, Some(100))
+    WorkerPool::new(executor, Some(size), None, Some(100))
 }
 
 fn make_pool_with_bounds(size: usize, min: usize, max: usize) -> WorkerPool {
-    let client = SdkClient::new("http://127.0.0.1:9711");
     let executor: Arc<dyn TaskExecutor> = Arc::new(TestExecutor);
-    WorkerPool::new(client, executor, Some(size), None, Some(100)).with_bounds(min, max)
+    WorkerPool::new(executor, Some(size), None, Some(100)).with_bounds(min, max)
 }
 
 fn test_task() -> anima_runtime::agent::types::Task {

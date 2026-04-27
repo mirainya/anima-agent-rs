@@ -13,20 +13,14 @@ pub type UnifiedStreamSource = Box<dyn Iterator<Item = UnifiedStreamLine>>;
 pub trait TaskExecutor: Send + Sync {
     fn send_prompt(
         &self,
-        client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, TaskExecutorError>;
 
-    fn create_session(&self, client: &SdkClient) -> Result<Value, TaskExecutorError>;
+    fn create_session(&self) -> Result<Value, TaskExecutorError>;
 
-    /// 流式发送 prompt，返回统一流输入。
-    ///
-    /// 默认返回 Err（不支持流式）。实现方需要返回可被 streaming 层消费的
-    /// 逐行 SSE/兼容行迭代器，而不是暴露底层 transport response。
     fn send_prompt_streaming(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<UnifiedStreamSource, TaskExecutorError> {
@@ -36,10 +30,22 @@ pub trait TaskExecutor: Send + Sync {
             "streaming not supported",
         ))
     }
+
+    fn provider_label(&self) -> &str {
+        ""
+    }
 }
 
-#[derive(Debug, Default)]
-pub struct SdkTaskExecutor;
+#[derive(Debug, Clone)]
+pub struct SdkTaskExecutor {
+    client: SdkClient,
+}
+
+impl SdkTaskExecutor {
+    pub fn new(client: SdkClient) -> Self {
+        Self { client }
+    }
+}
 
 fn session_create_error(error: impl std::fmt::Display) -> TaskExecutorError {
     RuntimeError::new(
@@ -74,34 +80,36 @@ fn plan_execute_error(error: impl std::fmt::Display) -> TaskExecutorError {
 impl TaskExecutor for SdkTaskExecutor {
     fn send_prompt(
         &self,
-        client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, TaskExecutorError> {
-        let response = messages::send_prompt(client, session_id, content, None)
+        let response = messages::send_prompt(&self.client, session_id, content, None)
             .map_err(plan_execute_error)?;
-        wait_for_message_completion(client, session_id, response)
+        wait_for_message_completion(&self.client, session_id, response)
     }
 
-    fn create_session(&self, client: &SdkClient) -> Result<Value, TaskExecutorError> {
-        sessions::create_session(client, None).map_err(session_create_error)
+    fn create_session(&self) -> Result<Value, TaskExecutorError> {
+        sessions::create_session(&self.client, None).map_err(session_create_error)
     }
 
     fn send_prompt_streaming(
         &self,
-        client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<UnifiedStreamSource, TaskExecutorError> {
-        let event_lines = open_opencode_event_stream(client)?;
+        let event_lines = open_opencode_event_stream(&self.client)?;
         let message_result_rx =
-            spawn_message_request(client.clone(), session_id.to_string(), content);
+            spawn_message_request(self.client.clone(), session_id.to_string(), content);
 
         Ok(Box::new(OpenCodeEventAdapter::new(
             session_id.to_string(),
             message_result_rx,
             event_lines,
         )))
+    }
+
+    fn provider_label(&self) -> &str {
+        &self.client.base_url
     }
 }
 

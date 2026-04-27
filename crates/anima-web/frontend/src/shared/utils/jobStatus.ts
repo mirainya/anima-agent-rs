@@ -36,5 +36,7 @@ export function statusLabel(status: JobStatus): string {
       return '已完成';
     case 'failed':
       return '失败';
+    case 'awaiting_plan_approval':
+      return '等待审批';
   }
 }

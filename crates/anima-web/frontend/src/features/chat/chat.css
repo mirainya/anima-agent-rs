@@ -1,50 +1,65 @@
-.app-message-input-bar {
+.chat-composer {
   display: flex;
-  width: min(920px, 100%);
+  align-items: flex-end;
+  gap: 10px;
+  width: min(780px, 100%);
   margin: 0 auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: rgba(21, 21, 33, 0.9);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
-  font-size: 13px;
-  color: var(--text2);
+  padding: 12px 16px;
+  border: 1px solid var(--composer-border);
+  border-radius: 20px;
+  background: var(--composer-bg);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 0 24px var(--glow), 0 4px 16px rgba(0, 0, 0, 0.08);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.message-composer-meta {
-  flex: 0 0 auto;
-  font-size: 12px;
-  color: var(--text2);
+.chat-composer:focus-within {
+  border-color: var(--composer-focus);
+  box-shadow: 0 0 32px var(--glow), 0 4px 16px rgba(0, 0, 0, 0.08);
 }
 
-.message-input {
+.chat-composer-input {
   flex: 1 1 auto;
   min-width: 0;
+  max-height: 120px;
   background: transparent;
   border: none;
   color: var(--text);
   outline: none;
   font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+  overflow-y: auto;
 }
 
-.message-input::placeholder {
+.chat-composer-input::placeholder {
   color: var(--text2);
 }
 
-.message-send-btn {
+.chat-composer-send {
   flex: 0 0 auto;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 8px 16px;
-  background: var(--accent);
-  color: white;
+  padding: 8px 20px;
+  border: none;
+  border-radius: 14px;
+  background: var(--btn-gradient);
+  color: #fff;
   font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
+  transition: opacity 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+  box-shadow: 0 2px 12px var(--btn-shadow);
 }
 
-.message-send-btn:disabled {
-  opacity: 0.6;
+.chat-composer-send:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px var(--btn-shadow);
+}
+
+.chat-composer-send:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.chat-composer-send:disabled {
+  opacity: 0.35;
   cursor: not-allowed;
 }

@@ -32,6 +32,7 @@ fn main() {
         bus: bus.clone(),
         web_channel: web_channel.clone(),
         jobs: Mutex::new(anima_web::jobs::JobStore::default()),
+        approval_mode: Mutex::new(Default::default()),
     });
 
     // 启动 SSE 事件转发线程：监听 Bus internal 通道，推送给浏览器

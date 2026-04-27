@@ -268,6 +268,9 @@ fn derive_pending_question(
             crate::tasks::model::SuspensionKind::SubtaskBlocked => {
                 crate::agent::PendingQuestionSourceKind::SubtaskBlocked
             }
+            crate::tasks::model::SuspensionKind::HumanApproval => {
+                crate::agent::PendingQuestionSourceKind::PlanApproval
+            }
             _ => crate::agent::PendingQuestionSourceKind::UpstreamQuestion,
         },
         continuation_token: Some(suspension.suspension_id.clone()),

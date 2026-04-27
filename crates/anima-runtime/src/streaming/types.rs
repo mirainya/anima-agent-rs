@@ -37,6 +37,8 @@ pub enum ContentBlock {
         name: String,
         input: Value,
     },
+    /// 思考块
+    Thinking { thinking: String },
 }
 
 /// 内容增量
@@ -46,6 +48,8 @@ pub enum ContentDelta {
     TextDelta { text: String },
     /// 工具输入 JSON 增量
     InputJsonDelta { partial_json: String },
+    /// 思考增量
+    ThinkingDelta { thinking: String },
 }
 
 /// 流式工具追踪状态

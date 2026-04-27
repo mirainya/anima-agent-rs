@@ -1,14 +1,14 @@
 //! Agent 门面：对外公共 API 层
 
-use anima_sdk::facade::Client as SdkClient;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::core::{CoreAgent, CoreAgentStatus};
-use crate::worker::{SdkTaskExecutor, TaskExecutor};
+use crate::worker::TaskExecutor;
 use super::suspension::{PendingQuestion, QuestionAnswerInput};
 use crate::worker::WorkerPool;
 use crate::bus::{Bus, InboundMessage};
+use anima_types::approval::ApprovalMode;
 use crate::channel::SessionStore;
 use crate::hooks::HookRegistry;
 use crate::permissions::PermissionChecker;
@@ -16,7 +16,6 @@ use crate::runtime::{RuntimeProjectionView, SharedRuntimeStateStore};
 
 pub struct Agent {
     pub bus: Arc<Bus>,
-    pub opencode_client: SdkClient,
     pub session_manager: Arc<SessionStore>,
     running: AtomicBool,
     core_agent: Arc<CoreAgent>,
@@ -31,24 +30,18 @@ pub struct AgentStatus {
 impl Agent {
     pub fn create(
         bus: Arc<Bus>,
-        client: Option<SdkClient>,
         session_manager: Option<Arc<SessionStore>>,
-        executor: Option<Arc<dyn TaskExecutor>>,
+        executor: Arc<dyn TaskExecutor>,
     ) -> Self {
-        let opencode_client = client.unwrap_or_else(|| {
-            SdkClient::with_options("http://127.0.0.1:9711", anima_sdk::ClientOptions::default())
-        });
         let session_manager = session_manager.unwrap_or_else(|| Arc::new(SessionStore::new()));
         let core_agent = Arc::new(CoreAgent::new(
             bus.clone(),
-            opencode_client.clone(),
             Some(session_manager.clone()),
-            executor.unwrap_or_else(|| Arc::new(SdkTaskExecutor)),
+            executor,
             None,
         ));
         Self {
             bus,
-            opencode_client,
             session_manager,
             running: AtomicBool::new(false),
             core_agent,
@@ -57,26 +50,20 @@ impl Agent {
 
     pub fn with_runtime_state_store(
         bus: Arc<Bus>,
-        client: Option<SdkClient>,
         session_manager: Option<Arc<SessionStore>>,
-        executor: Option<Arc<dyn TaskExecutor>>,
+        executor: Arc<dyn TaskExecutor>,
         runtime_state_store: SharedRuntimeStateStore,
     ) -> Self {
-        let opencode_client = client.unwrap_or_else(|| {
-            SdkClient::with_options("http://127.0.0.1:9711", anima_sdk::ClientOptions::default())
-        });
         let session_manager = session_manager.unwrap_or_else(|| Arc::new(SessionStore::new()));
         let core_agent = Arc::new(CoreAgent::new_with_runtime_state_store(
             bus.clone(),
-            opencode_client.clone(),
             Some(session_manager.clone()),
-            executor.unwrap_or_else(|| Arc::new(SdkTaskExecutor)),
+            executor,
             None,
             runtime_state_store,
         ));
         Self {
             bus,
-            opencode_client,
             session_manager,
             running: AtomicBool::new(false),
             core_agent,
@@ -102,26 +89,36 @@ impl Agent {
         let _ = self.bus.publish_inbound(inbound_msg);
     }
 
-    pub fn register_builtin_tools(&mut self) {
+    pub fn register_builtin_tools(&mut self) -> Result<(), String> {
         let core = Arc::get_mut(&mut self.core_agent)
-            .expect("cannot mutate shared core_agent — ensure no other Arc references exist");
-        core.register_builtin_tools();
+            .ok_or("cannot mutate shared core_agent — ensure no other Arc references exist")?;
+        core.register_builtin_tools()
     }
 
-    pub fn set_hook_registry(&mut self, registry: HookRegistry) {
+    pub fn set_hook_registry(&mut self, registry: HookRegistry) -> Result<(), String> {
         let core = Arc::get_mut(&mut self.core_agent)
-            .expect("cannot mutate shared core_agent — ensure no other Arc references exist");
+            .ok_or("cannot mutate shared core_agent — ensure no other Arc references exist")?;
         core.set_hook_registry(registry);
+        Ok(())
     }
 
-    pub fn set_permission_checker(&mut self, checker: PermissionChecker) {
+    pub fn set_permission_checker(&mut self, checker: PermissionChecker) -> Result<(), String> {
         let core = Arc::get_mut(&mut self.core_agent)
-            .expect("cannot mutate shared core_agent — ensure no other Arc references exist");
+            .ok_or("cannot mutate shared core_agent — ensure no other Arc references exist")?;
         core.set_permission_checker(checker);
+        Ok(())
     }
 
     pub fn core_agent(&self) -> Arc<CoreAgent> {
         Arc::clone(&self.core_agent)
+    }
+
+    pub fn set_approval_mode(&self, mode: ApprovalMode) {
+        *self.core_agent.approval_mode.lock() = mode;
+    }
+
+    pub fn enable_llm_judge(&self) {
+        self.core_agent.enable_llm_judge();
     }
 
     pub fn worker_pool(&self) -> Arc<WorkerPool> {

@@ -1,10 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::debug;
 
 use crate::agent::{
     classify_question_requires_user_confirmation, detect_pending_question, extract_response_text,
     PendingQuestion, QuestionKind,
 };
+use crate::messages::types::ContentBlock;
+use crate::provider::{ChatMessage, ChatRequest, ChatRole, Provider};
 
 const DEFAULT_MAX_FOLLOWUP_ROUNDS: usize = 3;
 
@@ -64,7 +67,10 @@ impl RequirementProgressState {
     }
 }
 
-pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement {
+pub fn judge_requirement(
+    ctx: &RequirementJudgeContext,
+    provider: Option<&dyn Provider>,
+) -> RequirementJudgement {
     let question = detect_pending_question(ctx.raw_result.as_ref(), &ctx.opencode_session_id);
     if let Some(question) = question {
         if question.requires_user_confirmation
@@ -123,6 +129,53 @@ pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement 
         }));
     }
 
+    // Layer 1: structured <completion_status> signal
+    if let Some(status) = extract_completion_status(&response_text) {
+        debug!(status, "requirement judge: completion_status tag found");
+        match status {
+            "complete" => return RequirementJudgement::Satisfied,
+            "needs_input" | "partial" => {
+                return RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
+                    reason: format!("completion_status={status}，任务尚未完成"),
+                    missing_requirements: infer_missing_requirements(&response_text),
+                    followup_prompt: build_result_followup_prompt(
+                        &ctx.original_user_request,
+                        &response_text,
+                        "请继续推进，直到任务完整完成。",
+                    ),
+                    result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
+                }));
+            }
+            _ => {} // unrecognized value, fall through
+        }
+    }
+
+    // Layer 2: lightweight LLM judgement
+    if let Some(provider) = provider {
+        if let Some(satisfied) =
+            llm_judge_requirement(provider, &ctx.original_user_request, &response_text)
+        {
+            if satisfied {
+                debug!("requirement judge: LLM says satisfied");
+                return RequirementJudgement::Satisfied;
+            } else {
+                debug!("requirement judge: LLM says unsatisfied");
+                return RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
+                    reason: "LLM 评估判定需求尚未满足".into(),
+                    missing_requirements: infer_missing_requirements(&response_text),
+                    followup_prompt: build_result_followup_prompt(
+                        &ctx.original_user_request,
+                        &response_text,
+                        "请继续推进，直到完整满足用户的原始请求。",
+                    ),
+                    result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
+                }));
+            }
+        }
+        debug!("requirement judge: LLM call failed, falling back to heuristics");
+    }
+
+    // Layer 3: keyword heuristics (original logic)
     if looks_unsatisfied(&normalized) {
         return RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
             reason: "上游回复表明需求尚未真正满足".into(),
@@ -137,6 +190,49 @@ pub fn judge_requirement(ctx: &RequirementJudgeContext) -> RequirementJudgement 
     }
 
     RequirementJudgement::Satisfied
+}
+
+fn extract_completion_status(text: &str) -> Option<&str> {
+    let open = "<completion_status>";
+    let close = "</completion_status>";
+    let start = text.rfind(open)? + open.len();
+    let end = start + text[start..].find(close)?;
+    let value = text[start..end].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn llm_judge_requirement(
+    provider: &dyn Provider,
+    original_request: &str,
+    response_text: &str,
+) -> Option<bool> {
+    let preview: String = response_text.chars().take(500).collect();
+    let prompt = format!(
+        "你是需求完成度评估器。判断以下 AI 回复是否完整满足了用户的原始请求。\n\n\
+         用户请求：{original_request}\n\n\
+         AI 回复摘要（前 500 字）：{preview}\n\n\
+         只回复 JSON：{{\"satisfied\": true/false, \"reason\": \"一句话原因\"}}"
+    );
+    let request = ChatRequest {
+        messages: vec![ChatMessage {
+            role: ChatRole::User,
+            content: vec![ContentBlock::Text { text: prompt }],
+        }],
+        max_tokens: Some(128),
+        metadata: json!({}),
+        ..Default::default()
+    };
+    let response = provider.chat(request).ok()?;
+    let text = response.text();
+    // extract first JSON object
+    let start = text.find('{')?;
+    let end = start + text[start..].find('}')? + 1;
+    let obj: Value = serde_json::from_str(&text[start..end]).ok()?;
+    obj.get("satisfied").and_then(|v| v.as_bool())
 }
 
 pub fn fingerprint_result(result: Option<&Value>) -> String {
@@ -157,14 +253,16 @@ fn build_question_followup_prompt(
     question: &PendingQuestion,
 ) -> String {
     let options = if question.options.is_empty() {
-        "(无 options)".to_string()
+        String::new()
     } else {
-        question.options.join(" / ")
+        format!("\n可选项: {}", question.options.join(", "))
     };
     format!(
-        "原始用户请求：\n{original_user_request}\n\n上游返回了结构化 question，但该问题目前不需要用户介入：\n- prompt: {}\n- options: {}\n\n请由主 agent 自主完成判断并继续推进，直接产出更接近完成态的结果。只有确实需要用户提供新的外部信息时，才返回结构化 question。",
-        question.prompt,
-        options,
+        "用户原始请求: {original_user_request}\n\n\
+         上游提出了一个问题: {}{options}\n\n\
+         请根据用户原始请求的上下文，尝试推断出合理答案并继续执行。\
+         如果确实无法推断，请返回结构化 question 给用户。",
+        question.prompt
     )
 }
 
@@ -173,8 +271,11 @@ fn build_result_followup_prompt(
     response_text: &str,
     instruction: &str,
 ) -> String {
+    let preview: String = response_text.chars().take(300).collect();
     format!(
-        "原始用户请求：\n{original_user_request}\n\n上一轮上游结果：\n{response_text}\n\n{instruction}"
+        "用户原始请求: {original_user_request}\n\n\
+         上一轮结果摘要: {preview}\n\n\
+         {instruction}"
     )
 }
 
@@ -197,11 +298,11 @@ fn looks_unsatisfied(text: &str) -> bool {
         "can't complete",
         "unable to complete",
         "not enough information",
-        "requires user",
+        "could you provide",
+        "could you clarify",
+        "please provide",
         "需要更多信息",
-        "需要更多资料",
-        "需要用户输入",
-        "需要用户确认",
+        "请提供",
         "请确认",
         "请选择",
         "无法完成",
@@ -243,4 +344,32 @@ pub fn requirement_unsatisfied_payload(
         "missing_requirements": missing_requirements,
         "raw_result": raw_result.cloned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_completion_status_complete() {
+        let text = "Here is the answer.\n<completion_status>complete</completion_status>";
+        assert_eq!(extract_completion_status(text), Some("complete"));
+    }
+
+    #[test]
+    fn extract_completion_status_partial() {
+        let text = "Still working...\n<completion_status>partial</completion_status>";
+        assert_eq!(extract_completion_status(text), Some("partial"));
+    }
+
+    #[test]
+    fn extract_completion_status_missing() {
+        assert_eq!(extract_completion_status("no tag here"), None);
+    }
+
+    #[test]
+    fn extract_completion_status_uses_last_occurrence() {
+        let text = "<completion_status>partial</completion_status> then <completion_status>complete</completion_status>";
+        assert_eq!(extract_completion_status(text), Some("complete"));
+    }
 }

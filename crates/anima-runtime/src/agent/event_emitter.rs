@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::bus::{make_internal, Bus, InboundMessage, MakeInternal};
+use crate::bus::{make_internal, Bus, InboundMessage, InternalPayload, MakeInternal};
 use crate::runtime::{RuntimeDomainEvent, SharedRuntimeStateStore};
 use crate::support::now_ms;
 use crate::tasks::{
@@ -54,14 +54,14 @@ impl RuntimeEventEmitter {
         let _ = self.bus.publish_internal(make_internal(MakeInternal {
             source: "core-agent".into(),
             trace_id: Some(inbound_msg.id.clone()),
-            payload: json!({
-                "event": event,
-                "message_id": message_id,
-                "channel": inbound_msg.channel,
-                "chat_id": inbound_msg.chat_id,
-                "sender_id": inbound_msg.sender_id,
-                "payload": payload,
-            }),
+            payload: InternalPayload::RuntimeEvent {
+                event: event.to_string(),
+                message_id,
+                channel: inbound_msg.channel.clone(),
+                chat_id: inbound_msg.chat_id.clone(),
+                sender_id: inbound_msg.sender_id.clone(),
+                payload,
+            },
             ..Default::default()
         }));
     }
@@ -84,15 +84,15 @@ impl RuntimeEventEmitter {
             let _ = self.bus.publish_internal(make_internal(MakeInternal {
                 source: "core-agent".into(),
                 trace_id: Some(inbound_msg.id.clone()),
-                payload: json!({
-                    "event": format!("worker_{}", event),
-                    "worker_id": w.id,
-                    "status": status,
-                    "task_type": task_type,
-                    "channel": inbound_msg.channel,
-                    "message_id": inbound_msg.id,
-                    "chat_id": inbound_msg.chat_id,
-                }),
+                payload: InternalPayload::WorkerStatus {
+                    event: format!("worker_{}", event),
+                    worker_id: w.id.clone(),
+                    status: status.to_string(),
+                    task_type: task_type.to_string(),
+                    channel: inbound_msg.channel.clone(),
+                    message_id: inbound_msg.id.clone(),
+                    chat_id: inbound_msg.chat_id.clone(),
+                },
                 ..Default::default()
             }));
         }
@@ -128,14 +128,14 @@ impl RuntimeEventEmitter {
         let _ = self.bus.publish_internal(make_internal(MakeInternal {
             source: "core-agent".into(),
             trace_id: Some(inbound_msg.id.clone()),
-            payload: json!({
-                "event": event,
-                "message_id": runtime_message_id(inbound_msg),
-                "channel": inbound_msg.channel,
-                "chat_id": inbound_msg.chat_id,
-                "sender_id": inbound_msg.sender_id,
-                "payload": payload,
-            }),
+            payload: InternalPayload::RuntimeEvent {
+                event: event.to_string(),
+                message_id: runtime_message_id(inbound_msg),
+                channel: inbound_msg.channel.clone(),
+                chat_id: inbound_msg.chat_id.clone(),
+                sender_id: inbound_msg.sender_id.clone(),
+                payload,
+            },
             ..Default::default()
         }));
     }
@@ -527,7 +527,7 @@ impl RuntimeEventEmitter {
         let text = format!("[{label}] {}", serde_json::to_string(reason).unwrap_or_default());
         let msg = crate::messages::types::InternalMsg {
             role: crate::messages::types::MessageRole::System,
-            content: Value::String(text),
+            blocks: vec![crate::messages::types::ContentBlock::Text { text }],
             message_id: format!("{}-{label}", runtime_message_id(inbound_msg)),
             tool_use_id: None,
             filtered: false,

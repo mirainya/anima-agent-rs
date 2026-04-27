@@ -1,11 +1,11 @@
 use anima_runtime::pipeline::*;
-use serde_json::json;
+use serde_json::{json, Value};
 
 // ── Pipeline basic flow ─────────────────────────────────────────────
 
 #[test]
 fn pipeline_process_single_item_through_transform_and_sink() {
-    let pipeline = Pipeline::new().add_transform(Box::new(MapTransform::new(|v| {
+    let pipeline = Pipeline::new().add_transform(Box::new(MapTransform::new(|v: Value| {
         json!(v.as_i64().unwrap_or(0) * 2)
     })));
 
@@ -16,10 +16,10 @@ fn pipeline_process_single_item_through_transform_and_sink() {
 #[test]
 fn pipeline_filter_drops_items() {
     let pipeline = Pipeline::new()
-        .add_filter(Box::new(PredicateFilter::new(|v| {
+        .add_filter(Box::new(PredicateFilter::new(|v: &Value| {
             v.as_i64().unwrap_or(0) > 3
         })))
-        .add_transform(Box::new(MapTransform::new(|v| {
+        .add_transform(Box::new(MapTransform::new(|v: Value| {
             json!(v.as_i64().unwrap_or(0) * 10)
         })));
 
@@ -30,10 +30,10 @@ fn pipeline_filter_drops_items() {
 #[test]
 fn pipeline_multiple_transforms_chain() {
     let pipeline = Pipeline::new()
-        .add_transform(Box::new(MapTransform::new(|v| {
+        .add_transform(Box::new(MapTransform::new(|v: Value| {
             json!(v.as_i64().unwrap_or(0) + 1)
         })))
-        .add_transform(Box::new(MapTransform::new(|v| {
+        .add_transform(Box::new(MapTransform::new(|v: Value| {
             json!(v.as_i64().unwrap_or(0) * 3)
         })));
 
@@ -44,10 +44,10 @@ fn pipeline_multiple_transforms_chain() {
 #[test]
 fn pipeline_multiple_filters_all_must_pass() {
     let pipeline = Pipeline::new()
-        .add_filter(Box::new(PredicateFilter::new(|v| {
+        .add_filter(Box::new(PredicateFilter::new(|v: &Value| {
             v.as_i64().unwrap_or(0) > 0
         })))
-        .add_filter(Box::new(PredicateFilter::new(|v| {
+        .add_filter(Box::new(PredicateFilter::new(|v: &Value| {
             v.as_i64().unwrap_or(0) < 100
         })));
 
@@ -101,7 +101,7 @@ fn batch_transform_groups_items() {
 
 #[test]
 fn pipeline_tracks_stats() {
-    let pipeline = Pipeline::new().add_filter(Box::new(PredicateFilter::new(|v| {
+    let pipeline = Pipeline::new().add_filter(Box::new(PredicateFilter::new(|v: &Value| {
         v.as_i64().unwrap_or(0) > 0
     })));
 
@@ -119,7 +119,7 @@ fn pipeline_tracks_stats() {
 
 #[test]
 fn pipeline_process_batch() {
-    let pipeline = Pipeline::new().add_transform(Box::new(MapTransform::new(|v| {
+    let pipeline = Pipeline::new().add_transform(Box::new(MapTransform::new(|v: Value| {
         json!(v.as_i64().unwrap_or(0) + 100)
     })));
 
@@ -140,20 +140,15 @@ fn channel_source_and_sink_integration() {
     let source = ChannelSource::new(src_rx);
     let pipeline = Pipeline::new()
         .add_source(Box::new(source))
-        .add_transform(Box::new(MapTransform::new(|v| {
+        .add_transform(Box::new(MapTransform::new(|v: Value| {
             json!(v.as_i64().unwrap_or(0) * 2)
         })))
         .add_sink(Box::new(ChannelSink::new(sink_tx)));
 
     pipeline.start().unwrap();
 
-    // Manually drive: source → process → sink
     src_tx.send(json!(5)).unwrap();
     src_tx.send(json!(10)).unwrap();
-
-    // In a real pipeline the source would drive this loop,
-    // but for testing we manually process
-    // (The pipeline.process() is the core logic, source is for async driving)
 
     pipeline.stop().unwrap();
     assert_eq!(pipeline.state(), PipelineState::Stopped);

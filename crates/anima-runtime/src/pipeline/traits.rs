@@ -18,25 +18,25 @@ pub trait Source: Send + Sync {
 }
 
 /// 数据转换器 trait —— 对每个数据项进行映射变换，返回 None 表示丢弃
-pub trait Transform: Send + Sync {
-    fn transform(&self, data: Value, ctx: &PipelineContext) -> Result<Option<Value>, String>;
+pub trait Transform<T>: Send + Sync {
+    fn transform(&self, data: T, ctx: &PipelineContext) -> Result<Option<T>, String>;
 }
 
 /// 数据过滤器 trait —— 返回 true 保留，false 丢弃
-pub trait Filter: Send + Sync {
-    fn passes(&self, data: &Value, ctx: &PipelineContext) -> bool;
+pub trait Filter<T>: Send + Sync {
+    fn passes(&self, data: &T, ctx: &PipelineContext) -> bool;
 }
 
 /// 数据聚合器 trait —— 累积多个数据项，最终输出合并结果
-pub trait Aggregate: Send + Sync {
-    fn add_data(&self, data: Value, ctx: &PipelineContext) -> Result<(), String>;
-    fn get_result(&self) -> Option<Value>;
+pub trait Aggregate<T>: Send + Sync {
+    fn add_data(&self, data: T, ctx: &PipelineContext) -> Result<(), String>;
+    fn get_result(&self) -> Option<T>;
     fn reset(&self);
 }
 
 /// 数据输出端 trait —— 将处理后的数据写出到外部系统
-pub trait Sink: Send + Sync {
-    fn write(&self, data: Value, ctx: &PipelineContext) -> Result<(), String>;
+pub trait Sink<T>: Send + Sync {
+    fn write(&self, data: T, ctx: &PipelineContext) -> Result<(), String>;
     fn flush(&self) -> Result<(), String>;
     fn close(&self) -> Result<(), String>;
 }

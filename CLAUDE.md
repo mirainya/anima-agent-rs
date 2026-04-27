@@ -15,7 +15,7 @@ cargo clippy --workspace         # lint 检查
 ```
 anima-types     → 共享类型（最底层，零业务逻辑）
 anima-sdk       → HTTP SDK，对接 OpenCode 后端
-anima-runtime   → 核心运行时（agent/bus/channel/classifier/orchestrator/execution/tools/streaming）
+anima-runtime   → 核心运行时（agent/worker/bus/channel/classifier/orchestrator/execution/tools/streaming）
 anima-cli       → CLI 入口
 anima-web       → Axum Web + React 前端 + SSE
 anima-testkit   → 测试工具
@@ -37,21 +37,25 @@ anima-testkit   → 测试工具
 
 ## 当前技术债（按优先级）
 
-### P0 — 立即处理
-1. 清理 lib.rs 中 14 个兼容旧路径 re-export
-2. 收紧 `pub use *` glob 导出为显式导出
-3. 将内部类型降为 `pub(crate)`
+### P0 — 已完成 ✓
+1. ~~清理 lib.rs 中 14 个兼容旧路径 re-export~~
+2. ~~收紧 `pub use *` glob 导出为显式导出~~
+3. ~~将内部类型降为 `pub(crate)`~~
 
-### P1 — 本周
-4. 引入 `tracing` 替代手动事件发射
-5. 拆分 agent 模块（7782 行过重）
+### P1 — 已完成 ✓
+4. ~~引入 `tracing` 替代手动事件发射~~
+5. ~~拆分 agent 模块（8253→5928 行，worker/executor 提取为独立域模块）~~
 
-### P2 — 本月
-6. 异步化 SDK HTTP 调用
-7. 引入 SQLite 本地持久化
-8. 配置系统（TOML）
+### P2 — 已完成 ✓
+6. ~~异步化 SDK HTTP 调用（双模式：blocking + async）~~
+7. ~~引入 SQLite 本地持久化~~
+8. ~~配置系统（TOML）~~
 
-## 测试约定
+### P3 — 已完成 ✓
+9. ~~生产路径 panic 消除（Arc::get_mut/expect/unwrap → Result + 防御性处理）~~
+10. ~~Bus 消息类型化（InternalMessage.payload → InternalPayload 枚举）~~
+11. ~~Pipeline 泛型化（Pipeline<T>/Transform<T>/Filter<T>/Aggregate<T>/Sink<T>，默认 T=Value 向后兼容）~~
+12. ~~测试补全（reducer/tasks三件套/transcript/agent工具函数/bus bounded 共 66 个内联单元测试）~~
 - 集成测试放 `crates/<crate>/tests/`
 - 单元测试用 `#[cfg(test)]` 内联
 - 新功能必须有对应测试

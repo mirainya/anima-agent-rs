@@ -2,10 +2,12 @@
 //!
 //! 提供预定义的 PromptSection 构造方法。
 
+#![allow(dead_code)]
+
 use super::types::{EnvironmentInfo, PromptSection};
 
 /// 身份段落：描述智能体的角色和名称
-pub fn identity_section(agent_name: &str) -> PromptSection {
+pub(crate) fn identity_section(agent_name: &str) -> PromptSection {
     PromptSection {
         id: "identity".into(),
         content: format!(
@@ -17,7 +19,7 @@ pub fn identity_section(agent_name: &str) -> PromptSection {
 }
 
 /// 工具使用指南段落：列出可用工具名称
-pub fn tool_usage_section(tool_names: &[&str]) -> PromptSection {
+pub(crate) fn tool_usage_section(tool_names: &[&str]) -> PromptSection {
     let list = if tool_names.is_empty() {
         "No tools are currently available.".to_string()
     } else {
@@ -34,8 +36,21 @@ pub fn tool_usage_section(tool_names: &[&str]) -> PromptSection {
     }
 }
 
+pub(crate) fn completion_status_section() -> PromptSection {
+    PromptSection {
+        id: "completion_status".into(),
+        content: "在每次回复的最末尾，附加一个 XML 标记表示任务完成状态：\n\
+                  - <completion_status>complete</completion_status> — 已完整满足用户请求\n\
+                  - <completion_status>partial</completion_status> — 部分完成，仍需继续\n\
+                  - <completion_status>needs_input</completion_status> — 需要用户提供额外信息\n\
+                  此标记必须出现在回复正文之后，不要省略。"
+            .into(),
+        order: 300,
+    }
+}
+
 /// 环境信息段落：平台、工作目录等运行时上下文
-pub fn environment_section(env: &EnvironmentInfo) -> PromptSection {
+pub(crate) fn environment_section(env: &EnvironmentInfo) -> PromptSection {
     let mut parts = Vec::new();
     if let Some(ref platform) = env.platform {
         parts.push(format!("Platform: {platform}"));

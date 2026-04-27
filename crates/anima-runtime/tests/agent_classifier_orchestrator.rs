@@ -3,7 +3,6 @@ use anima_runtime::classifier::rule::{AgentClassifier, ClassificationKind};
 use anima_runtime::orchestrator::core::AgentOrchestrator;
 use anima_runtime::agent::types::ExecutionPlanKind;
 use anima_runtime::bus::{make_inbound, MakeInbound};
-use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -12,9 +11,7 @@ struct MockExecutor;
 
 impl TaskExecutor for MockExecutor {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        session_id: &str,
+        &self,        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
@@ -22,13 +19,13 @@ impl TaskExecutor for MockExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-1"}))
     }
 }
 
 #[test]
-fn agent_classifier_preserves_direct_single_and_sequential_decisions() {
+fn agent_classifier_preserves_direct_single_and_specialist_decisions() {
     let direct = make_inbound(MakeInbound {
         channel: "cli".into(),
         content: "/status".into(),
@@ -45,25 +42,28 @@ fn agent_classifier_preserves_direct_single_and_sequential_decisions() {
         ExecutionPlanKind::Direct
     );
 
-    let sequential = make_inbound(MakeInbound {
+    // multi-step and parallel metadata no longer affect classification
+    let multi_step = make_inbound(MakeInbound {
         channel: "cli".into(),
         content: "do multi".into(),
         metadata: Some(json!({"multi-step": true})),
         ..Default::default()
     });
     assert_eq!(
-        AgentClassifier::classify(&sequential).kind,
-        ClassificationKind::Sequential
+        AgentClassifier::classify(&multi_step).kind,
+        ClassificationKind::Single
     );
+
+    let parallel = make_inbound(MakeInbound {
+        channel: "cli".into(),
+        content: "fan out".into(),
+        metadata: Some(json!({"parallel": true})),
+        ..Default::default()
+    });
     assert_eq!(
-        AgentClassifier::build_plan(&sequential).plan_type,
-        "sequential"
+        AgentClassifier::classify(&parallel).kind,
+        ClassificationKind::Single
     );
-    assert_eq!(
-        AgentClassifier::build_plan(&sequential).kind,
-        ExecutionPlanKind::Sequential
-    );
-    assert_eq!(AgentClassifier::build_plan(&sequential).tasks.len(), 2);
 
     let single = make_inbound(MakeInbound {
         channel: "cli".into(),
@@ -83,21 +83,7 @@ fn agent_classifier_preserves_direct_single_and_sequential_decisions() {
 }
 
 #[test]
-fn agent_classifier_builds_parallel_and_specialist_route_skeletons() {
-    let parallel = make_inbound(MakeInbound {
-        channel: "cli".into(),
-        content: "fan out".into(),
-        metadata: Some(json!({"parallel": true})),
-        ..Default::default()
-    });
-    let parallel_plan = AgentClassifier::build_plan(&parallel);
-    assert_eq!(
-        AgentClassifier::classify(&parallel).kind,
-        ClassificationKind::Parallel
-    );
-    assert_eq!(parallel_plan.kind, ExecutionPlanKind::Parallel);
-    assert_eq!(parallel_plan.tasks.len(), 2);
-
+fn agent_classifier_builds_specialist_route_skeleton() {
     let specialist = make_inbound(MakeInbound {
         channel: "cli".into(),
         content: "specialize".into(),
@@ -114,9 +100,8 @@ fn agent_classifier_builds_parallel_and_specialist_route_skeletons() {
 }
 
 #[test]
-fn agent_orchestrator_executes_single_and_sequential_plans() {
+fn agent_orchestrator_executes_single_plan() {
     let worker_pool = Arc::new(WorkerPool::new(
-        SdkClient::new("http://127.0.0.1:9711"),
         Arc::new(MockExecutor),
         Some(2),
         None,
@@ -136,73 +121,18 @@ fn agent_orchestrator_executes_single_and_sequential_plans() {
         "reply[session-1]: hello"
     );
 
-    let sequential = AgentClassifier::build_plan(&make_inbound(MakeInbound {
-        channel: "cli".into(),
-        content: "multi".into(),
-        metadata: Some(json!({"multi-step": true})),
-        ..Default::default()
-    }));
-    let sequential_result = AgentOrchestrator::execute_plan(&worker_pool, &sequential, "session-2");
-    assert_eq!(sequential_result.status, "success");
-
     worker_pool.stop();
 }
 
 #[test]
-fn agent_classifier_detects_web_orchestration_v1_upgrade_conservatively() {
-    let web_complex = make_inbound(MakeInbound {
-        channel: "web".into(),
-        content: "build a web app with frontend and backend".into(),
-        ..Default::default()
-    });
-    assert!(AgentClassifier::should_upgrade_to_orchestration_v1(
-        &web_complex
-    ));
-
-    let cli_same_text = make_inbound(MakeInbound {
-        channel: "cli".into(),
-        content: "build a web app with frontend and backend".into(),
-        ..Default::default()
-    });
-    assert!(!AgentClassifier::should_upgrade_to_orchestration_v1(
-        &cli_same_text
-    ));
-
-    let forced = make_inbound(MakeInbound {
-        channel: "cli".into(),
-        content: "plain request".into(),
-        metadata: Some(json!({"orchestration-v1": true})),
-        ..Default::default()
-    });
-    assert!(AgentClassifier::should_upgrade_to_orchestration_v1(&forced));
-}
-
-#[test]
-fn agent_orchestrator_executes_parallel_and_specialist_route_skeletons() {
+fn agent_orchestrator_executes_specialist_route_skeleton() {
     let worker_pool = Arc::new(WorkerPool::new(
-        SdkClient::new("http://127.0.0.1:9711"),
         Arc::new(MockExecutor),
         Some(2),
         None,
         Some(100),
     ));
     worker_pool.start();
-
-    let parallel = AgentClassifier::build_plan(&make_inbound(MakeInbound {
-        channel: "cli".into(),
-        content: "fan out".into(),
-        metadata: Some(json!({"parallel": true})),
-        ..Default::default()
-    }));
-    let parallel_result = AgentOrchestrator::execute_plan(&worker_pool, &parallel, "session-3");
-    assert_eq!(parallel_result.status, "success");
-    assert_eq!(
-        parallel_result.result.as_ref().unwrap()["results"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
 
     let specialist = AgentClassifier::build_plan(&make_inbound(MakeInbound {
         channel: "cli".into(),

@@ -2,7 +2,9 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::bus::{make_internal, make_outbound, InboundMessage, MakeInternal, MakeOutbound};
+use crate::bus::{
+    make_internal, make_outbound, InboundMessage, InternalPayload, MakeInternal, MakeOutbound,
+};
 use crate::execution::agentic_loop::{run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome};
 use crate::prompt::PromptAssembler;
 use crate::streaming::types::{ContentBlock, ContentDelta, StreamEvent};
@@ -23,7 +25,9 @@ impl CoreAgent {
 
         let initial_messages = vec![InternalMsg {
             role: MessageRole::User,
-            content: json!(inbound_msg.content.clone()),
+            blocks: vec![crate::messages::types::ContentBlock::Text {
+                text: inbound_msg.content.clone(),
+            }],
             message_id: inbound_msg.id.clone(),
             tool_use_id: None,
             filtered: false,
@@ -33,6 +37,7 @@ impl CoreAgent {
         let system_prompt = {
             let mut asm = PromptAssembler::new();
             asm.add_text("identity", "你是 Anima 智能助手。", 0);
+            asm.add_section(crate::prompt::sections::completion_status_section());
             Some(asm.build().text)
         };
 
@@ -63,14 +68,14 @@ impl CoreAgent {
                     let _ = bus.publish_internal(make_internal(MakeInternal {
                         source: "agentic-loop".into(),
                         trace_id: Some(out_trace_id.clone()),
-                        payload: json!({
-                            "event": "tool_call_detected",
-                            "tool_name": name,
-                            "message_id": out_trace_id.clone(),
-                            "channel": out_channel.clone(),
-                            "chat_id": out_chat_id.clone(),
-                            "sender_id": out_sender.clone(),
-                        }),
+                        payload: InternalPayload::RuntimeEvent {
+                            event: "tool_call_detected".to_string(),
+                            message_id: out_trace_id.clone(),
+                            channel: out_channel.clone(),
+                            chat_id: out_chat_id.clone(),
+                            sender_id: out_sender.clone(),
+                            payload: json!({ "tool_name": name }),
+                        },
                         ..Default::default()
                     }));
                 }
@@ -165,8 +170,7 @@ impl CoreAgent {
         let preparation = self.prepare_initial_agentic_loop_run(inbound_msg, opencode_session_id);
 
         match run_agentic_loop(
-            &self._client,
-            self.executor.as_ref(),
+            self.provider.as_ref(),
             &self.tool_registry,
             self.permission_checker.as_deref(),
             self.hook_registry.as_deref(),

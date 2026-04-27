@@ -45,6 +45,8 @@ pub mod hooks;
 pub mod messages;
 /// 权限判定系统
 pub mod permissions;
+/// Provider 抽象：标准化 LLM 调用接口
+pub mod provider;
 /// System Prompt 段落化组装
 pub mod prompt;
 /// 流式 API 解析与流式工具执行

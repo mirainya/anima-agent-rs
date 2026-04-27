@@ -9,6 +9,6 @@ pub use bounded::{
 pub use core::{Bus, BusChannelKind, BusConfig, BusTelemetrySnapshot};
 pub use message::{
     make_control, make_inbound, make_internal, make_outbound, ControlMessage, ControlSignal,
-    InboundMessage, InternalMessage, InternalMessageType, MakeControl, MakeInbound, MakeInternal,
-    MakeOutbound, OutboundMessage,
+    InboundMessage, InternalMessage, InternalMessageType, InternalPayload, MakeControl,
+    MakeInbound, MakeInternal, MakeOutbound, OutboundMessage,
 };

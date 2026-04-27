@@ -2,7 +2,6 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::bus::InboundMessage;
-use crate::classifier::rule::AgentClassifier;
 use crate::execution::driver::{
     build_api_call_task, execute_api_call, ApiCallExecutionRequest, ExecutionKind,
 };
@@ -180,84 +179,52 @@ impl CoreAgent {
         key: &str,
     ) -> InitialExecutionOutcome {
         let cache_key = make_api_cache_key(opencode_session_id, &inbound_msg.content);
-        let use_orchestration_v1 = AgentClassifier::should_upgrade_to_orchestration_v1(inbound_msg);
-        let plan_type = if use_orchestration_v1 {
-            "orchestration-v1".to_string()
-        } else {
-            plan.plan_type.clone()
-        };
         let execute_started = now_ms();
         let mut cache_hit = false;
-        let result = if use_orchestration_v1 {
-            self.emitter.publish(
-                "orchestration_selected",
-                inbound_msg,
-                json!({
-                    "memory_key": key,
-                    "plan_type": plan.plan_type.clone(),
-                    "selected_plan_type": plan_type.clone(),
-                    "reason": "web_complex_request",
-                }),
-            );
-            match self.orchestrator.execute_orchestration_for_main_chain(
-                &inbound_msg.content,
-                &inbound_msg.id,
-                &inbound_msg.id,
-                opencode_session_id,
-                |event, payload| self.emitter.publish(event, inbound_msg, payload),
-            ) {
-                Ok(execution) => execution.result,
-                Err(error) => {
-                    self.emitter.publish(
-                        "orchestration_fallback",
-                        inbound_msg,
-                        json!({
-                            "memory_key": key,
-                            "plan_type": plan_type.clone(),
-                            "fallback_plan_type": plan.plan_type.clone(),
-                            "reason": error,
-                        }),
-                    );
-                    self.execute_initial_plan(
-                        inbound_msg,
-                        plan,
-                        opencode_session_id,
-                        key,
-                        ExecutionKind::Initial,
-                    )
-                }
-            }
-        } else if plan_type == "single" {
-            if let Some(cached) = self.result_cache.get(&cache_key) {
-                cache_hit = true;
-                self.metrics.counter_inc("cache_hits");
+
+        // 尝试 LLM 分解：编排器内部判断是否需要拆分
+        let orch_result = self.orchestrator.execute_orchestration_for_main_chain(
+            &inbound_msg.content,
+            &inbound_msg.id,
+            &inbound_msg.id,
+            opencode_session_id,
+            |event, payload| self.emitter.publish(event, inbound_msg, payload),
+        );
+
+        let (plan_type, result) = match orch_result {
+            Ok(execution) if execution.was_decomposed => {
                 self.emitter.publish(
-                    "cache_hit",
+                    "orchestration_selected",
                     inbound_msg,
                     json!({
                         "memory_key": key,
-                        "cache_key": cache_key.clone(),
-                        "plan_type": plan_type.clone(),
+                        "plan_type": plan.plan_type.clone(),
+                        "selected_plan_type": "orchestration-v1",
+                        "reason": "llm_decomposed",
                     }),
                 );
-                make_task_result(MakeTaskResult {
-                    task_id: Uuid::new_v4().to_string(),
-                    trace_id: inbound_msg.id.clone(),
-                    status: "success".into(),
-                    result: Some(cached),
-                    error: None,
-                    duration_ms: 0,
-                    worker_id: None,
-                })
-            } else {
-                self.metrics.counter_inc("cache_misses");
+                ("orchestration-v1".to_string(), execution.result)
+            }
+            Err(ref error) if error != "llm_no_decomposition" => {
+                let orch_plan_type = "orchestration-v1".to_string();
                 self.emitter.publish(
-                    "cache_miss",
+                    "orchestration_selected",
                     inbound_msg,
                     json!({
                         "memory_key": key,
-                        "cache_key": cache_key.clone(),
-                        "plan_type": plan_type.clone(),
+                        "plan_type": plan.plan_type.clone(),
+                        "selected_plan_type": orch_plan_type,
+                        "reason": "llm_decomposed",
+                    }),
+                );
+                self.emitter.publish(
+                    "orchestration_fallback",
+                    inbound_msg,
+                    json!({
+                        "memory_key": key,
+                        "plan_type": orch_plan_type,
+                        "fallback_plan_type": plan.plan_type.clone(),
+                        "reason": error,
                     }),
                 );
                 let result = self.execute_initial_plan(
@@ -267,21 +234,69 @@ impl CoreAgent {
                     key,
                     ExecutionKind::Initial,
                 );
-                if result.status == "success" {
-                    if let Some(value) = result.result.clone() {
-                        self.result_cache.set(&cache_key, value, None);
-                    }
-                }
-                result
+                (plan.plan_type.clone(), result)
             }
-        } else {
-            self.execute_initial_plan(
-                inbound_msg,
-                plan,
-                opencode_session_id,
-                key,
-                ExecutionKind::Initial,
-            )
+            Ok(_) | Err(_) => {
+                // LLM 判断不需要拆分或分解失败 → 走原有 single 路径
+                let plan_type = plan.plan_type.clone();
+                let result = if plan_type == "single" {
+                    if let Some(cached) = self.result_cache.get(&cache_key) {
+                        cache_hit = true;
+                        self.metrics.counter_inc("cache_hits");
+                        self.emitter.publish(
+                            "cache_hit",
+                            inbound_msg,
+                            json!({
+                                "memory_key": key,
+                                "cache_key": cache_key.clone(),
+                                "plan_type": plan_type.clone(),
+                            }),
+                        );
+                        make_task_result(MakeTaskResult {
+                            task_id: Uuid::new_v4().to_string(),
+                            trace_id: inbound_msg.id.clone(),
+                            status: "success".into(),
+                            result: Some(cached),
+                            error: None,
+                            duration_ms: 0,
+                            worker_id: None,
+                        })
+                    } else {
+                        self.metrics.counter_inc("cache_misses");
+                        self.emitter.publish(
+                            "cache_miss",
+                            inbound_msg,
+                            json!({
+                                "memory_key": key,
+                                "cache_key": cache_key.clone(),
+                                "plan_type": plan_type.clone(),
+                            }),
+                        );
+                        let result = self.execute_initial_plan(
+                            inbound_msg,
+                            plan,
+                            opencode_session_id,
+                            key,
+                            ExecutionKind::Initial,
+                        );
+                        if result.status == "success" {
+                            if let Some(value) = result.result.clone() {
+                                self.result_cache.set(&cache_key, value, None);
+                            }
+                        }
+                        result
+                    }
+                } else {
+                    self.execute_initial_plan(
+                        inbound_msg,
+                        plan,
+                        opencode_session_id,
+                        key,
+                        ExecutionKind::Initial,
+                    )
+                };
+                (plan_type, result)
+            }
         };
 
         InitialExecutionOutcome {

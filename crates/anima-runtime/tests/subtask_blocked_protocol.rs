@@ -1,3 +1,4 @@
+use anima_runtime::runtime::StateStore;
 use anima_runtime::tasks::{SubtaskBlockedReason, SuspensionKind, SuspensionStatus};
 use anima_runtime::agent::types::{make_task_result, MakeTaskResult};
 
@@ -208,7 +209,7 @@ fn submit_answer_emits_resolved_suspension_for_subtask_blocked() {
     use anima_runtime::agent::suspension::SuspensionCoordinator;
     use anima_runtime::agent::QuestionAnswerInput;
     use anima_runtime::bus::Bus;
-    use anima_runtime::runtime::RuntimeStateStore;
+    use anima_runtime::runtime::{RuntimeStateStore, StateStore};
     use std::sync::Arc;
 
     let store = Arc::new(RuntimeStateStore::new());
@@ -256,7 +257,7 @@ fn clear_question_uses_correct_kind_for_subtask_blocked() {
     use anima_runtime::agent::event_emitter::RuntimeEventEmitter;
     use anima_runtime::agent::suspension::SuspensionCoordinator;
     use anima_runtime::bus::Bus;
-    use anima_runtime::runtime::RuntimeStateStore;
+    use anima_runtime::runtime::{RuntimeStateStore, StateStore};
     use std::sync::Arc;
 
     let store = Arc::new(RuntimeStateStore::new());
@@ -299,7 +300,7 @@ fn make_coordinator() -> (
     use anima_runtime::agent::event_emitter::RuntimeEventEmitter;
     use anima_runtime::agent::suspension::SuspensionCoordinator;
     use anima_runtime::bus::Bus;
-    use anima_runtime::runtime::RuntimeStateStore;
+    use anima_runtime::runtime::{RuntimeStateStore, StateStore};
     use std::sync::Arc;
 
     let store = Arc::new(RuntimeStateStore::new());
@@ -583,7 +584,6 @@ fn worker_extracts_blocked_reason_from_response() {
     use anima_runtime::worker::executor::TaskExecutor;
     use anima_runtime::worker::WorkerPool;
     use anima_runtime::agent::{make_task, MakeTask};
-    use anima_sdk::facade::Client as SdkClient;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -592,7 +592,6 @@ fn worker_extracts_blocked_reason_from_response() {
     impl TaskExecutor for BlockedExecutor {
         fn send_prompt(
             &self,
-            _client: &SdkClient,
             _session_id: &str,
             _content: serde_json::Value,
         ) -> Result<serde_json::Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -608,14 +607,12 @@ fn worker_extracts_blocked_reason_from_response() {
 
         fn create_session(
             &self,
-            _client: &SdkClient,
         ) -> Result<serde_json::Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!({"id": "blocked-session"}))
         }
     }
 
     let pool = Arc::new(WorkerPool::new(
-        SdkClient::new("http://127.0.0.1:9711"),
         Arc::new(BlockedExecutor),
         Some(1),
         None,
@@ -652,8 +649,9 @@ fn orchestrator_propagates_blocked_reason_on_final_result() {
     use anima_runtime::worker::WorkerPool;
     use anima_runtime::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
     use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
-    use anima_runtime::runtime::RuntimeStateStore;
-    use anima_sdk::facade::Client as SdkClient;
+    use anima_runtime::provider::{ChatRequest, ChatResponse, Provider, ProviderError, StopReason};
+    use anima_runtime::messages::types::ContentBlock;
+    use anima_runtime::runtime::{RuntimeStateStore, StateStore};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -662,7 +660,6 @@ fn orchestrator_propagates_blocked_reason_on_final_result() {
     impl TaskExecutor for BlockedOrchestratorExecutor {
         fn send_prompt(
             &self,
-            _client: &SdkClient,
             _session_id: &str,
             _content: serde_json::Value,
         ) -> Result<serde_json::Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -677,14 +674,26 @@ fn orchestrator_propagates_blocked_reason_on_final_result() {
 
         fn create_session(
             &self,
-            _client: &SdkClient,
         ) -> Result<serde_json::Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!({"id": "orch-blocked-session"}))
         }
     }
 
+    struct SimpleDecomposeProvider;
+    impl Provider for SimpleDecomposeProvider {
+        fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
+            Ok(ChatResponse {
+                content: vec![ContentBlock::Text {
+                    text: r#"[{"name":"deploy","task_type":"backend","specialist_type":"default","dependencies":[],"description":"deploy"},{"name":"verify","task_type":"testing","specialist_type":"default","dependencies":["deploy"],"description":"verify"}]"#.into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: None,
+                raw: serde_json::Value::Null,
+            })
+        }
+    }
+
     let pool = Arc::new(WorkerPool::new(
-        SdkClient::new("http://127.0.0.1:9711"),
         Arc::new(BlockedOrchestratorExecutor),
         Some(2),
         None,
@@ -693,7 +702,8 @@ fn orchestrator_propagates_blocked_reason_on_final_result() {
     pool.start();
     let sp = Arc::new(SpecialistPool::new(pool.clone()));
     let store = Arc::new(RuntimeStateStore::new());
-    let orch = AgentOrchestrator::new(pool, sp, store, OrchestratorConfig::default());
+    let orch = AgentOrchestrator::new(pool, sp, store, OrchestratorConfig::default())
+        .with_llm(Arc::new(SimpleDecomposeProvider));
 
     let execution = orch
         .execute_orchestration_for_main_chain(
@@ -721,8 +731,7 @@ fn orchestrator_propagates_blocked_reason_on_final_result() {
 fn main_agent_llm_resolves_blocked_subtask() {
     use anima_runtime::agent::{Agent, TaskExecutor};
     use anima_runtime::bus::{make_inbound, Bus, MakeInbound};
-    use anima_runtime::runtime::RuntimeStateStore;
-    use anima_sdk::facade::Client as SdkClient;
+    use anima_runtime::runtime::{RuntimeStateStore, StateStore};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -741,10 +750,13 @@ fn main_agent_llm_resolves_blocked_subtask() {
     impl TaskExecutor for EscalationResolvedExecutor {
         fn send_prompt(
             &self,
-            _client: &SdkClient,
             _session_id: &str,
-            _content: serde_json::Value,
+            content: serde_json::Value,
         ) -> Result<serde_json::Value, anima_runtime::agent::runtime_error::RuntimeError> {
+            let text = content.to_string();
+            if text.contains("任务分解引擎") {
+                return Ok(json!({"content": "[]"}));
+            }
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
             match idx {
                 // First call: worker execution returns blocked
@@ -768,7 +780,6 @@ fn main_agent_llm_resolves_blocked_subtask() {
 
         fn create_session(
             &self,
-            _client: &SdkClient,
         ) -> Result<serde_json::Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!({"id": "escalation-session"}))
         }
@@ -777,9 +788,8 @@ fn main_agent_llm_resolves_blocked_subtask() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(EscalationResolvedExecutor::new())),
+        Arc::new(EscalationResolvedExecutor::new()),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();
@@ -812,8 +822,7 @@ fn main_agent_llm_resolves_blocked_subtask() {
 fn main_agent_llm_cannot_resolve_falls_through_to_suspension() {
     use anima_runtime::agent::{Agent, TaskExecutor};
     use anima_runtime::bus::{make_inbound, Bus, MakeInbound};
-    use anima_runtime::runtime::RuntimeStateStore;
-    use anima_sdk::facade::Client as SdkClient;
+    use anima_runtime::runtime::{RuntimeStateStore, StateStore};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -832,10 +841,13 @@ fn main_agent_llm_cannot_resolve_falls_through_to_suspension() {
     impl TaskExecutor for EscalationFailedExecutor {
         fn send_prompt(
             &self,
-            _client: &SdkClient,
             _session_id: &str,
-            _content: serde_json::Value,
+            content: serde_json::Value,
         ) -> Result<serde_json::Value, anima_runtime::agent::runtime_error::RuntimeError> {
+            let text = content.to_string();
+            if text.contains("任务分解引擎") {
+                return Ok(json!({"content": "[]"}));
+            }
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
             match idx {
                 // First call: worker execution returns blocked
@@ -856,7 +868,6 @@ fn main_agent_llm_cannot_resolve_falls_through_to_suspension() {
 
         fn create_session(
             &self,
-            _client: &SdkClient,
         ) -> Result<serde_json::Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!({"id": "escalation-fail-session"}))
         }
@@ -865,9 +876,8 @@ fn main_agent_llm_cannot_resolve_falls_through_to_suspension() {
     let bus = Arc::new(Bus::create());
     let agent = Agent::with_runtime_state_store(
         bus.clone(),
-        Some(SdkClient::new("http://127.0.0.1:9711")),
         None,
-        Some(Arc::new(EscalationFailedExecutor::new())),
+        Arc::new(EscalationFailedExecutor::new()),
         Arc::new(RuntimeStateStore::new()),
     );
     agent.start();

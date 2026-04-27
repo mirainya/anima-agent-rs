@@ -5,13 +5,12 @@ use anima_runtime::agent::{
 use anima_runtime::bootstrap::RuntimeBootstrapBuilder;
 use anima_runtime::bus::{make_inbound, MakeInbound};
 use anima_runtime::channel::Channel;
-use anima_runtime::runtime::{RuntimeDomainEvent, RuntimeStateStore};
+use anima_runtime::runtime::{RuntimeDomainEvent, RuntimeStateStore, StateStore};
 use anima_runtime::tasks::{
     RequirementRecord, RequirementStatus, RunRecord, RunStatus, SuspensionKind, SuspensionRecord,
     SuspensionStatus, TaskKind, TaskRecord, TaskStatus, ToolInvocationRuntimeRecord, TurnRecord,
     TurnStatus,
 };
-use anima_sdk::facade::Client as SdkClient;
 use anima_web::jobs::JobKind;
 use anima_web::{routes, web_channel, AppState};
 use axum::body::Body;
@@ -50,6 +49,7 @@ fn build_state_with_runtime(
         bus,
         web_channel,
         jobs: Mutex::new(anima_web::jobs::JobStore::default()),
+        approval_mode: Mutex::new(Default::default()),
     })
 }
 
@@ -64,6 +64,7 @@ fn build_state_with_store(
         bus,
         web_channel,
         jobs: Mutex::new(store),
+        approval_mode: Mutex::new(Default::default()),
     })
 }
 
@@ -2472,7 +2473,6 @@ fn mock_response_to_sse_lines(response: &Value) -> Vec<String> {
 impl TaskExecutor for MockExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -2481,17 +2481,16 @@ impl TaskExecutor for MockExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web"}))
     }
 
     fn send_prompt_streaming(
         &self,
-        client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<anima_runtime::worker::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
-        let response = self.send_prompt(client, session_id, content)?;
+        let response = self.send_prompt(session_id, content)?;
         Ok(Box::new(
             mock_response_to_sse_lines(&response).into_iter().map(Ok),
         ))
@@ -2501,7 +2500,6 @@ impl TaskExecutor for MockExecutor {
 impl TaskExecutor for IdleExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
@@ -2510,7 +2508,7 @@ impl TaskExecutor for IdleExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-idle"}))
     }
 }
@@ -2518,14 +2516,13 @@ impl TaskExecutor for IdleExecutor {
 impl TaskExecutor for FailingExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Err("upstream exploded".into())
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-fail"}))
     }
 }
@@ -2533,10 +2530,13 @@ impl TaskExecutor for FailingExecutor {
 impl TaskExecutor for OrchestrationQuestionExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        let text = content.to_string();
+        if text.contains("任务分解引擎") {
+            return Ok(json!({"content": r#"[{"name":"design-api","task_type":"design","specialist_type":"default","dependencies":[],"description":"design REST API"}]"#}));
+        }
         let text = content.as_str().unwrap_or("");
         if text.contains("[orchestration/") {
             Ok(json!({
@@ -2554,7 +2554,7 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-orch-question"}))
     }
 }
@@ -2562,10 +2562,13 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
 impl TaskExecutor for OrchestrationFollowupExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        let text = content.to_string();
+        if text.contains("任务分解引擎") {
+            return Ok(json!({"content": r#"[{"name":"design-api","task_type":"design","specialist_type":"default","dependencies":[],"description":"design REST API"}]"#}));
+        }
         let text = content.as_str().unwrap_or("");
         if text.contains("[orchestration/") {
             Ok(json!({
@@ -2578,7 +2581,7 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
         }
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-orch-followup"}))
     }
 }
@@ -3166,7 +3169,7 @@ fn status_api_exposes_runtime_summary() {
     assert_eq!(unified_status["status_label"], "completed");
     assert!(job["parent_job_id"].is_null());
     assert_eq!(job["chat_id"], "web-session");
-    assert!(job["user_content"].is_null());
+    assert_eq!(job["user_content"], "status please");
     assert!(job["elapsed_ms"].as_u64().is_some());
     let recent_events = job["recent_events"].as_array().unwrap();
     assert!(!recent_events.is_empty());
@@ -4178,7 +4181,7 @@ fn status_api_exposes_orchestration_fallback_observability() {
         .rev()
         .find(|entry| entry["chat_id"] == "web-orch-fallback")
     {
-        assert_eq!(summary["plan_type"], "orchestration-v1");
+        assert_eq!(summary["plan_type"], "single");
         assert_eq!(summary["status"], "success");
     }
 

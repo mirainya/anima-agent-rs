@@ -90,6 +90,14 @@ fn parse_content_block(val: &Value) -> Option<ContentBlock> {
                 .unwrap_or(Value::Object(Default::default()));
             Some(ContentBlock::ToolUse { id, name, input })
         }
+        "thinking" => {
+            let thinking = val
+                .get("thinking")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(ContentBlock::Thinking { thinking })
+        }
         _ => None,
     }
 }
@@ -106,6 +114,10 @@ fn parse_content_delta(val: &Value) -> Option<ContentDelta> {
             Some(ContentDelta::InputJsonDelta {
                 partial_json: partial,
             })
+        }
+        "thinking_delta" => {
+            let thinking = val.get("thinking")?.as_str()?.to_string();
+            Some(ContentDelta::ThinkingDelta { thinking })
         }
         _ => None,
     }
@@ -159,5 +171,27 @@ mod tests {
     fn parse_unknown_returns_none() {
         let data = r#"{"type":"unknown_event"}"#;
         assert!(parse_sse_event(data).is_none());
+    }
+
+    #[test]
+    fn parse_thinking_block_start() {
+        let data = r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#;
+        let event = parse_sse_event(data).unwrap();
+        assert!(matches!(
+            event,
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlock::Thinking { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_thinking_delta() {
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step 1"}}"#;
+        let event = parse_sse_event(data).unwrap();
+        assert!(
+            matches!(event, StreamEvent::ContentBlockDelta { index: 0, delta: ContentDelta::ThinkingDelta { thinking } } if thinking == "step 1")
+        );
     }
 }

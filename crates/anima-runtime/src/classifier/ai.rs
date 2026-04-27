@@ -58,6 +58,8 @@ lazy_static::lazy_static! {
         Regex::new(r"^(任务状态|进度|查询)$").unwrap(),
     ];
 
+    static ref JSON_OBJECT_RE: Regex = Regex::new(r"\{[^{}]*\}").unwrap();
+
     static ref SYSTEM_PATTERNS: Vec<Regex> = vec![
         Regex::new(r"(?i)^(exit|quit|bye)$").unwrap(),
         Regex::new(r"^(退出|再见)$").unwrap(),
@@ -144,7 +146,7 @@ impl AiClassifier {
     /// Parse an AI response text into a classification result.
     pub fn parse_response(response_text: &str) -> AiClassificationResult {
         // Try to extract JSON from response
-        let json_re = Regex::new(r"\{[^{}]*\}").unwrap();
+        let json_re = &*JSON_OBJECT_RE;
         if let Some(m) = json_re.find(response_text) {
             if let Ok(parsed) = serde_json::from_str::<Value>(m.as_str()) {
                 let type_str = parsed
@@ -278,28 +280,18 @@ pub fn ai_to_rule_classification(
             kind: ClassificationKind::Single,
         },
         AiClassificationType::ComplexTask => {
-            // Check metadata for more specific routing
             let specialist = inbound_msg
                 .metadata
                 .get("specialist")
                 .and_then(Value::as_str);
-            let is_parallel = inbound_msg
-                .metadata
-                .get("parallel")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
 
             if specialist.is_some() {
                 ClassificationDecision {
                     kind: ClassificationKind::SpecialistRoute,
                 }
-            } else if is_parallel {
-                ClassificationDecision {
-                    kind: ClassificationKind::Parallel,
-                }
             } else {
                 ClassificationDecision {
-                    kind: ClassificationKind::Sequential,
+                    kind: ClassificationKind::Single,
                 }
             }
         }

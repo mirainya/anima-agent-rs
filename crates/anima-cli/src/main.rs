@@ -5,12 +5,14 @@ use anima_sdk::runtime::{
     RuntimeBootstrapOptionsBuilder, RuntimeFacadeDispatcherStatus, RuntimeFacadeRouteReport,
     RuntimeFacadeStatus,
 };
+use anima_types::config::AnimaConfig;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Clone, PartialEq)]
 struct CliOptions {
     url: String,
     prompt: String,
+    config: Option<String>,
     help: bool,
     status: bool,
     dispatcher_status: bool,
@@ -25,6 +27,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> CliOptions {
     let mut opts = CliOptions {
         url: DEFAULT_URL.to_string(),
         prompt: DEFAULT_PROMPT.to_string(),
+        config: None,
         help: false,
         status: false,
         dispatcher_status: false,
@@ -39,6 +42,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> CliOptions {
             "--url" => {
                 if let Some(value) = iter.next() {
                     opts.url = value;
+                }
+            }
+            "--config" => {
+                if let Some(value) = iter.next() {
+                    opts.config = Some(value);
                 }
             }
             "--prompt" => {
@@ -77,6 +85,7 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("  --url <url>              OpenCode server URL (default: http://127.0.0.1:9711)");
+    println!("  --config <path>          Path to anima.toml config file");
     println!("  --prompt <prompt>        CLI prompt string (default: 'anima> ')");
     println!("  --status                 Show runtime façade status snapshot");
     println!("  --dispatcher-status      Show dispatcher status snapshot");
@@ -193,7 +202,7 @@ fn render_metrics() -> String {
     )
 }
 
-fn start_cli(opts: &CliOptions) -> std::io::Result<()> {
+fn start_cli(opts: &CliOptions, config: &AnimaConfig) -> std::io::Result<()> {
     println!("╔══════════════════════════════════════════╗");
     println!("║         Anima Agent CLI (Rust)          ║");
     println!("╚══════════════════════════════════════════╝");
@@ -202,15 +211,15 @@ fn start_cli(opts: &CliOptions) -> std::io::Result<()> {
     println!("  Commands: help, status, history, clear, exit");
     println!();
 
-    let bootstrap_opts = RuntimeBootstrapOptionsBuilder::new()
-        .with_url(opts.url.clone())
-        .with_prompt(opts.prompt.clone())
-        .with_cli_enabled(true)
-        .build();
-    let mut runtime = RuntimeBootstrapBuilder::new()
-        .with_url(bootstrap_opts.url)
-        .with_prompt(bootstrap_opts.prompt)
-        .with_cli_enabled(bootstrap_opts.cli_enabled)
+    let mut builder = RuntimeBootstrapBuilder::from_config(config);
+    // CLI 参数覆盖配置
+    if opts.url != DEFAULT_URL {
+        builder = builder.with_url(opts.url.clone());
+    }
+    if opts.prompt != DEFAULT_PROMPT {
+        builder = builder.with_prompt(opts.prompt.clone());
+    }
+    let mut runtime = builder
         .with_builtin_tools_enabled(false)
         .with_sdk_directory_enabled(false)
         .build();
@@ -234,6 +243,9 @@ fn main() -> std::io::Result<()> {
         print_help();
         return Ok(());
     }
+
+    let config = AnimaConfig::load(opts.config.as_ref().map(std::path::Path::new));
+
     if opts.status {
         println!("{}", render_status());
         return Ok(());
@@ -258,7 +270,7 @@ fn main() -> std::io::Result<()> {
         println!("{}", render_metrics());
         return Ok(());
     }
-    start_cli(&opts)
+    start_cli(&opts, &config)
 }
 
 #[cfg(test)]

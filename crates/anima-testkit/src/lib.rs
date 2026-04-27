@@ -1,6 +1,5 @@
 use anima_runtime::agent::runtime_error::RuntimeError;
 use anima_runtime::worker::executor::TaskExecutor;
-use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone)]
@@ -51,7 +50,6 @@ impl FakeExecutor {
 impl TaskExecutor for FakeExecutor {
     fn send_prompt(
         &self,
-        _client: &SdkClient,
         session_id: &str,
         content: Value,
     ) -> Result<Value, RuntimeError> {
@@ -63,7 +61,7 @@ impl TaskExecutor for FakeExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, RuntimeError> {
+    fn create_session(&self) -> Result<Value, RuntimeError> {
         if let Some(error) = &self.fail_session_create_with {
             return Err(error.clone().into());
         }

@@ -1,0 +1,11 @@
+[package]
+name = "anima-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anima-types = { path = "../anima-types" }
+serde_json.workspace = true
+rusqlite = { version = "0.31", features = ["bundled"] }
+parking_lot.workspace = true

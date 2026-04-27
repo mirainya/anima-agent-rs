@@ -544,8 +544,6 @@ fn task_type_for(decision: &ClassificationDecision) -> String {
     match decision.kind {
         ClassificationKind::Direct => "direct".into(),
         ClassificationKind::Single => "api-call".into(),
-        ClassificationKind::Sequential => "sequential".into(),
-        ClassificationKind::Parallel => "parallel".into(),
         ClassificationKind::SpecialistRoute => "specialist".into(),
     }
 }

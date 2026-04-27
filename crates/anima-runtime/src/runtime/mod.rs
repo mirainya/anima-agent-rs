@@ -19,4 +19,4 @@ pub use projection::{
 };
 pub use reducer::reduce_event;
 pub use snapshot::{PersistedRuntimeState, RuntimeDomainEventEnvelope, RuntimeStateSnapshot};
-pub use state_store::{RuntimeStateStore, SharedRuntimeStateStore};
+pub use state_store::{JsonStateStore, RuntimeStateStore, SharedRuntimeStateStore, SqliteStateStore, StateStore};

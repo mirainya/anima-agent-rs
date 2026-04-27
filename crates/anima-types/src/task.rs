@@ -2,12 +2,13 @@
 //!
 //! 定义任务（Task）、任务结果（TaskResult）和执行计划（ExecutionPlan）等核心数据结构。
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use uuid::Uuid;
 
 /// 任务：Agent 运行时的最小调度单元
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub trace_id: String,
@@ -43,7 +44,7 @@ pub struct MakeTask {
 }
 
 /// 任务执行结果，包含状态、返回值、耗时等信息
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskResult {
     pub task_id: String,
     pub trace_id: String,
@@ -82,7 +83,8 @@ pub struct MakeTaskResult {
 }
 
 /// 执行计划类型，决定任务如何被调度执行
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExecutionPlanKind {
     /// 直接执行，不经过调度
     Direct,
@@ -97,7 +99,7 @@ pub enum ExecutionPlanKind {
 }
 
 /// 执行计划，描述一组任务的执行方式和目标
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionPlan {
     pub kind: ExecutionPlanKind,
     pub plan_type: String,

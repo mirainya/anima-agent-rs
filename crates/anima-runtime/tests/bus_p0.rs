@@ -1,7 +1,7 @@
 use anima_runtime::bus::{
     bounded_channel, make_control, make_inbound, make_internal, make_outbound, BufferStrategy, Bus,
-    BusConfig, ControlSignal, InternalMessageType, MakeControl, MakeInbound, MakeInternal,
-    MakeOutbound,
+    BusConfig, ControlSignal, InternalMessageType, InternalPayload, MakeControl, MakeInbound,
+    MakeInternal, MakeOutbound,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -55,7 +55,11 @@ fn inbound_drop_updates_last_drop_timestamp_and_emits_internal_event() {
         if msg.source == "bus"
             && msg.metadata.get("event").and_then(|v| v.as_str()) == Some("bus_message_dropped")
         {
-            assert_eq!(msg.payload.get("channel").and_then(|v| v.as_str()), Some("inbound"));
+            if let InternalPayload::Raw(ref v) = msg.payload {
+                assert_eq!(v.get("channel").and_then(|v| v.as_str()), Some("inbound"));
+            } else {
+                panic!("expected Raw payload for bus_message_dropped");
+            }
             seen_drop_event = true;
             break;
         }
@@ -169,7 +173,7 @@ fn internal_bus_publish_and_consume() {
         target: Some("dispatcher".into()),
         msg_type: Some(InternalMessageType::Request),
         priority: Some(3),
-        payload: json!({"action": "route"}),
+        payload: InternalPayload::Raw(json!({"action": "route"})),
         ..Default::default()
     });
     let trace = msg.trace_id.clone();
@@ -188,7 +192,7 @@ fn internal_bus_publish_and_consume() {
 fn internal_message_defaults() {
     let msg = make_internal(MakeInternal {
         source: "test".into(),
-        payload: json!(null),
+        payload: InternalPayload::Raw(json!(null)),
         ..Default::default()
     });
     assert!(matches!(msg.msg_type, InternalMessageType::Event));
@@ -296,7 +300,7 @@ fn closed_bus_rejects_all_channels() {
     assert!(bus
         .publish_internal(make_internal(MakeInternal {
             source: "test".into(),
-            payload: json!(null),
+            payload: InternalPayload::Raw(json!(null)),
             ..Default::default()
         }))
         .is_err());
@@ -351,29 +355,24 @@ fn inbound_uses_dropping_outbound_uses_sliding() {
 #[test]
 fn core_agent_stops_on_shutdown_signal() {
     use anima_runtime::agent::{CoreAgent, TaskExecutor};
-    use anima_sdk::facade::Client as SdkClient;
-    use serde_json::Value;
+        use serde_json::Value;
 
     struct NoopExecutor;
     impl TaskExecutor for NoopExecutor {
         fn send_prompt(
-            &self,
-            _client: &SdkClient,
-            _session_id: &str,
+            &self,            _session_id: &str,
             _content: Value,
         ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!("ok"))
         }
-        fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!({"id": "noop"}))
         }
     }
 
     let bus = Arc::new(Bus::create());
-    let client = SdkClient::new("http://127.0.0.1:19999");
     let core = Arc::new(CoreAgent::new(
         bus.clone(),
-        client,
         None,
         Arc::new(NoopExecutor),
         None,

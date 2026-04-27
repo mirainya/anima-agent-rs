@@ -2,7 +2,6 @@ use anima_runtime::agent::{TaskExecutor, WorkerPool};
 use anima_runtime::orchestrator::parallel_pool::ParallelPool;
 use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
 use anima_runtime::agent::types::{make_task, MakeTask};
-use anima_sdk::facade::Client as SdkClient;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -11,9 +10,7 @@ struct MockExecutor;
 
 impl TaskExecutor for MockExecutor {
     fn send_prompt(
-        &self,
-        _client: &SdkClient,
-        session_id: &str,
+        &self,        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
@@ -21,7 +18,7 @@ impl TaskExecutor for MockExecutor {
         }))
     }
 
-    fn create_session(&self, _client: &SdkClient) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-1"}))
     }
 }
@@ -29,7 +26,6 @@ impl TaskExecutor for MockExecutor {
 #[test]
 fn parallel_pool_executes_and_aggregates_results() {
     let worker_pool = Arc::new(WorkerPool::new(
-        SdkClient::new("http://127.0.0.1:9711"),
         Arc::new(MockExecutor),
         Some(2),
         None,
@@ -62,7 +58,6 @@ fn parallel_pool_executes_and_aggregates_results() {
 #[test]
 fn specialist_pool_routes_and_wraps_result() {
     let worker_pool = Arc::new(WorkerPool::new(
-        SdkClient::new("http://127.0.0.1:9711"),
         Arc::new(MockExecutor),
         Some(1),
         None,

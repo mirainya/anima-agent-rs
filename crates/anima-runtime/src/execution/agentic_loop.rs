@@ -8,15 +8,15 @@ use std::sync::Arc;
 use std::thread;
 use uuid::Uuid;
 
-use crate::worker::executor::TaskExecutor;
+use crate::provider::{ChatRequest, ChatResponse, Provider, ProviderError};
+use crate::provider::types::{ChatMessage, ChatRole};
 use crate::agent::runtime_error::{RuntimeError, RuntimeErrorKind, RuntimeErrorStage};
 use crate::hooks::HookRegistry;
 use crate::messages::compact::{compact_if_needed, CompactConfig};
 use crate::messages::normalize::normalize_messages_for_api;
 use crate::messages::pairing::ensure_tool_result_pairing;
-use crate::messages::types::{ApiMsg, InternalMsg, MessageRole};
+use crate::messages::types::{blocks_from_value, ApiMsg, ContentBlock, InternalMsg, MessageRole};
 use crate::permissions::{PermissionChecker, PermissionRequest};
-use crate::streaming::executor::consume_sse_stream;
 use crate::streaming::types::StreamEvent;
 use crate::tools::definition::ToolContext;
 use crate::tools::execution::{
@@ -25,8 +25,6 @@ use crate::tools::execution::{
 };
 use crate::tools::registry::ToolRegistry;
 use crate::tools::result::{ToolError, ToolResult};
-
-use anima_sdk::facade::Client as SdkClient;
 
 // ---------------------------------------------------------------------------
 // 类型定义
@@ -132,7 +130,7 @@ pub enum AgenticLoopOutcome {
 #[derive(Debug, Clone)]
 pub enum AgenticLoopError {
     /// API 调用失败
-    ApiCall { error: RuntimeError },
+    ApiCall { error: ProviderError },
     /// 响应解析错误
     ResponseParse { internal_message: String },
     /// 工具执行失败
@@ -144,7 +142,16 @@ pub enum AgenticLoopError {
 impl AgenticLoopError {
     pub(crate) fn to_runtime_error(&self) -> RuntimeError {
         match self {
-            Self::ApiCall { error } => error.clone(),
+            Self::ApiCall { error } => {
+                use crate::provider::ProviderErrorKind;
+                let kind = match error.kind {
+                    ProviderErrorKind::Timeout => RuntimeErrorKind::UpstreamTimeout,
+                    ProviderErrorKind::StreamFailed => RuntimeErrorKind::UpstreamStreamFailed,
+                    ProviderErrorKind::Network => RuntimeErrorKind::SessionCreateFailed,
+                    _ => RuntimeErrorKind::TaskExecutionFailed,
+                };
+                RuntimeError::new(kind, RuntimeErrorStage::PlanExecute, &error.message)
+            }
             Self::ResponseParse { internal_message } => RuntimeError::new(
                 RuntimeErrorKind::ResponseParseFailed,
                 RuntimeErrorStage::PlanExecute,
@@ -165,7 +172,7 @@ impl AgenticLoopError {
 impl std::fmt::Display for AgenticLoopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ApiCall { error } => write!(f, "API call failed: {}", error.internal_message),
+            Self::ApiCall { error } => write!(f, "API call failed: {}", error.message),
             Self::ResponseParse { internal_message } => {
                 write!(f, "response parse error: {internal_message}")
             }
@@ -190,6 +197,8 @@ pub struct ParsedResponse {
     pub text: String,
     /// 模型请求的工具调用
     pub tool_uses: Vec<ParsedToolUse>,
+    /// 模型的思考过程
+    pub thinking: Option<String>,
 }
 
 /// 解析后的单个工具调用
@@ -213,6 +222,7 @@ pub fn parse_response(response: &Value) -> Result<ParsedResponse, AgenticLoopErr
         return Ok(ParsedResponse {
             text: text.clone(),
             tool_uses: vec![],
+            thinking: None,
         });
     }
 
@@ -220,6 +230,7 @@ pub fn parse_response(response: &Value) -> Result<ParsedResponse, AgenticLoopErr
     if let Some(Value::Array(parts)) = content {
         let mut text_parts = Vec::new();
         let mut tool_uses = Vec::new();
+        let mut thinking_parts = Vec::new();
 
         for part in parts {
             let part_type = part.get("type").and_then(Value::as_str).unwrap_or("");
@@ -246,13 +257,25 @@ pub fn parse_response(response: &Value) -> Result<ParsedResponse, AgenticLoopErr
                         .unwrap_or(Value::Object(Default::default()));
                     tool_uses.push(ParsedToolUse { id, name, input });
                 }
+                "thinking" => {
+                    if let Some(t) = part.get("thinking").and_then(Value::as_str) {
+                        thinking_parts.push(t.to_string());
+                    }
+                }
                 _ => {}
             }
         }
 
+        let thinking = if thinking_parts.is_empty() {
+            None
+        } else {
+            Some(thinking_parts.join("\n"))
+        };
+
         return Ok(ParsedResponse {
             text: text_parts.join("\n"),
             tool_uses,
+            thinking,
         });
     }
 
@@ -261,6 +284,7 @@ pub fn parse_response(response: &Value) -> Result<ParsedResponse, AgenticLoopErr
         return Ok(ParsedResponse {
             text: text.to_string(),
             tool_uses: vec![],
+            thinking: None,
         });
     }
 
@@ -284,7 +308,7 @@ pub fn build_assistant_msg(response: &Value) -> InternalMsg {
         .unwrap_or_else(|| Value::String(String::new()));
     InternalMsg {
         role: MessageRole::Assistant,
-        content,
+        blocks: blocks_from_value(&content, None),
         message_id: Uuid::new_v4().to_string(),
         tool_use_id: None,
         filtered: false,
@@ -330,12 +354,11 @@ pub fn build_tool_result_msg(
 
     InternalMsg {
         role: MessageRole::User,
-        content: json!([{
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": content_text,
-            "is_error": result.is_error
-        }]),
+        blocks: vec![ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.to_string(),
+            content: Value::String(content_text),
+            is_error: result.is_error,
+        }],
         message_id: Uuid::new_v4().to_string(),
         tool_use_id: Some(tool_use_id.to_string()),
         filtered: false,
@@ -375,6 +398,68 @@ pub fn build_api_payload(
         payload["stream"] = json!(true);
     }
     payload
+}
+
+fn build_chat_request(
+    api_msgs: &[ApiMsg],
+    system_prompt: Option<&str>,
+    tool_definitions: Option<&[Value]>,
+    session_id: &str,
+) -> ChatRequest {
+    let messages = api_msgs
+        .iter()
+        .map(|msg| {
+            let role = match msg.role {
+                MessageRole::User | MessageRole::System => ChatRole::User,
+                MessageRole::Assistant => ChatRole::Assistant,
+            };
+            ChatMessage {
+                role,
+                content: blocks_from_value(&msg.content, None),
+            }
+        })
+        .collect();
+
+    ChatRequest {
+        messages,
+        system: system_prompt.map(String::from),
+        tools: tool_definitions.map(|t| t.to_vec()),
+        metadata: json!({ "session_id": session_id }),
+        ..Default::default()
+    }
+}
+
+fn parse_chat_response(response: &ChatResponse) -> Result<ParsedResponse, AgenticLoopError> {
+    let mut text_parts = Vec::new();
+    let mut tool_uses = Vec::new();
+    let mut thinking_parts = Vec::new();
+
+    for block in &response.content {
+        match block {
+            ContentBlock::Text { text } => text_parts.push(text.clone()),
+            ContentBlock::ToolUse { id, name, input } => {
+                tool_uses.push(ParsedToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                });
+            }
+            ContentBlock::Thinking { thinking } => thinking_parts.push(thinking.clone()),
+            _ => {}
+        }
+    }
+
+    let thinking = if thinking_parts.is_empty() {
+        None
+    } else {
+        Some(thinking_parts.join("\n"))
+    };
+
+    Ok(ParsedResponse {
+        text: text_parts.join("\n"),
+        tool_uses,
+        thinking,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -686,8 +771,7 @@ pub fn resume_suspended_tool_invocation(
 /// 模型驱动的工具循环：模型调用工具 → 观察结果 → 继续推理，
 /// 直到模型给出最终回答（不再请求工具）或达到迭代上限。
 pub fn run_agentic_loop(
-    client: &SdkClient,
-    executor: &dyn TaskExecutor,
+    provider: &dyn Provider,
     tool_registry: &ToolRegistry,
     permission_checker: Option<&PermissionChecker>,
     hook_registry: Option<&HookRegistry>,
@@ -695,8 +779,7 @@ pub fn run_agentic_loop(
     config: &AgenticLoopConfig,
 ) -> Result<AgenticLoopOutcome, AgenticLoopError> {
     continue_agentic_loop(
-        client,
-        executor,
+        provider,
         tool_registry,
         permission_checker,
         hook_registry,
@@ -709,8 +792,7 @@ pub fn run_agentic_loop(
 
 #[allow(clippy::too_many_arguments)]
 pub fn continue_agentic_loop(
-    client: &SdkClient,
-    executor: &dyn TaskExecutor,
+    provider: &dyn Provider,
     tool_registry: &ToolRegistry,
     permission_checker: Option<&PermissionChecker>,
     hook_registry: Option<&HookRegistry>,
@@ -741,30 +823,31 @@ pub fn continue_agentic_loop(
         }
 
         let api_msgs = normalize_messages_for_api(&messages);
-        let content = build_api_payload(
+        let chat_request = build_chat_request(
             &api_msgs,
             config.system_prompt.as_deref(),
             config.tool_definitions.as_deref(),
-            config.streaming,
+            &config.session_id,
         );
 
         let parsed = if config.streaming {
-            let lines = executor
-                .send_prompt_streaming(client, &config.session_id, content)
+            let stream = provider
+                .chat_stream(chat_request)
                 .map_err(|error| AgenticLoopError::ApiCall { error })?;
             let (parsed, response_value) =
-                consume_sse_stream(lines, config.on_stream_event.as_deref())
-                    .map_err(|error| AgenticLoopError::ResponseParse {
-                        internal_message: error.internal_message,
-                    })?;
+                crate::streaming::executor::consume_stream_events(
+                    stream,
+                    config.on_stream_event.as_deref(),
+                )
+                .map_err(|error| AgenticLoopError::ApiCall { error })?;
             messages.push(build_assistant_msg(&response_value));
             parsed
         } else {
-            let response = executor
-                .send_prompt(client, &config.session_id, content)
+            let response = provider
+                .chat(chat_request)
                 .map_err(|error| AgenticLoopError::ApiCall { error })?;
-            let parsed = parse_response(&response)?;
-            messages.push(build_assistant_msg(&response));
+            let parsed = parse_chat_response(&response)?;
+            messages.push(build_assistant_msg(&response.raw));
             parsed
         };
 
@@ -894,20 +977,15 @@ fn extract_last_assistant_text(messages: &[InternalMsg]) -> String {
         .iter()
         .rev()
         .find(|m| m.role == MessageRole::Assistant)
-        .map(|m| match &m.content {
-            Value::String(s) => s.clone(),
-            Value::Array(parts) => parts
+        .map(|m| {
+            m.blocks
                 .iter()
-                .filter_map(|p| {
-                    if p.get("type").and_then(Value::as_str) == Some("text") {
-                        p.get("text").and_then(Value::as_str).map(String::from)
-                    } else {
-                        None
-                    }
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
                 })
                 .collect::<Vec<_>>()
-                .join("\n"),
-            other => serde_json::to_string(other).unwrap_or_default(),
+                .join("\n")
         })
         .unwrap_or_default()
 }
@@ -919,20 +997,22 @@ fn extract_last_assistant_text(messages: &[InternalMsg]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{ChatResponse, ProviderError};
+    use crate::provider::types::StopReason;
     use crate::tools::definition::Tool;
     use crate::tools::result::{ToolError, ToolResult};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    // ---- Mock TaskExecutor ----
+    // ---- Mock Provider ----
 
-    struct MockExecutor {
+    struct MockProvider {
         responses: Vec<Value>,
         call_count: AtomicUsize,
     }
 
-    impl MockExecutor {
+    impl MockProvider {
         fn new(responses: Vec<Value>) -> Self {
             Self {
                 responses,
@@ -941,22 +1021,26 @@ mod tests {
         }
     }
 
-    impl TaskExecutor for MockExecutor {
-        fn send_prompt(
-            &self,
-            _client: &SdkClient,
-            _session_id: &str,
-            _content: Value,
-        ) -> Result<Value, RuntimeError> {
+    fn value_to_response(raw: Value) -> ChatResponse {
+        let content = raw.get("content").cloned().unwrap_or(Value::Null);
+        let blocks = blocks_from_value(&content, None);
+        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        ChatResponse {
+            content: blocks,
+            stop_reason: if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn },
+            usage: None,
+            raw,
+        }
+    }
+
+    impl Provider for MockProvider {
+        fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
             self.responses
                 .get(idx)
                 .cloned()
-                .ok_or_else(|| RuntimeError::from("no more mock responses"))
-        }
-
-        fn create_session(&self, _client: &SdkClient) -> Result<Value, RuntimeError> {
-            Ok(json!({"id": "mock-session"}))
+                .map(value_to_response)
+                .ok_or_else(|| ProviderError::internal("no more mock responses"))
         }
     }
 
@@ -996,17 +1080,12 @@ mod tests {
     fn make_user_msg(text: &str) -> InternalMsg {
         InternalMsg {
             role: MessageRole::User,
-            content: json!(text),
+            blocks: vec![ContentBlock::Text { text: text.into() }],
             message_id: Uuid::new_v4().to_string(),
             tool_use_id: None,
             filtered: false,
             metadata: json!({}),
         }
-    }
-
-    fn make_client() -> SdkClient {
-        // 使用一个空配置创建 mock client（测试不会真正调用网络）
-        SdkClient::new("http://localhost:0")
     }
 
     // ---- parse_response 测试 ----
@@ -1069,13 +1148,19 @@ mod tests {
         assert_eq!(msg.role, MessageRole::User);
         assert_eq!(msg.tool_use_id.as_deref(), Some("tu_1"));
 
-        let content_arr = msg.content.as_array().unwrap();
-        assert_eq!(content_arr.len(), 1);
-        let block = &content_arr[0];
-        assert_eq!(block["type"], "tool_result");
-        assert_eq!(block["tool_use_id"], "tu_1");
-        assert_eq!(block["content"], "hello result");
-        assert_eq!(block["is_error"], false);
+        assert_eq!(msg.blocks.len(), 1);
+        match &msg.blocks[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "tu_1");
+                assert_eq!(content, &Value::String("hello result".into()));
+                assert!(!is_error);
+            }
+            _ => panic!("expected ToolResult block"),
+        }
     }
 
     #[test]
@@ -1083,9 +1168,15 @@ mod tests {
         let result = ToolResult::error("something went wrong");
         let msg = build_tool_result_msg("tu_2", &result, None);
 
-        let block = &msg.content.as_array().unwrap()[0];
-        assert_eq!(block["is_error"], true);
-        assert_eq!(block["content"], "something went wrong");
+        match &msg.blocks[0] {
+            ContentBlock::ToolResult {
+                is_error, content, ..
+            } => {
+                assert!(is_error);
+                assert_eq!(content, &Value::String("something went wrong".into()));
+            }
+            _ => panic!("expected ToolResult block"),
+        }
     }
 
     // ---- 循环测试 ----
@@ -1093,17 +1184,16 @@ mod tests {
     #[test]
     fn test_loop_no_tools() {
         // 模型直接返回文本，不请求工具 → 单轮返回
-        let executor = MockExecutor::new(vec![json!({
+        let executor = MockProvider::new(vec![json!({
             "content": [{"type": "text", "text": "The answer is 42."}]
         })]);
 
         let registry = ToolRegistry::new();
-        let client = make_client();
         let config = make_config();
         let initial = vec![make_user_msg("What is the answer?")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
+            run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1117,7 +1207,7 @@ mod tests {
     fn test_loop_one_tool_round() {
         // 第一次：模型请求调用 echo 工具
         // 第二次：模型返回最终文本
-        let executor = MockExecutor::new(vec![
+        let executor = MockProvider::new(vec![
             json!({
                 "content": [
                     {"type": "text", "text": "Let me call echo"},
@@ -1132,12 +1222,11 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(EchoTool));
 
-        let client = make_client();
         let config = make_config();
         let initial = vec![make_user_msg("Echo hello for me")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
+            run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1159,12 +1248,12 @@ mod tests {
 
         // 提供足够多的相同响应
         let responses: Vec<Value> = (0..20).map(|_| tool_response.clone()).collect();
-        let executor = MockExecutor::new(responses);
+        let executor = MockProvider::new(responses);
 
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(EchoTool));
 
-        let client = make_client();
+
         let config = AgenticLoopConfig {
             max_iterations: 3,
             session_id: "test".into(),
@@ -1174,7 +1263,7 @@ mod tests {
         let initial = vec![make_user_msg("Keep looping")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
+            run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1183,22 +1272,31 @@ mod tests {
         assert_eq!(result.iterations, 3);
     }
 
-    // ---- StreamingMockExecutor ----
+    // ---- StreamingMockProvider ----
 
-    /// 流式 Mock：每次 send_prompt_streaming 返回预制 SSE 行序列
-    struct StreamingMockExecutor {
-        /// 每次调用 send_prompt_streaming 返回的 SSE 行列表
-        sse_sequences: Vec<Vec<String>>,
-        /// 每次调用 send_prompt 返回的 Value（用于非流式回退和后续轮次）
+    struct StreamingMockProvider {
+        event_sequences: Vec<Vec<StreamEvent>>,
         responses: Vec<Value>,
         streaming_call_count: AtomicUsize,
         sync_call_count: AtomicUsize,
     }
 
-    impl StreamingMockExecutor {
-        fn new(sse_sequences: Vec<Vec<String>>, responses: Vec<Value>) -> Self {
+    impl StreamingMockProvider {
+        fn from_sse(sse_sequences: Vec<Vec<String>>, responses: Vec<Value>) -> Self {
+            let event_sequences = sse_sequences
+                .into_iter()
+                .map(|lines| {
+                    lines
+                        .into_iter()
+                        .filter_map(|line| {
+                            let data = line.strip_prefix("data: ").unwrap_or(&line);
+                            crate::streaming::parse_sse_event(data)
+                        })
+                        .collect()
+                })
+                .collect();
             Self {
-                sse_sequences,
+                event_sequences,
                 responses,
                 streaming_call_count: AtomicUsize::new(0),
                 sync_call_count: AtomicUsize::new(0),
@@ -1206,37 +1304,27 @@ mod tests {
         }
     }
 
-    impl TaskExecutor for StreamingMockExecutor {
-        fn send_prompt(
-            &self,
-            _client: &SdkClient,
-            _session_id: &str,
-            _content: Value,
-        ) -> Result<Value, RuntimeError> {
+    impl Provider for StreamingMockProvider {
+        fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
             let idx = self.sync_call_count.fetch_add(1, Ordering::SeqCst);
             self.responses
                 .get(idx)
                 .cloned()
-                .ok_or_else(|| RuntimeError::from("no more sync mock responses"))
+                .map(value_to_response)
+                .ok_or_else(|| ProviderError::internal("no more sync mock responses"))
         }
 
-        fn create_session(&self, _client: &SdkClient) -> Result<Value, RuntimeError> {
-            Ok(json!({"id": "streaming-mock-session"}))
-        }
-
-        fn send_prompt_streaming(
+        fn chat_stream(
             &self,
-            _client: &SdkClient,
-            _session_id: &str,
-            _content: Value,
-        ) -> Result<Box<dyn Iterator<Item = Result<String, RuntimeError>>>, RuntimeError> {
+            _req: ChatRequest,
+        ) -> Result<crate::provider::ChatStream, ProviderError> {
             let idx = self.streaming_call_count.fetch_add(1, Ordering::SeqCst);
-            let lines = self
-                .sse_sequences
+            let events = self
+                .event_sequences
                 .get(idx)
                 .cloned()
-                .ok_or_else(|| RuntimeError::from("no more streaming mock sequences"))?;
-            Ok(Box::new(lines.into_iter().map(Ok)))
+                .ok_or_else(|| ProviderError::internal("no more streaming mock sequences"))?;
+            Ok(Box::new(events.into_iter().map(Ok)))
         }
     }
 
@@ -1264,9 +1352,9 @@ mod tests {
             sse(r#"{"type":"message_stop"}"#),
         ];
 
-        let executor = StreamingMockExecutor::new(vec![sse_lines], vec![]);
+        let provider = StreamingMockProvider::from_sse(vec![sse_lines], vec![]);
         let registry = ToolRegistry::new();
-        let client = make_client();
+
         let config = AgenticLoopConfig {
             max_iterations: 10,
             session_id: "test-stream".into(),
@@ -1277,7 +1365,7 @@ mod tests {
         let initial = vec![make_user_msg("Hello streaming")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
+            run_agentic_loop(&provider, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1327,12 +1415,12 @@ mod tests {
             sse(r#"{"type":"message_stop"}"#),
         ];
 
-        let executor = StreamingMockExecutor::new(vec![sse_round1, sse_round2], vec![]);
+        let provider = StreamingMockProvider::from_sse(vec![sse_round1, sse_round2], vec![]);
 
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(EchoTool));
 
-        let client = make_client();
+
         let config = AgenticLoopConfig {
             max_iterations: 10,
             session_id: "test-stream".into(),
@@ -1343,7 +1431,7 @@ mod tests {
         let initial = vec![make_user_msg("Echo stream for me")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
+            run_agentic_loop(&provider, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1381,9 +1469,9 @@ mod tests {
             sse(r#"{"type":"message_stop"}"#),
         ];
 
-        let executor = StreamingMockExecutor::new(vec![sse_lines], vec![]);
+        let provider = StreamingMockProvider::from_sse(vec![sse_lines], vec![]);
         let registry = ToolRegistry::new();
-        let client = make_client();
+
         let config = AgenticLoopConfig {
             max_iterations: 10,
             session_id: "test-cb".into(),
@@ -1395,7 +1483,7 @@ mod tests {
         let initial = vec![make_user_msg("test callback")];
 
         let result =
-            run_agentic_loop(&client, &executor, &registry, None, None, initial, &config).unwrap();
+            run_agentic_loop(&provider, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");

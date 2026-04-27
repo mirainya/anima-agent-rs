@@ -2,7 +2,7 @@ use crate::jobs::build_job_views_with_projection;
 use crate::AppState;
 use anima_runtime::messages::types::MessageRole;
 use anima_runtime::runtime::{build_projection, RuntimeStateSnapshot};
-use anima_runtime::transcript::{value_from_blocks, ContentBlock};
+use anima_runtime::messages::{value_from_blocks, ContentBlock};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -390,7 +390,8 @@ mod tests {
     use anima_runtime::messages::types::MessageRole;
     use anima_runtime::runtime::RuntimeStateSnapshot;
     use anima_runtime::tasks::{RunRecord, RunStatus};
-    use anima_runtime::transcript::{ContentBlock, MessageRecord};
+    use anima_runtime::messages::ContentBlock;
+    use anima_runtime::transcript::MessageRecord;
     use parking_lot::Mutex;
     use serde_json::json;
     use std::collections::HashMap;
@@ -475,6 +476,7 @@ mod tests {
             bus,
             web_channel: Arc::new(WebChannel::new()),
             jobs: Mutex::new(JobStore::default()),
+            approval_mode: Mutex::new(Default::default()),
         };
 
         let snapshot = build_status_snapshot(&state);

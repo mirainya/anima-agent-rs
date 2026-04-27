@@ -1,21 +1,20 @@
 use crate::pipeline::traits::*;
 use crossbeam_channel::Receiver;
 use parking_lot::Mutex;
-use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 // ── Channel Source ──────────────────────────────────────────────────
 
-pub struct ChannelSource {
+pub struct ChannelSource<T: Send + 'static = serde_json::Value> {
     id: String,
-    rx: Receiver<Value>,
+    rx: Receiver<T>,
     state: Mutex<StageState>,
     items: AtomicU64,
 }
 
-impl ChannelSource {
-    pub fn new(rx: Receiver<Value>) -> Self {
+impl<T: Send + 'static> ChannelSource<T> {
+    pub fn new(rx: Receiver<T>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             rx,
@@ -24,20 +23,20 @@ impl ChannelSource {
         }
     }
 
-    pub fn recv(&self) -> Option<Value> {
+    pub fn recv(&self) -> Option<T> {
         self.rx.recv().ok().inspect(|_v| {
             self.items.fetch_add(1, Ordering::Relaxed);
         })
     }
 
-    pub fn try_recv(&self) -> Option<Value> {
+    pub fn try_recv(&self) -> Option<T> {
         self.rx.try_recv().ok().inspect(|_v| {
             self.items.fetch_add(1, Ordering::Relaxed);
         })
     }
 }
 
-impl Source for ChannelSource {
+impl<T: Send + 'static> Source for ChannelSource<T> {
     fn start(&self, _ctx: &PipelineContext) -> Result<(), String> {
         *self.state.lock() = StageState::Running;
         Ok(())
@@ -57,15 +56,15 @@ impl Source for ChannelSource {
 
 // ── Collection Source ───────────────────────────────────────────────
 
-pub struct CollectionSource {
+pub struct CollectionSource<T: Send + 'static = serde_json::Value> {
     id: String,
-    items: Mutex<Vec<Value>>,
+    items: Mutex<Vec<T>>,
     state: Mutex<StageState>,
     emitted: AtomicU64,
 }
 
-impl CollectionSource {
-    pub fn new(items: Vec<Value>) -> Self {
+impl<T: Send + 'static> CollectionSource<T> {
+    pub fn new(items: Vec<T>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             items: Mutex::new(items),
@@ -74,7 +73,7 @@ impl CollectionSource {
         }
     }
 
-    pub fn next_item(&self) -> Option<Value> {
+    pub fn next_item(&self) -> Option<T> {
         let mut items = self.items.lock();
         if items.is_empty() {
             None
@@ -89,7 +88,7 @@ impl CollectionSource {
     }
 }
 
-impl Source for CollectionSource {
+impl<T: Send + 'static> Source for CollectionSource<T> {
     fn start(&self, _ctx: &PipelineContext) -> Result<(), String> {
         *self.state.lock() = StageState::Running;
         Ok(())
