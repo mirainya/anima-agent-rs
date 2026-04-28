@@ -1,7 +1,9 @@
+pub mod anthropic;
 pub mod error;
 pub mod opencode;
 pub mod types;
 
+pub use anthropic::AnthropicProvider;
 pub use error::{ProviderError, ProviderErrorKind};
 pub use opencode::OpenCodeProvider;
 pub use types::{ChatMessage, ChatRequest, ChatResponse, ChatRole, StopReason, Usage};

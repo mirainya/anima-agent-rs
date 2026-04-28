@@ -12,6 +12,7 @@ use anima_types::approval::ApprovalMode;
 use crate::channel::SessionStore;
 use crate::hooks::HookRegistry;
 use crate::permissions::PermissionChecker;
+use crate::provider::Provider;
 use crate::runtime::{RuntimeProjectionView, SharedRuntimeStateStore};
 
 pub struct Agent {
@@ -106,6 +107,13 @@ impl Agent {
         let core = Arc::get_mut(&mut self.core_agent)
             .ok_or("cannot mutate shared core_agent — ensure no other Arc references exist")?;
         core.set_permission_checker(checker);
+        Ok(())
+    }
+
+    pub fn set_provider(&mut self, provider: Arc<dyn Provider>) -> Result<(), String> {
+        let core = Arc::get_mut(&mut self.core_agent)
+            .ok_or("cannot mutate shared core_agent — ensure no other Arc references exist")?;
+        core.set_provider(provider);
         Ok(())
     }
 

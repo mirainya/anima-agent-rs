@@ -3,6 +3,8 @@ use crate::channel::{Channel, ChannelRegistry, SessionStore};
 use crate::cli::CliChannel;
 use crate::dispatcher::{start_dispatcher_outbound_loop, Dispatcher};
 use crate::hooks::{HookRegistry, StopHook};
+use crate::permissions::{PermissionChecker, PermissionDecision, PermissionMode, PermissionRule};
+use crate::provider::{AnthropicProvider, Provider};
 use crate::runtime::{JsonStateStore, RuntimeStateStore, SharedRuntimeStateStore, SqliteStateStore};
 use anima_sdk::facade::{Client as SdkClient, ClientOptions as SdkClientOptions};
 use anima_types::config::AnimaConfig;
@@ -18,6 +20,8 @@ pub struct RuntimeBootstrapBuilder {
     executor: Option<Arc<dyn TaskExecutor>>,
     sdk_options: SdkClientOptions,
     runtime_state_store: Option<SharedRuntimeStateStore>,
+    provider_config: Option<anima_types::config::ProviderConfig>,
+    permission_config: Option<anima_types::config::PermissionConfig>,
 }
 
 impl Default for RuntimeBootstrapBuilder {
@@ -31,6 +35,8 @@ impl Default for RuntimeBootstrapBuilder {
             executor: None,
             sdk_options: SdkClientOptions::default(),
             runtime_state_store: None,
+            provider_config: None,
+            permission_config: None,
         }
     }
 }
@@ -62,6 +68,8 @@ impl RuntimeBootstrapBuilder {
             executor: None,
             sdk_options: SdkClientOptions::from(&config.sdk),
             runtime_state_store: Some(runtime_state_store),
+            provider_config: Some(config.provider.clone()),
+            permission_config: Some(config.permissions.clone()),
         }
     }
 
@@ -156,7 +164,35 @@ impl RuntimeBootstrapBuilder {
         let mut hook_registry = HookRegistry::new();
         hook_registry.register_post_hook(Arc::new(StopHook));
         agent.set_hook_registry(hook_registry).expect("set_hook_registry failed: Arc has other references before agent start");
+        if let Some(ref pc) = self.permission_config {
+            let mode = match pc.mode.as_str() {
+                "allow_all" => PermissionMode::AllowAll,
+                "deny_all" => PermissionMode::DenyAll,
+                _ => PermissionMode::RuleBased,
+            };
+            let mut checker = PermissionChecker::new(mode);
+            for rule in &pc.rules {
+                let decision = match rule.decision.as_str() {
+                    "allow" => PermissionDecision::Allow,
+                    "deny" => PermissionDecision::Deny(format!("denied by config: {}", rule.tool_pattern)),
+                    _ => continue,
+                };
+                checker.add_rule(PermissionRule {
+                    tool_pattern: rule.tool_pattern.clone(),
+                    decision,
+                    priority: rule.priority,
+                });
+            }
+            let _ = agent.set_permission_checker(checker);
+        }
         if !has_custom_executor {
+            if let Some(ref pc) = self.provider_config {
+                if pc.kind == "anthropic" {
+                    if let Ok(p) = AnthropicProvider::from_config(pc) {
+                        let _ = agent.set_provider(Arc::new(p) as Arc<dyn Provider>);
+                    }
+                }
+            }
             agent.enable_llm_judge();
         }
 

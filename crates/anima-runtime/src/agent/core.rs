@@ -242,6 +242,10 @@ impl CoreAgent {
         *self.judge_provider.lock() = Some(Arc::clone(&self.provider));
     }
 
+    pub fn set_provider(&mut self, provider: Arc<dyn Provider>) {
+        self.provider = provider;
+    }
+
     pub(crate) fn upsert_runtime_run(
         &self,
         inbound_msg: &InboundMessage,

@@ -12,6 +12,8 @@ pub struct AnimaConfig {
     pub runtime: RuntimeConfig,
     pub worker: WorkerConfig,
     pub approval_mode: ApprovalMode,
+    pub provider: ProviderConfig,
+    pub permissions: PermissionConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,6 +51,16 @@ pub struct RuntimeConfig {
 #[serde(default)]
 pub struct WorkerConfig {
     pub pool_size: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ProviderConfig {
+    pub kind: String,
+    pub model: String,
+    pub api_key_env: String,
+    pub base_url: Option<String>,
+    pub max_tokens: u32,
 }
 
 
@@ -94,6 +106,67 @@ impl Default for RuntimeConfig {
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self { pool_size: 4 }
+    }
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            kind: "opencode".into(),
+            model: "claude-sonnet-4-20250514".into(),
+            api_key_env: "ANTHROPIC_API_KEY".into(),
+            base_url: None,
+            max_tokens: 8192,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PermissionConfig {
+    pub mode: String,
+    pub rules: Vec<PermissionRuleConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PermissionRuleConfig {
+    pub tool_pattern: String,
+    pub decision: String,
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+}
+
+fn default_priority() -> u32 {
+    10
+}
+
+impl Default for PermissionConfig {
+    fn default() -> Self {
+        Self {
+            mode: "rule_based".into(),
+            rules: vec![
+                PermissionRuleConfig {
+                    tool_pattern: "read*".into(),
+                    decision: "allow".into(),
+                    priority: 10,
+                },
+                PermissionRuleConfig {
+                    tool_pattern: "list*".into(),
+                    decision: "allow".into(),
+                    priority: 10,
+                },
+                PermissionRuleConfig {
+                    tool_pattern: "glob*".into(),
+                    decision: "allow".into(),
+                    priority: 10,
+                },
+                PermissionRuleConfig {
+                    tool_pattern: "grep*".into(),
+                    decision: "allow".into(),
+                    priority: 10,
+                },
+            ],
+        }
     }
 }
 
