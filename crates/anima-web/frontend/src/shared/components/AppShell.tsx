@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { type ReactNode, useState, useCallback } from 'react';
 import type { SseConnectionState } from '@/shared/api/events';
 import styles from './shell.module.css';
 
@@ -9,6 +9,9 @@ interface AppShellProps {
 }
 
 export function AppShell({ sidebar, children, connectionState }: AppShellProps) {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
   return (
     <div className={styles['app-root']}>
       {connectionState && connectionState !== 'connected' && (
@@ -16,7 +19,19 @@ export function AppShell({ sidebar, children, connectionState }: AppShellProps) 
           {connectionState === 'connecting' ? '连接中...' : '连接断开，正在重连...'}
         </div>
       )}
-      <aside className={styles['app-sidebar']}>{sidebar}</aside>
+      <button
+        className={styles['mobile-menu-btn']}
+        onClick={() => setSidebarOpen(true)}
+        aria-label="打开菜单"
+      >
+        ☰
+      </button>
+      <aside className={`${styles['app-sidebar']} ${sidebarOpen ? styles['sidebar-open'] : ''}`}>
+        <div onClick={closeSidebar}>{sidebar}</div>
+      </aside>
+      {sidebarOpen && (
+        <div className={styles['sidebar-backdrop']} onClick={closeSidebar} />
+      )}
       <main className={styles['app-main']}>{children}</main>
     </div>
   );

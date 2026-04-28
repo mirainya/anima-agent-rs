@@ -659,3 +659,15 @@
   margin-top: 4px;
 }
 
+@media (max-width: 768px) {
+  .chat-message-list {
+    padding: 48px 8px 24px;
+  }
+  .chat-bubble.user {
+    max-width: 90%;
+  }
+  .chat-agent-card {
+    max-width: 100%;
+  }
+}
+

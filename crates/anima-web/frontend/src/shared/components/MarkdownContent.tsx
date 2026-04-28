@@ -1,8 +1,33 @@
 import { memo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+
+import bash from 'refractor/bash';
+import c from 'refractor/c';
+import cpp from 'refractor/cpp';
+import css from 'refractor/css';
+import diff from 'refractor/diff';
+import go from 'refractor/go';
+import java from 'refractor/java';
+import javascript from 'refractor/javascript';
+import json from 'refractor/json';
+import markdown from 'refractor/markdown';
+import markup from 'refractor/markup';
+import python from 'refractor/python';
+import rust from 'refractor/rust';
+import sql from 'refractor/sql';
+import toml from 'refractor/toml';
+import typescript from 'refractor/typescript';
+import yaml from 'refractor/yaml';
+
+for (const [name, lang] of Object.entries({
+  bash, c, cpp, css, diff, go, java, javascript,
+  json, markdown, html: markup, python, rust, sql, toml, typescript, yaml,
+})) {
+  SyntaxHighlighter.registerLanguage(name, lang);
+}
 
 const remarkPlugins = [remarkGfm];
 

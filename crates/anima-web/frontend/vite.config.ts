@@ -16,6 +16,14 @@ export default defineConfig({
   build: {
     outDir: '../src/static/dist',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'syntax-hl': ['react-syntax-highlighter', 'refractor'],
+          'markdown': ['react-markdown', 'remark-gfm'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,
