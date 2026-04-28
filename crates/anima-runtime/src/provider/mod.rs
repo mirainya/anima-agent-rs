@@ -1,10 +1,12 @@
 pub mod anthropic;
 pub mod error;
+pub mod openai_compat;
 pub mod opencode;
 pub mod types;
 
 pub use anthropic::AnthropicProvider;
 pub use error::{ProviderError, ProviderErrorKind};
+pub use openai_compat::OpenAiCompatProvider;
 pub use opencode::OpenCodeProvider;
 pub use types::{ChatMessage, ChatRequest, ChatResponse, ChatRole, StopReason, Usage};
 

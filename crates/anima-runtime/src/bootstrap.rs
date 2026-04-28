@@ -4,7 +4,7 @@ use crate::cli::CliChannel;
 use crate::dispatcher::{start_dispatcher_outbound_loop, Dispatcher};
 use crate::hooks::{HookRegistry, StopHook};
 use crate::permissions::{PermissionChecker, PermissionDecision, PermissionMode, PermissionRule};
-use crate::provider::{AnthropicProvider, Provider};
+use crate::provider::{AnthropicProvider, OpenAiCompatProvider, Provider};
 use crate::runtime::{JsonStateStore, RuntimeStateStore, SharedRuntimeStateStore, SqliteStateStore};
 use anima_sdk::facade::{Client as SdkClient, ClientOptions as SdkClientOptions};
 use anima_types::config::AnimaConfig;
@@ -187,10 +187,18 @@ impl RuntimeBootstrapBuilder {
         }
         if !has_custom_executor {
             if let Some(ref pc) = self.provider_config {
-                if pc.kind == "anthropic" {
-                    if let Ok(p) = AnthropicProvider::from_config(pc) {
-                        let _ = agent.set_provider(Arc::new(p) as Arc<dyn Provider>);
+                match pc.kind.as_str() {
+                    "anthropic" => {
+                        if let Ok(p) = AnthropicProvider::from_config(pc) {
+                            let _ = agent.set_provider(Arc::new(p) as Arc<dyn Provider>);
+                        }
                     }
+                    "openai" => {
+                        if let Ok(p) = OpenAiCompatProvider::from_config(pc) {
+                            let _ = agent.set_provider(Arc::new(p) as Arc<dyn Provider>);
+                        }
+                    }
+                    _ => {}
                 }
             }
             agent.enable_llm_judge();
