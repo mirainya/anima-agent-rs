@@ -110,7 +110,7 @@ impl Provider for AnthropicProvider {
                 401 => ProviderErrorKind::Authentication,
                 429 => ProviderErrorKind::RateLimit,
                 400 => ProviderErrorKind::InvalidRequest,
-                502 | 503 | 504 => ProviderErrorKind::Network,
+                502..=504 => ProviderErrorKind::Network,
                 _ => ProviderErrorKind::Internal,
             };
             let text = resp.text().unwrap_or_default();

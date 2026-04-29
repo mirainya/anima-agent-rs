@@ -395,7 +395,7 @@ impl CoreAgent {
     fn auto_resume_suspended_tool(
         &self,
         inbound_msg: &InboundMessage,
-        opencode_session_id: &str,
+        _opencode_session_id: &str,
         suspension: AgenticLoopSuspension,
         config: &AgenticLoopConfig,
         started: u64,
@@ -437,7 +437,7 @@ impl CoreAgent {
             Ok(AgenticLoopOutcome::Suspended(next_suspension)) => self
                 .auto_resume_suspended_tool(
                     inbound_msg,
-                    opencode_session_id,
+                    _opencode_session_id,
                     *next_suspension,
                     config,
                     started,
