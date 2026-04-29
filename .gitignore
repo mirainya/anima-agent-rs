@@ -17,6 +17,7 @@ Thumbs.db
 .env
 .env.*
 opencode.json
+anima.toml
 
 # Temp
 .temp/

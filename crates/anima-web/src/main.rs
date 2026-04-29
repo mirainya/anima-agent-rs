@@ -1,4 +1,5 @@
 use anima_runtime::bootstrap::RuntimeBootstrapBuilder;
+use anima_types::config::AnimaConfig;
 use anima_web::{routes, sse, web_channel, AppState};
 use axum::Router;
 use parking_lot::Mutex;
@@ -12,10 +13,9 @@ fn main() {
         .init();
     let web_channel = Arc::new(web_channel::WebChannel::new());
 
-    let builder = RuntimeBootstrapBuilder::new()
-        .with_cli_enabled(false)
-        .with_builtin_tools_enabled(false)
-        .with_sdk_directory_enabled(false);
+    let config = AnimaConfig::load(None);
+    let builder = RuntimeBootstrapBuilder::from_config(&config)
+        .with_cli_enabled(false);
     let mut runtime = builder.build();
 
     // 注册 WebChannel 到 ChannelRegistry

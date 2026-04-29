@@ -1,0 +1,32 @@
+# Anima Agent 配置示例
+# 复制为 anima.toml 并修改
+
+# ── Anthropic 直连 ──────────────────────────────
+[provider]
+kind = "anthropic"
+model = "claude-sonnet-4-20250514"
+api_key_env = "ANTHROPIC_API_KEY"    # 环境变量名
+# base_url = "https://api.anthropic.com"  # 可选，自定义端点
+max_tokens = 8192
+
+# ── OpenAI 兼容（OpenAI / DeepSeek / Groq / Ollama）──
+# [provider]
+# kind = "openai"
+# model = "gpt-4o"
+# api_key_env = "OPENAI_API_KEY"
+# base_url = "https://api.openai.com"    # DeepSeek: https://api.deepseek.com
+# max_tokens = 4096
+
+[runtime]
+builtin_tools = true       # 启用内置工具（bash_exec, file_read 等）
+store = "sqlite"           # 状态存储：sqlite 或 json
+# state_path = ".opencode/runtime/state.json"
+
+[server]
+url = "http://127.0.0.1:9711"   # OpenCode SDK 后端（仅 opencode provider 需要）
+
+[worker]
+pool_size = 4
+
+[permissions]
+mode = "allow_all"         # allow_all / deny_all / rule_based
