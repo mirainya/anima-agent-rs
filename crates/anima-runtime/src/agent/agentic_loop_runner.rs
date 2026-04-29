@@ -6,7 +6,10 @@ use uuid::Uuid;
 use crate::bus::{
     make_internal, make_outbound, InboundMessage, InternalPayload, MakeInternal, MakeOutbound,
 };
-use crate::execution::agentic_loop::{run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome};
+use crate::execution::agentic_loop::{
+    continue_agentic_loop, resume_suspended_tool_invocation, run_agentic_loop, AgenticLoopConfig,
+    AgenticLoopOutcome, AgenticLoopSuspension,
+};
 use crate::prompt::PromptAssembler;
 use crate::streaming::types::{ContentBlock, ContentDelta, StreamEvent};
 use crate::support::now_ms;
@@ -171,6 +174,73 @@ impl CoreAgent {
         self.build_failed_agentic_loop_task_result(inbound_msg, started, &error.internal_message)
     }
 
+    pub(crate) fn run_agentic_loop_for_followup(
+        &self,
+        inbound_msg: &InboundMessage,
+        opencode_session_id: &str,
+        followup_prompt: &str,
+    ) -> TaskResult {
+        use crate::messages::types::{InternalMsg, MessageRole};
+
+        let started = now_ms();
+        let messages = vec![InternalMsg {
+            role: MessageRole::User,
+            blocks: vec![crate::messages::types::ContentBlock::Text {
+                text: followup_prompt.to_string(),
+            }],
+            message_id: Uuid::new_v4().to_string(),
+            tool_use_id: None,
+            filtered: false,
+            metadata: json!({}),
+        }];
+
+        let system_prompt = {
+            let mut asm = PromptAssembler::new();
+            asm.add_text("identity", &self.prompts.read().agentic_loop_system, 0);
+            asm.add_section(crate::prompt::sections::completion_status_section());
+            Some(asm.build().text)
+        };
+
+        let config = AgenticLoopConfig {
+            max_iterations: 10,
+            session_id: opencode_session_id.to_string(),
+            trace_id: inbound_msg.id.clone(),
+            system_prompt,
+            tool_definitions: Some(self.tool_registry.tool_definitions()),
+            streaming: true,
+            on_stream_event: None,
+            ..Default::default()
+        };
+
+        match run_agentic_loop(
+            self.provider.as_ref(),
+            &self.tool_registry,
+            self.permission_checker.as_deref(),
+            self.hook_registry.as_deref(),
+            messages,
+            &config,
+        ) {
+            Ok(AgenticLoopOutcome::Completed(loop_result)) => {
+                self.finalize_completed_agentic_loop_run(inbound_msg, started, loop_result)
+            }
+            Ok(AgenticLoopOutcome::Suspended(_)) => {
+                self.build_failed_agentic_loop_task_result(
+                    inbound_msg,
+                    started,
+                    "followup suspended on tool permission",
+                )
+            }
+            Err(err) => {
+                let runtime_error = err.to_runtime_error();
+                self.build_failed_agentic_loop_task_result_from_runtime_error(
+                    inbound_msg,
+                    started,
+                    &runtime_error,
+                )
+            }
+        }
+    }
+
     pub(crate) fn run_agentic_loop_for_plan(
         &self,
         inbound_msg: &InboundMessage,
@@ -202,13 +272,24 @@ impl CoreAgent {
                 }
                 self.finalize_completed_agentic_loop_run(inbound_msg, started, loop_result)
             }
-            Ok(AgenticLoopOutcome::Suspended(suspension)) => self
-                .handle_initial_tool_permission_suspension(
-                    inbound_msg,
-                    opencode_session_id,
-                    *suspension,
-                    started,
-                ),
+            Ok(AgenticLoopOutcome::Suspended(suspension)) => {
+                if self.is_auto_approval_mode() {
+                    self.auto_resume_suspended_tool(
+                        inbound_msg,
+                        opencode_session_id,
+                        *suspension,
+                        &preparation.config,
+                        started,
+                    )
+                } else {
+                    self.handle_initial_tool_permission_suspension(
+                        inbound_msg,
+                        opencode_session_id,
+                        *suspension,
+                        started,
+                    )
+                }
+            }
             Err(err) => {
                 let runtime_error = err.to_runtime_error();
                 self.build_failed_agentic_loop_task_result_from_runtime_error(
@@ -304,6 +385,68 @@ impl CoreAgent {
                 warn!("[agentic_loop] orchestrator execution failed: {e}");
                 None
             }
+        }
+    }
+
+    fn is_auto_approval_mode(&self) -> bool {
+        self.auto_approve_tools.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn auto_resume_suspended_tool(
+        &self,
+        inbound_msg: &InboundMessage,
+        opencode_session_id: &str,
+        suspension: AgenticLoopSuspension,
+        config: &AgenticLoopConfig,
+        started: u64,
+    ) -> TaskResult {
+        debug!(
+            "[agentic_loop] auto-approving tool '{}' (approval_mode=auto)",
+            suspension.suspended_tool.tool_name
+        );
+        let resumed_messages = match resume_suspended_tool_invocation(
+            &suspension,
+            true,
+            &self.tool_registry,
+            self.hook_registry.as_deref(),
+            config,
+        ) {
+            Ok(msgs) => msgs,
+            Err(err) => {
+                return self.build_failed_agentic_loop_task_result_from_runtime_error(
+                    inbound_msg,
+                    started,
+                    &err.to_runtime_error(),
+                );
+            }
+        };
+
+        match continue_agentic_loop(
+            self.provider.as_ref(),
+            &self.tool_registry,
+            self.permission_checker.as_deref(),
+            self.hook_registry.as_deref(),
+            resumed_messages,
+            suspension.iterations,
+            suspension.compact_count,
+            config,
+        ) {
+            Ok(AgenticLoopOutcome::Completed(loop_result)) => {
+                self.finalize_completed_agentic_loop_run(inbound_msg, started, loop_result)
+            }
+            Ok(AgenticLoopOutcome::Suspended(next_suspension)) => self
+                .auto_resume_suspended_tool(
+                    inbound_msg,
+                    opencode_session_id,
+                    *next_suspension,
+                    config,
+                    started,
+                ),
+            Err(err) => self.build_failed_agentic_loop_task_result_from_runtime_error(
+                inbound_msg,
+                started,
+                &err.to_runtime_error(),
+            ),
         }
     }
 }

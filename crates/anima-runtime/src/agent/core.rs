@@ -85,6 +85,7 @@ pub struct CoreAgent {
     pub(crate) suspension: Arc<SuspensionCoordinator>,
     pub(crate) requirement: Arc<RequirementCoordinator>,
     pub(crate) approval_mode: Arc<Mutex<ApprovalMode>>,
+    pub(crate) auto_approve_tools: Arc<AtomicBool>,
     pub(crate) prompts: parking_lot::RwLock<Arc<anima_types::config::PromptsConfig>>,
     pub(crate) running: AtomicBool,
     pub(crate) loop_handle: Mutex<Option<thread::JoinHandle<()>>>,
@@ -233,6 +234,7 @@ impl CoreAgent {
                 emitter.clone(),
             )),
             approval_mode: Arc::new(Mutex::new(ApprovalMode::default())),
+            auto_approve_tools: Arc::new(AtomicBool::new(false)),
             prompts: parking_lot::RwLock::new(Arc::new(anima_types::config::PromptsConfig::default())),
             running: AtomicBool::new(false),
             loop_handle: Mutex::new(None),
@@ -245,7 +247,8 @@ impl CoreAgent {
     }
 
     pub fn set_provider(&mut self, provider: Arc<dyn Provider>) {
-        self.provider = provider;
+        self.provider = provider.clone();
+        self.orchestrator.set_provider(provider);
     }
 
     pub fn set_prompts(&self, prompts: anima_types::config::PromptsConfig) {
@@ -365,9 +368,16 @@ impl CoreAgent {
         key: &str,
     ) -> Result<SessionPreparation, RuntimeErrorInfo> {
         let session_started = now_ms();
-        let opencode_session_id = self
-            .get_or_create_opencode_session(inbound_msg, key)
-            .map_err(|error| error.to_error_info())?;
+        let opencode_session_id = if !self.tool_registry.is_empty() {
+            // Direct provider mode: skip SDK session, use local session ID
+            let local_id = inbound_msg.session_key.clone()
+                .unwrap_or_else(|| inbound_msg.id.clone());
+            self.store_opencode_session_id(key, &local_id);
+            local_id
+        } else {
+            self.get_or_create_opencode_session(inbound_msg, key)
+                .map_err(|error| error.to_error_info())?
+        };
         let session_ms = now_ms().saturating_sub(session_started);
         self.emitter.publish(
             "session_ready",

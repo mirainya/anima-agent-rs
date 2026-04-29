@@ -515,16 +515,22 @@ impl CoreAgent {
             None,
         );
 
-        let followup_request =
-            self.build_followup_request(inbound_msg, exec_ctx, &plan.followup_prompt);
-        let followup_result = self.execute_api_call_request(
-            inbound_msg,
-            &exec_ctx.memory_key,
-            &exec_ctx.plan_type,
-            &followup_request,
-            "主 agent 触发自动 followup，派发给 worker 继续推进",
-            json!({}),
-        )
+        let followup_result = if !self.tool_registry.is_empty() {
+            let followup_result =
+                self.run_agentic_loop_for_followup(inbound_msg, &exec_ctx.opencode_session_id, &plan.followup_prompt);
+            Ok(followup_result)
+        } else {
+            let followup_request =
+                self.build_followup_request(inbound_msg, exec_ctx, &plan.followup_prompt);
+            self.execute_api_call_request(
+                inbound_msg,
+                &exec_ctx.memory_key,
+                &exec_ctx.plan_type,
+                &followup_request,
+                "主 agent 触发自动 followup，派发给 worker 继续推进",
+                json!({}),
+            )
+        }
         .map_err(|err| AgentError::ExecutionFailed(err.internal_message))?;
 
         if followup_result.status != "success" {

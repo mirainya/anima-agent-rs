@@ -131,7 +131,13 @@ impl Agent {
     }
 
     pub fn set_approval_mode(&self, mode: ApprovalMode) {
+        let auto = matches!(mode, ApprovalMode::Auto);
         *self.core_agent.approval_mode.lock() = mode;
+        self.core_agent.auto_approve_tools.store(auto, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_auto_approve_tools(&self, enabled: bool) {
+        self.core_agent.auto_approve_tools.store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn enable_llm_judge(&self) {

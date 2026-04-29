@@ -228,6 +228,7 @@ impl RuntimeBootstrapBuilder {
         if let Some(prompts) = self.prompts_config {
             agent.set_prompts(prompts);
         }
+        agent.set_auto_approve_tools(true);
 
         RuntimeBootstrap {
             bus,

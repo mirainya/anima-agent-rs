@@ -48,16 +48,21 @@ impl CoreAgent {
             kind: ExecutionKind::QuestionContinuation,
             metadata: Some(json!({})),
         };
-        let continuation_result = self.execute_api_call_request(
-            inbound,
-            key,
-            "single",
-            &continuation_request,
-            "主 agent 已收到问题答案，派发给 worker 继续执行",
-            json!({
-                "question_id": pending.question_id,
-            }),
-        )
+        let continuation_result = if !self.tool_registry.is_empty() {
+            let prompt = &continuation_ctx.prompt_text;
+            Ok(self.run_agentic_loop_for_followup(inbound, &continuation_ctx.metadata.opencode_session_id, prompt))
+        } else {
+            self.execute_api_call_request(
+                inbound,
+                key,
+                "single",
+                &continuation_request,
+                "主 agent 已收到问题答案，派发给 worker 继续执行",
+                json!({
+                    "question_id": pending.question_id,
+                }),
+            )
+        }
         .map_err(|err| AgentError::ContinuationFailed(err.internal_message))?;
 
         if continuation_result.status != "success" {
@@ -119,8 +124,11 @@ impl CoreAgent {
             kind: ExecutionKind::QuestionContinuation,
             metadata: Some(json!({})),
         };
-        let result = self
-            .execute_api_call_request(
+        let result = if !self.tool_registry.is_empty() {
+            let prompt = &continuation_ctx.prompt_text;
+            Ok(self.run_agentic_loop_for_followup(inbound, &continuation_ctx.metadata.opencode_session_id, prompt))
+        } else {
+            self.execute_api_call_request(
                 inbound,
                 key,
                 "single",
@@ -128,7 +136,8 @@ impl CoreAgent {
                 "子任务阻塞恢复 — 用户已回答",
                 json!({ "question_id": pending.question_id }),
             )
-            .map_err(|err| AgentError::ContinuationFailed(err.internal_message))?;
+        }
+        .map_err(|err| AgentError::ContinuationFailed(err.internal_message))?;
         if result.status != "success" {
             return Err(AgentError::ContinuationFailed(result
                 .error
