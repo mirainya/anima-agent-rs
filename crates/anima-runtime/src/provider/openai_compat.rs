@@ -157,7 +157,7 @@ impl OpenAiCompatProvider {
     }
 
     fn send_request(&self, body: Value) -> Result<reqwest::blocking::Response, ProviderError> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
         self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))

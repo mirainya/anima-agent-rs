@@ -81,7 +81,7 @@ impl AnthropicProvider {
     }
 
     fn send_request(&self, body: Value) -> Result<reqwest::blocking::Response, ProviderError> {
-        let url = format!("{}/v1/messages", self.base_url);
+        let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         self.client
             .post(&url)
             .header("x-api-key", &self.api_key)
@@ -104,23 +104,26 @@ impl Provider for AnthropicProvider {
         let body = self.build_body(&req);
         let resp = self.send_request(body)?;
         let status = resp.status();
-        let raw: Value = resp
-            .json()
-            .map_err(|e| ProviderError::internal(e.to_string()))?;
 
         if !status.is_success() {
             let kind = match status.as_u16() {
                 401 => ProviderErrorKind::Authentication,
                 429 => ProviderErrorKind::RateLimit,
                 400 => ProviderErrorKind::InvalidRequest,
+                502 | 503 | 504 => ProviderErrorKind::Network,
                 _ => ProviderErrorKind::Internal,
             };
-            let msg = raw
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown error");
+            let text = resp.text().unwrap_or_default();
+            let msg = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(String::from))
+                .unwrap_or_else(|| format!("HTTP {status}"));
             return Err(ProviderError::new(kind, msg));
         }
+
+        let raw: Value = resp
+            .json()
+            .map_err(|e| ProviderError::internal(e.to_string()))?;
 
         let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
         let blocks = blocks_from_value(&content_value, None);
@@ -161,13 +164,11 @@ impl Provider for AnthropicProvider {
         let resp = self.send_request(body)?;
         let status = resp.status();
         if !status.is_success() {
-            let raw: Value = resp
-                .json()
-                .map_err(|e| ProviderError::internal(e.to_string()))?;
-            let msg = raw
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("stream request failed");
+            let text = resp.text().unwrap_or_default();
+            let msg = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(String::from))
+                .unwrap_or_else(|| format!("HTTP {status}"));
             return Err(ProviderError::new(ProviderErrorKind::StreamFailed, msg));
         }
 

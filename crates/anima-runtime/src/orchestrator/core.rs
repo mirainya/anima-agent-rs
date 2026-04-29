@@ -209,7 +209,7 @@ pub struct AgentOrchestrator {
     config: OrchestratorConfig,
     running: AtomicBool,
     metrics: Mutex<OrchestratorMetrics>,
-    pub(crate) provider: Option<Arc<dyn Provider>>,
+    pub(crate) provider: parking_lot::RwLock<Option<Arc<dyn Provider>>>,
     pub(crate) prompts: parking_lot::RwLock<Arc<anima_types::config::PromptsConfig>>,
 }
 
@@ -228,14 +228,18 @@ impl AgentOrchestrator {
             config,
             running: AtomicBool::new(false),
             metrics: Mutex::new(OrchestratorMetrics::default()),
-            provider: None,
+            provider: parking_lot::RwLock::new(None),
             prompts: parking_lot::RwLock::new(Arc::new(anima_types::config::PromptsConfig::default())),
         }
     }
 
-    pub fn with_llm(mut self, provider: Arc<dyn Provider>) -> Self {
-        self.provider = Some(provider);
+    pub fn with_llm(self, provider: Arc<dyn Provider>) -> Self {
+        *self.provider.write() = Some(provider);
         self
+    }
+
+    pub fn set_provider(&self, provider: Arc<dyn Provider>) {
+        *self.provider.write() = Some(provider);
     }
 
     pub fn set_prompts(&self, prompts: Arc<anima_types::config::PromptsConfig>) {
@@ -1518,7 +1522,7 @@ impl AgentOrchestrator {
         lowered_tasks: &[LoweredTask],
         execution_context: &OrchestrationExecutionContext,
     ) -> Option<Value> {
-        if let Some(provider) = &self.provider {
+        if let Some(provider) = &*self.provider.read() {
             if let Some(question) = super::llm_context_infer::try_llm_infer_missing_context(
                 provider,
                 &execution_context.session_id,

@@ -37,7 +37,8 @@ impl AgentOrchestrator {
         request: &str,
         session_id: &str,
     ) -> Option<Vec<LlmSubtaskSpec>> {
-        let provider = match self.provider.as_ref() {
+        let provider_guard = self.provider.read();
+        let provider = match provider_guard.as_ref() {
             Some(p) => p,
             None => {
                 warn!("[llm_decompose] no provider configured, skipping decomposition");
