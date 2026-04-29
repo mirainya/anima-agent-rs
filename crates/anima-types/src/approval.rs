@@ -32,11 +32,7 @@ pub struct PlanProposal {
 
 impl PlanProposal {
     pub fn from_execution_plan(plan: &ExecutionPlan) -> Self {
-        let summary = format!(
-            "{}（{} 个任务）",
-            plan.plan_type,
-            plan.tasks.len()
-        );
+        let summary = format!("{}（{} 个任务）", plan.plan_type, plan.tasks.len());
         Self {
             proposal_id: Uuid::new_v4().to_string(),
             job_id: String::new(),

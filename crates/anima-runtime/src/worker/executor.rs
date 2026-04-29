@@ -11,11 +11,7 @@ pub type UnifiedStreamLine = Result<String, TaskExecutorError>;
 pub type UnifiedStreamSource = Box<dyn Iterator<Item = UnifiedStreamLine>>;
 
 pub trait TaskExecutor: Send + Sync {
-    fn send_prompt(
-        &self,
-        session_id: &str,
-        content: Value,
-    ) -> Result<Value, TaskExecutorError>;
+    fn send_prompt(&self, session_id: &str, content: Value) -> Result<Value, TaskExecutorError>;
 
     fn create_session(&self) -> Result<Value, TaskExecutorError>;
 
@@ -78,11 +74,7 @@ fn plan_execute_error(error: impl std::fmt::Display) -> TaskExecutorError {
 }
 
 impl TaskExecutor for SdkTaskExecutor {
-    fn send_prompt(
-        &self,
-        session_id: &str,
-        content: Value,
-    ) -> Result<Value, TaskExecutorError> {
+    fn send_prompt(&self, session_id: &str, content: Value) -> Result<Value, TaskExecutorError> {
         let response = messages::send_prompt(&self.client, session_id, content, None)
             .map_err(plan_execute_error)?;
         wait_for_message_completion(&self.client, session_id, response)
@@ -179,12 +171,11 @@ impl OpenCodeEventAdapter {
             Ok(Err(err)) => self.upstream_error = Some(err),
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                self.upstream_error =
-                    Some(RuntimeError::new(
-                        RuntimeErrorKind::TaskExecutionFailed,
-                        RuntimeErrorStage::PlanExecute,
-                        "streaming protocol error: message sender thread disconnected",
-                    ))
+                self.upstream_error = Some(RuntimeError::new(
+                    RuntimeErrorKind::TaskExecutionFailed,
+                    RuntimeErrorStage::PlanExecute,
+                    "streaming protocol error: message sender thread disconnected",
+                ))
             }
         }
     }
@@ -571,9 +562,11 @@ impl Iterator for OpenCodeEventAdapter {
     }
 }
 
-fn open_opencode_event_stream(client: &SdkClient) -> Result<UnifiedStreamSource, TaskExecutorError> {
-    let event_response = messages::subscribe_event_stream(client, None, None)
-        .map_err(plan_execute_error)?;
+fn open_opencode_event_stream(
+    client: &SdkClient,
+) -> Result<UnifiedStreamSource, TaskExecutorError> {
+    let event_response =
+        messages::subscribe_event_stream(client, None, None).map_err(plan_execute_error)?;
     let lines = BufReader::new(event_response)
         .lines()
         .map(|r| r.map_err(plan_execute_error));
@@ -591,8 +584,8 @@ fn wait_for_message_completion(
     initial_response: Value,
 ) -> Result<Value, TaskExecutorError> {
     let message_id = extract_message_id_from_response(&initial_response)?;
-    let initial_message = messages::get_message(client, session_id, &message_id, None)
-        .map_err(plan_execute_error)?;
+    let initial_message =
+        messages::get_message(client, session_id, &message_id, None).map_err(plan_execute_error)?;
     if message_has_completed_content(&initial_message) {
         return Ok(initial_message);
     }

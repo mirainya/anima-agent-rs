@@ -14,9 +14,8 @@ use crate::runtime::planning_stalled_current_step;
 use crate::tasks::{RequirementStatus, RunStatus, TaskStatus, TurnStatus};
 
 use super::context_types::{
-    turn_source_from_success, AgentFollowupPreparation, ExecutionContext,
-    RuntimeErrorInfo, RuntimeTaskPhase, SuccessSource, UpstreamRequirementContext,
-    UpstreamTurnContext,
+    turn_source_from_success, AgentFollowupPreparation, ExecutionContext, RuntimeErrorInfo,
+    RuntimeTaskPhase, SuccessSource, UpstreamRequirementContext, UpstreamTurnContext,
 };
 use super::core::CoreAgent;
 use super::runtime_error::{classify_runtime_error, AgentError};
@@ -516,8 +515,11 @@ impl CoreAgent {
         );
 
         let followup_result = if !self.tool_registry.is_empty() {
-            let followup_result =
-                self.run_agentic_loop_for_followup(inbound_msg, &exec_ctx.opencode_session_id, &plan.followup_prompt);
+            let followup_result = self.run_agentic_loop_for_followup(
+                inbound_msg,
+                &exec_ctx.opencode_session_id,
+                &plan.followup_prompt,
+            );
             Ok(followup_result)
         } else {
             let followup_request =
@@ -816,18 +818,23 @@ impl CoreAgent {
                     self.emitter
                         .append_subtask_blocked_transcript(inbound_msg, &reason, true);
                     return self.continue_with_auto_resolved(
-                        inbound_msg, exec_ctx, &reason, &resolved,
+                        inbound_msg,
+                        exec_ctx,
+                        &reason,
+                        &resolved,
                     );
                 }
                 self.emitter
                     .append_subtask_blocked_transcript(inbound_msg, &reason, false);
-                if let Some(resolved) =
-                    self.try_llm_resolve_blocked(inbound_msg, exec_ctx, &reason)
+                if let Some(resolved) = self.try_llm_resolve_blocked(inbound_msg, exec_ctx, &reason)
                 {
                     self.emitter
                         .append_subtask_blocked_transcript(inbound_msg, &reason, true);
                     return self.continue_with_auto_resolved(
-                        inbound_msg, exec_ctx, &reason, &resolved,
+                        inbound_msg,
+                        exec_ctx,
+                        &reason,
+                        &resolved,
                     );
                 }
                 self.suspension.register_subtask_blocked(
@@ -957,9 +964,11 @@ impl CoreAgent {
             )
             .map_err(|err| AgentError::ExecutionFailed(err.internal_message))?;
         if result.status != "success" {
-            return Err(AgentError::ExecutionFailed(result
-                .error
-                .unwrap_or_else(|| "Auto-resolved continuation failed".into())));
+            return Err(AgentError::ExecutionFailed(
+                result
+                    .error
+                    .unwrap_or_else(|| "Auto-resolved continuation failed".into()),
+            ));
         }
         let new_exec_ctx = ExecutionContext {
             memory_key: continuation_ctx.metadata.memory_key,

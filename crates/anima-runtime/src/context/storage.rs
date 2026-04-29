@@ -280,7 +280,10 @@ impl ContextStorage for FileStorage {
             tracing::warn!("context storage: failed to create dir: {e}");
         }
         let path = self.file_path(key);
-        if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&stored).unwrap_or_default()) {
+        if let Err(e) = std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&stored).unwrap_or_default(),
+        ) {
             tracing::warn!("context storage: failed to write {key}: {e}");
         }
 

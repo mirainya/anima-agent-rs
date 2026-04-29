@@ -13,8 +13,7 @@ use crate::support::now_ms;
 use crate::tasks::{RunStatus, SuspensionKind, SuspensionStatus, TaskStatus, TurnStatus};
 
 use super::context_types::{
-    memory_key, ExecutionContext, RuntimeTaskPhase, SuccessSource,
-    ToolPermissionResumePreparation,
+    memory_key, ExecutionContext, RuntimeTaskPhase, SuccessSource, ToolPermissionResumePreparation,
 };
 use super::core::CoreAgent;
 use super::runtime_error::AgentError;
@@ -50,7 +49,11 @@ impl CoreAgent {
         };
         let continuation_result = if !self.tool_registry.is_empty() {
             let prompt = &continuation_ctx.prompt_text;
-            Ok(self.run_agentic_loop_for_followup(inbound, &continuation_ctx.metadata.opencode_session_id, prompt))
+            Ok(self.run_agentic_loop_for_followup(
+                inbound,
+                &continuation_ctx.metadata.opencode_session_id,
+                prompt,
+            ))
         } else {
             self.execute_api_call_request(
                 inbound,
@@ -66,9 +69,11 @@ impl CoreAgent {
         .map_err(|err| AgentError::ContinuationFailed(err.internal_message))?;
 
         if continuation_result.status != "success" {
-            return Err(AgentError::ContinuationFailed(continuation_result
-                .error
-                .unwrap_or_else(|| "Continuation execution failed".to_string())));
+            return Err(AgentError::ContinuationFailed(
+                continuation_result
+                    .error
+                    .unwrap_or_else(|| "Continuation execution failed".to_string()),
+            ));
         }
 
         let exec_ctx = ExecutionContext {
@@ -126,7 +131,11 @@ impl CoreAgent {
         };
         let result = if !self.tool_registry.is_empty() {
             let prompt = &continuation_ctx.prompt_text;
-            Ok(self.run_agentic_loop_for_followup(inbound, &continuation_ctx.metadata.opencode_session_id, prompt))
+            Ok(self.run_agentic_loop_for_followup(
+                inbound,
+                &continuation_ctx.metadata.opencode_session_id,
+                prompt,
+            ))
         } else {
             self.execute_api_call_request(
                 inbound,
@@ -139,9 +148,11 @@ impl CoreAgent {
         }
         .map_err(|err| AgentError::ContinuationFailed(err.internal_message))?;
         if result.status != "success" {
-            return Err(AgentError::ContinuationFailed(result
-                .error
-                .unwrap_or_else(|| "Subtask blocked continuation failed".into())));
+            return Err(AgentError::ContinuationFailed(
+                result
+                    .error
+                    .unwrap_or_else(|| "Subtask blocked continuation failed".into()),
+            ));
         }
         let exec_ctx = ExecutionContext {
             memory_key: continuation_ctx.metadata.memory_key,
@@ -671,26 +682,19 @@ impl CoreAgent {
             return Ok(pending.clone());
         }
 
-        self.emitter.publish(
-            "plan_approved",
-            inbound,
-            json!({ "job_id": job_id }),
-        );
+        self.emitter
+            .publish("plan_approved", inbound, json!({ "job_id": job_id }));
 
         let plan_value = pending
             .raw_question
             .get("plan")
             .cloned()
             .unwrap_or_default();
-        let plan: super::types::ExecutionPlan =
-            serde_json::from_value(plan_value).map_err(|e| AgentError::ContinuationFailed(format!("failed to restore plan: {e}")))?;
+        let plan: super::types::ExecutionPlan = serde_json::from_value(plan_value)
+            .map_err(|e| AgentError::ContinuationFailed(format!("failed to restore plan: {e}")))?;
 
-        let outcome = self.execute_initial_message_plan(
-            inbound,
-            &plan,
-            &pending.opencode_session_id,
-            key,
-        );
+        let outcome =
+            self.execute_initial_message_plan(inbound, &plan, &pending.opencode_session_id, key);
 
         let exec_ctx = ExecutionContext {
             memory_key: key.to_string(),
@@ -725,9 +729,10 @@ impl CoreAgent {
             truncate_preview(&answer.answer, 120),
         )?;
 
-        let inbound = pending.inbound.clone().ok_or_else(|| {
-            AgentError::MissingInboundContext(job_id.into())
-        })?;
+        let inbound = pending
+            .inbound
+            .clone()
+            .ok_or_else(|| AgentError::MissingInboundContext(job_id.into()))?;
         let key = memory_key(&inbound);
         self.publish_question_answer_submitted(&inbound, &key, &pending, &answer);
         self.continue_submitted_question_answer(job_id, &inbound, &key, &pending, &answer)

@@ -1,12 +1,12 @@
-use anima_runtime::worker::executor::TaskExecutor;
+use anima_runtime::agent::types::*;
+use anima_runtime::messages::types::ContentBlock;
 use anima_runtime::orchestrator::core::*;
 use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
-use anima_runtime::agent::types::*;
-use anima_runtime::worker::WorkerPool;
+use anima_runtime::provider::{ChatRequest, ChatResponse, Provider, ProviderError, StopReason};
 use anima_runtime::runtime::{RuntimeStateStore, StateStore};
 use anima_runtime::tasks::{TaskKind, TaskStatus};
-use anima_runtime::provider::{Provider, ProviderError, ChatRequest, ChatResponse, StopReason};
-use anima_runtime::messages::types::ContentBlock;
+use anima_runtime::worker::executor::TaskExecutor;
+use anima_runtime::worker::WorkerPool;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -22,7 +22,8 @@ struct QuestionExecutor;
 
 impl TaskExecutor for EchoExecutor {
     fn send_prompt(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
@@ -37,7 +38,8 @@ impl TaskExecutor for EchoExecutor {
 
 impl TaskExecutor for SlowEchoExecutor {
     fn send_prompt(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
@@ -75,7 +77,8 @@ impl RecordingExecutorState {
 
 impl TaskExecutor for RecordingExecutorState {
     fn send_prompt(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("").to_string();
@@ -95,7 +98,8 @@ impl TaskExecutor for RecordingExecutorState {
 
 impl TaskExecutor for ConditionalFailureExecutor {
     fn send_prompt(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
@@ -115,7 +119,8 @@ impl TaskExecutor for ConditionalFailureExecutor {
 
 impl TaskExecutor for QuestionExecutor {
     fn send_prompt(
-        &self,        _session_id: &str,
+        &self,
+        _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({
@@ -146,7 +151,9 @@ fn extract_request_text(req: &ChatRequest) -> String {
 
 fn text_response(text: &str) -> ChatResponse {
     ChatResponse {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         stop_reason: StopReason::EndTurn,
         usage: None,
         raw: json!({}),
@@ -215,12 +222,7 @@ fn make_orchestrator() -> AgentOrchestrator {
 }
 
 fn make_pool_with_executor(executor: Arc<dyn TaskExecutor>, size: usize) -> Arc<WorkerPool> {
-    let pool = Arc::new(WorkerPool::new(
-        executor,
-        Some(size),
-        None,
-        Some(100),
-    ));
+    let pool = Arc::new(WorkerPool::new(executor, Some(size), None, Some(100)));
     pool.start();
     pool
 }
@@ -318,13 +320,15 @@ fn orchestrator_status_active_plans_comes_from_runtime_store() {
     let executor = RecordingExecutorState::new();
     let wp = make_pool_with_executor(Arc::new(executor), 1);
     let sp = Arc::new(SpecialistPool::new(wp.clone()));
-    let orch = Arc::new(AgentOrchestrator::new(
-        wp,
-        sp,
-        Arc::new(RuntimeStateStore::new()),
-        OrchestratorConfig::default(),
-    )
-    .with_llm(Arc::new(DecomposeProvider)));
+    let orch = Arc::new(
+        AgentOrchestrator::new(
+            wp,
+            sp,
+            Arc::new(RuntimeStateStore::new()),
+            OrchestratorConfig::default(),
+        )
+        .with_llm(Arc::new(DecomposeProvider)),
+    );
     orch.start();
 
     let orchestrator = Arc::clone(&orch);
@@ -846,11 +850,13 @@ impl Provider for LlmDecomposeProvider {
     fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let text = extract_request_text(&req);
         if text.contains("任务分解引擎") {
-            Ok(text_response(r#"[
+            Ok(text_response(
+                r#"[
                     {"name": "design-schema", "task_type": "design", "specialist_type": "designer", "dependencies": [], "description": "设计数据库 schema"},
                     {"name": "implement-api", "task_type": "backend", "specialist_type": "backend-dev", "dependencies": ["design-schema"], "description": "实现 REST API"},
                     {"name": "write-tests", "task_type": "testing", "specialist_type": "tester", "dependencies": ["implement-api"], "description": "编写集成测试"}
-                ]"#))
+                ]"#,
+            ))
         } else {
             Ok(text_response(&format!("echo: {text}")))
         }
@@ -878,7 +884,12 @@ fn llm_decompose_produces_valid_plan() {
     )
     .with_llm(provider);
 
-    let plan = orch.decompose_task("创建用户管理 API", "trace-llm-1", "job-llm-1", Some("sess-1"));
+    let plan = orch.decompose_task(
+        "创建用户管理 API",
+        "trace-llm-1",
+        "job-llm-1",
+        Some("sess-1"),
+    );
 
     assert_eq!(plan.matched_rule.as_deref(), Some("llm-decompose"));
     assert_eq!(plan.subtasks.len(), 3);
@@ -908,7 +919,12 @@ fn llm_decompose_fallback_to_regex_on_invalid_response() {
     )
     .with_llm(provider);
 
-    let plan = orch.decompose_task("build a web app", "trace-llm-2", "job-llm-2", Some("sess-2"));
+    let plan = orch.decompose_task(
+        "build a web app",
+        "trace-llm-2",
+        "job-llm-2",
+        Some("sess-2"),
+    );
 
     // LLM failed → falls back to single generic subtask
     assert_eq!(plan.matched_rule, None);
@@ -942,12 +958,16 @@ impl Provider for ContextInferProvider {
     fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let text = extract_request_text(&req);
         if text.contains("上下文完整性分析器") {
-            Ok(text_response(r#"{"needs_question": true, "prompt": "请问您的目标用户群体是什么？", "options": ["企业用户", "个人用户", "开发者"]}"#))
+            Ok(text_response(
+                r#"{"needs_question": true, "prompt": "请问您的目标用户群体是什么？", "options": ["企业用户", "个人用户", "开发者"]}"#,
+            ))
         } else if text.contains("任务分解引擎") {
-            Ok(text_response(r#"[
+            Ok(text_response(
+                r#"[
                     {"name": "task-a", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "A"},
                     {"name": "task-b", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "B"}
-                ]"#))
+                ]"#,
+            ))
         } else {
             Ok(text_response(&format!("echo: {text}")))
         }
@@ -960,10 +980,12 @@ impl Provider for ContextInferFailProvider {
     fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let text = extract_request_text(&req);
         if text.contains("任务分解引擎") {
-            Ok(text_response(r#"[
+            Ok(text_response(
+                r#"[
                     {"name": "task-a", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "A"},
                     {"name": "task-b", "task_type": "generic", "specialist_type": "default", "dependencies": [], "description": "B"}
-                ]"#))
+                ]"#,
+            ))
         } else {
             Ok(text_response("无法分析"))
         }
@@ -1001,16 +1023,22 @@ fn llm_context_infer_generates_question() {
                 lowered_task_type: st.task_type.clone(),
                 primitive: LoweringPrimitive::ApiCall,
                 parallel_safe: true,
-                task: anima_runtime::agent::types::make_task(anima_runtime::agent::types::MakeTask {
-                    task_type: st.task_type.clone(),
-                    ..Default::default()
-                }),
+                task: anima_runtime::agent::types::make_task(
+                    anima_runtime::agent::types::MakeTask {
+                        task_type: st.task_type.clone(),
+                        ..Default::default()
+                    },
+                ),
             })
         })
         .collect();
 
     let result = try_llm_infer_missing_context(
-        &provider, "s1", &plan, &lowered, &subtask_results,
+        &provider,
+        "s1",
+        &plan,
+        &lowered,
+        &subtask_results,
         &anima_types::config::PromptsConfig::default().context_infer,
     );
 
@@ -1018,7 +1046,11 @@ fn llm_context_infer_generates_question() {
     let q = result.unwrap();
     assert_eq!(q.get("type").and_then(Value::as_str), Some("question"));
     let question = q.get("question").unwrap();
-    assert!(question.get("prompt").and_then(Value::as_str).unwrap().contains("用户"));
+    assert!(question
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap()
+        .contains("用户"));
     assert_eq!(
         question
             .get("orchestration")
@@ -1059,16 +1091,22 @@ fn llm_context_infer_fallback_on_invalid_response() {
                 lowered_task_type: st.task_type.clone(),
                 primitive: LoweringPrimitive::ApiCall,
                 parallel_safe: true,
-                task: anima_runtime::agent::types::make_task(anima_runtime::agent::types::MakeTask {
-                    task_type: st.task_type.clone(),
-                    ..Default::default()
-                }),
+                task: anima_runtime::agent::types::make_task(
+                    anima_runtime::agent::types::MakeTask {
+                        task_type: st.task_type.clone(),
+                        ..Default::default()
+                    },
+                ),
             })
         })
         .collect();
 
     let result = try_llm_infer_missing_context(
-        &provider, "s2", &plan, &lowered, &subtask_results,
+        &provider,
+        "s2",
+        &plan,
+        &lowered,
+        &subtask_results,
         &anima_types::config::PromptsConfig::default().context_infer,
     );
 

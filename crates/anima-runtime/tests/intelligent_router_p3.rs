@@ -1,8 +1,8 @@
-use anima_runtime::worker::executor::TaskExecutor;
+use anima_runtime::bus::message::{make_inbound, MakeInbound};
 use anima_runtime::classifier::router::*;
 use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
+use anima_runtime::worker::executor::TaskExecutor;
 use anima_runtime::worker::WorkerPool;
-use anima_runtime::bus::message::{make_inbound, MakeInbound};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -10,7 +10,8 @@ struct TestExecutor;
 
 impl TaskExecutor for TestExecutor {
     fn send_prompt(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"content": format!("reply[{session_id}]")}))

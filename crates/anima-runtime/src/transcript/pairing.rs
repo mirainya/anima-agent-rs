@@ -61,10 +61,14 @@ mod tests {
     fn valid_pairing_no_violations() {
         let messages = vec![
             msg(vec![ContentBlock::ToolUse {
-                id: "tu1".into(), name: "bash".into(), input: json!({}),
+                id: "tu1".into(),
+                name: "bash".into(),
+                input: json!({}),
             }]),
             msg(vec![ContentBlock::ToolResult {
-                tool_use_id: "tu1".into(), content: json!("ok"), is_error: false,
+                tool_use_id: "tu1".into(),
+                content: json!("ok"),
+                is_error: false,
             }]),
         ];
         assert!(validate_pairing(&messages).is_empty());
@@ -72,11 +76,11 @@ mod tests {
 
     #[test]
     fn missing_tool_result() {
-        let messages = vec![
-            msg(vec![ContentBlock::ToolUse {
-                id: "tu1".into(), name: "bash".into(), input: json!({}),
-            }]),
-        ];
+        let messages = vec![msg(vec![ContentBlock::ToolUse {
+            id: "tu1".into(),
+            name: "bash".into(),
+            input: json!({}),
+        }])];
         let v = validate_pairing(&messages);
         assert_eq!(v, vec![TranscriptInvariantViolation::MissingToolResult]);
     }
@@ -85,13 +89,19 @@ mod tests {
     fn duplicate_tool_result() {
         let messages = vec![
             msg(vec![ContentBlock::ToolUse {
-                id: "tu1".into(), name: "bash".into(), input: json!({}),
+                id: "tu1".into(),
+                name: "bash".into(),
+                input: json!({}),
             }]),
             msg(vec![ContentBlock::ToolResult {
-                tool_use_id: "tu1".into(), content: json!("ok"), is_error: false,
+                tool_use_id: "tu1".into(),
+                content: json!("ok"),
+                is_error: false,
             }]),
             msg(vec![ContentBlock::ToolResult {
-                tool_use_id: "tu1".into(), content: json!("dup"), is_error: false,
+                tool_use_id: "tu1".into(),
+                content: json!("dup"),
+                is_error: false,
             }]),
         ];
         let v = validate_pairing(&messages);

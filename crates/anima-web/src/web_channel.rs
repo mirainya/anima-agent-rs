@@ -141,7 +141,8 @@ mod tests {
             kind: "text".into(),
             delta: "hello".into(),
         };
-        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         assert_eq!(json["type"], "stream_delta");
         assert_eq!(json["kind"], "text");
         assert_eq!(json["delta"], "hello");
@@ -156,7 +157,8 @@ mod tests {
             phase: "started".into(),
             kind: "thinking".into(),
         };
-        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         assert_eq!(json["type"], "stream_block_lifecycle");
         assert_eq!(json["phase"], "started");
         assert_eq!(json["kind"], "thinking");

@@ -72,10 +72,7 @@ pub struct WorkerStatus {
 
 impl WorkerAgent {
     /// 创建新的 WorkerAgent，自动生成 UUID 作为唯一标识
-    pub fn new(
-        executor: Arc<dyn TaskExecutor>,
-        timeout_ms: Option<u64>,
-    ) -> Self {
+    pub fn new(executor: Arc<dyn TaskExecutor>, timeout_ms: Option<u64>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             executor,
@@ -364,7 +361,8 @@ impl WorkerAgent {
         let mut sdk_started_payload =
             self.api_call_event_payload(task, &session_id, "api_call_inflight", sdk_started_at_ms);
         sdk_started_payload["sdk_operation"] = Value::String("send_prompt".into());
-        sdk_started_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
+        sdk_started_payload["sdk_base_url"] =
+            Value::String(self.executor.provider_label().to_string());
         sdk_started_payload["started_at_ms"] = json!(sdk_started_at_ms);
         self.publish_runtime_event(
             &task.trace_id,
@@ -372,10 +370,7 @@ impl WorkerAgent {
             sdk_started_payload,
         );
 
-        match self
-            .executor
-            .send_prompt(&session_id, content)
-        {
+        match self.executor.send_prompt(&session_id, content) {
             Ok(result) => {
                 let sdk_finished_at_ms = now_ms();
                 let mut sdk_finished_payload = self.api_call_event_payload(
@@ -385,7 +380,8 @@ impl WorkerAgent {
                     sdk_finished_at_ms,
                 );
                 sdk_finished_payload["sdk_operation"] = Value::String("send_prompt".into());
-                sdk_finished_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
+                sdk_finished_payload["sdk_base_url"] =
+                    Value::String(self.executor.provider_label().to_string());
                 sdk_finished_payload["started_at_ms"] = json!(sdk_started_at_ms);
                 sdk_finished_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                 sdk_finished_payload["sdk_duration_ms"] =
@@ -427,7 +423,8 @@ impl WorkerAgent {
                     sdk_finished_at_ms,
                 );
                 sdk_failed_payload["sdk_operation"] = Value::String("send_prompt".into());
-                sdk_failed_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
+                sdk_failed_payload["sdk_base_url"] =
+                    Value::String(self.executor.provider_label().to_string());
                 sdk_failed_payload["started_at_ms"] = json!(sdk_started_at_ms);
                 sdk_failed_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                 sdk_failed_payload["sdk_duration_ms"] =
@@ -502,7 +499,8 @@ impl WorkerAgent {
             sdk_started_at_ms,
         );
         sdk_started_payload["sdk_operation"] = Value::String("send_prompt_streaming".into());
-        sdk_started_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
+        sdk_started_payload["sdk_base_url"] =
+            Value::String(self.executor.provider_label().to_string());
         sdk_started_payload["started_at_ms"] = json!(sdk_started_at_ms);
         self.publish_runtime_event(
             &task.trace_id,
@@ -681,7 +679,8 @@ impl WorkerAgent {
                         streaming_failed_payload["streaming_duration_ms"] =
                             json!(streaming_failed_at_ms.saturating_sub(stream_open_at_ms));
                         streaming_failed_payload["result_status"] = Value::String("failure".into());
-                        streaming_failed_payload["error"] = Value::String(error.internal_message.clone());
+                        streaming_failed_payload["error"] =
+                            Value::String(error.internal_message.clone());
                         streaming_failed_payload["error_kind"] = Value::String(error_kind.into());
                         self.publish_runtime_event(
                             &task.trace_id,
@@ -727,7 +726,8 @@ impl WorkerAgent {
                     sdk_finished_at_ms,
                 );
                 sdk_failed_payload["sdk_operation"] = Value::String("send_prompt_streaming".into());
-                sdk_failed_payload["sdk_base_url"] = Value::String(self.executor.provider_label().to_string());
+                sdk_failed_payload["sdk_base_url"] =
+                    Value::String(self.executor.provider_label().to_string());
                 sdk_failed_payload["started_at_ms"] = json!(sdk_started_at_ms);
                 sdk_failed_payload["finished_at_ms"] = json!(sdk_finished_at_ms);
                 sdk_failed_payload["sdk_duration_ms"] =
@@ -1056,7 +1056,6 @@ fn is_streaming_unsupported(error: &TaskExecutorError) -> bool {
         .contains("streaming not supported")
 }
 
-
 /// 工作者池，管理一组 WorkerAgent 的生命周期。
 /// 使用 round-robin + Condvar 实现负载均衡和等待机制。
 pub struct WorkerPool {
@@ -1091,10 +1090,7 @@ impl WorkerPool {
         let size = initial_size.unwrap_or(2).max(1);
         let mut workers = Vec::with_capacity(size);
         for _ in 0..size {
-            workers.push(Arc::new(WorkerAgent::new(
-                executor.clone(),
-                timeout_ms,
-            )));
+            workers.push(Arc::new(WorkerAgent::new(executor.clone(), timeout_ms)));
         }
         Self {
             workers: Mutex::new(workers),
@@ -1177,10 +1173,7 @@ impl WorkerPool {
         if target > current {
             // Scale up
             for _ in current..target {
-                let mut worker = WorkerAgent::new(
-                    self.executor.clone(),
-                    self.worker_timeout_ms,
-                );
+                let mut worker = WorkerAgent::new(self.executor.clone(), self.worker_timeout_ms);
                 if let Some(publisher) = self.runtime_event_publisher.clone() {
                     worker = worker.with_runtime_event_publisher(publisher);
                 }
@@ -1280,7 +1273,11 @@ mod tests {
     struct MockExecutor;
 
     impl TaskExecutor for MockExecutor {
-        fn send_prompt(&self, session_id: &str, content: Value) -> Result<Value, TaskExecutorError> {
+        fn send_prompt(
+            &self,
+            session_id: &str,
+            content: Value,
+        ) -> Result<Value, TaskExecutorError> {
             Ok(json!({ "content": format!("echo[{session_id}]: {}", content) }))
         }
         fn create_session(&self) -> Result<Value, TaskExecutorError> {
@@ -1364,10 +1361,13 @@ mod tests {
     fn submit_api_call_succeeds() {
         let w = Arc::new(WorkerAgent::new(Arc::new(MockExecutor), None));
         w.start();
-        let task = make_test_task("api-call", json!({
-            "opencode-session-id": "s1",
-            "content": "hello"
-        }));
+        let task = make_test_task(
+            "api-call",
+            json!({
+                "opencode-session-id": "s1",
+                "content": "hello"
+            }),
+        );
         let rx = w.submit_task(task, None);
         let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(result.status, "success");
@@ -1390,10 +1390,13 @@ mod tests {
     fn submit_query_traverses_path() {
         let w = Arc::new(WorkerAgent::new(Arc::new(MockExecutor), None));
         w.start();
-        let task = make_test_task("query", json!({
-            "query": ["a", "b"],
-            "context": {"a": {"b": 42}}
-        }));
+        let task = make_test_task(
+            "query",
+            json!({
+                "query": ["a", "b"],
+                "context": {"a": {"b": 42}}
+            }),
+        );
         let rx = w.submit_task(task, None);
         let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(result.result.unwrap(), json!(42));
@@ -1482,8 +1485,7 @@ mod tests {
 
     #[test]
     fn pool_scale_respects_bounds() {
-        let pool = WorkerPool::new(Arc::new(MockExecutor), Some(2), None, None)
-            .with_bounds(2, 5);
+        let pool = WorkerPool::new(Arc::new(MockExecutor), Some(2), None, None).with_bounds(2, 5);
         pool.start();
         pool.scale_to(10);
         assert_eq!(pool.size(), 5);

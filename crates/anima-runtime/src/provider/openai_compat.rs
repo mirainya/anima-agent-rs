@@ -7,9 +7,7 @@ use super::error::{ProviderError, ProviderErrorKind};
 use super::types::{ChatRequest, ChatResponse, ChatRole, StopReason, Usage};
 use super::{ChatStream, Provider};
 use crate::messages::types::ContentBlock;
-use crate::streaming::types::{
-    ContentBlock as StreamContentBlock, ContentDelta, StreamEvent,
-};
+use crate::streaming::types::{ContentBlock as StreamContentBlock, ContentDelta, StreamEvent};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 
@@ -135,7 +133,10 @@ impl OpenAiCompatProvider {
                 .filter_map(|t| {
                     let name = t.get("name")?.as_str()?;
                     let desc = t.get("description").and_then(Value::as_str).unwrap_or("");
-                    let schema = t.get("input_schema").cloned().unwrap_or(json!({"type": "object"}));
+                    let schema = t
+                        .get("input_schema")
+                        .cloned()
+                        .unwrap_or(json!({"type": "object"}));
                     Some(json!({
                         "type": "function",
                         "function": {
@@ -157,7 +158,10 @@ impl OpenAiCompatProvider {
     }
 
     fn send_request(&self, body: Value) -> Result<reqwest::blocking::Response, ProviderError> {
-        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
         self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -281,7 +285,8 @@ impl Provider for OpenAiCompatProvider {
         let mut started = false;
         let mut text_block_open = false;
         // track tool call indices we've seen a start for
-        let mut tool_block_indices: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut tool_block_indices: std::collections::HashSet<u64> =
+            std::collections::HashSet::new();
         // next content block index to assign
         let mut next_block_idx: usize = 0;
 
@@ -310,9 +315,7 @@ impl Provider for OpenAiCompatProvider {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                events.push(StreamEvent::MessageStart {
-                    message_id: msg_id,
-                });
+                events.push(StreamEvent::MessageStart { message_id: msg_id });
             }
 
             // text content delta
@@ -431,9 +434,7 @@ impl Provider for OpenAiCompatProvider {
                     "stop" => Some("end_turn".to_string()),
                     other => Some(other.to_string()),
                 };
-                events.push(StreamEvent::MessageDelta {
-                    stop_reason: stop,
-                });
+                events.push(StreamEvent::MessageDelta { stop_reason: stop });
                 events.push(StreamEvent::MessageStop);
             }
 

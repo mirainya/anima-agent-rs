@@ -35,7 +35,10 @@ impl fmt::Display for AgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ArcMutationConflict(target) => {
-                write!(f, "cannot mutate shared {target} — ensure no other Arc references exist")
+                write!(
+                    f,
+                    "cannot mutate shared {target} — ensure no other Arc references exist"
+                )
             }
             Self::ExecutionFailed(msg) => write!(f, "{msg}"),
             Self::ContinuationFailed(msg) => write!(f, "{msg}"),
@@ -51,7 +54,10 @@ impl fmt::Display for AgentError {
                 "question ID mismatch for job {job_id}: expected {expected}, got {got}"
             ),
             Self::MissingInboundContext(job_id) => {
-                write!(f, "missing inbound context for pending question on job: {job_id}")
+                write!(
+                    f,
+                    "missing inbound context for pending question on job: {job_id}"
+                )
             }
             Self::OrchestrationForcedFallback => write!(f, "forced orchestration fallback"),
             Self::OrchestrationNoDecomposition => write!(f, "llm_no_decomposition"),
@@ -126,9 +132,7 @@ impl RuntimeErrorKind {
 
     pub(crate) fn user_message(self) -> &'static str {
         match self {
-            Self::SessionCreateFailed => {
-                "无法创建上游会话，请确认 opencode-server 是否正常运行。"
-            }
+            Self::SessionCreateFailed => "无法创建上游会话，请确认 opencode-server 是否正常运行。",
             Self::UpstreamTimeout => "上游模型响应超时，请稍后重试。",
             Self::UpstreamStreamFailed => {
                 "上游模型流式响应异常中断，请稍后重试或检查代理服务状态。"
@@ -169,12 +173,16 @@ impl RuntimeError {
 
     pub(crate) fn from_tool_error(error: &ToolError, stage: RuntimeErrorStage) -> Self {
         match error {
-            ToolError::ValidationFailed(message) => {
-                Self::new(RuntimeErrorKind::ToolValidationFailed, stage, message.clone())
-            }
-            ToolError::PermissionDenied(message) => {
-                Self::new(RuntimeErrorKind::ToolPermissionDenied, stage, message.clone())
-            }
+            ToolError::ValidationFailed(message) => Self::new(
+                RuntimeErrorKind::ToolValidationFailed,
+                stage,
+                message.clone(),
+            ),
+            ToolError::PermissionDenied(message) => Self::new(
+                RuntimeErrorKind::ToolPermissionDenied,
+                stage,
+                message.clone(),
+            ),
             ToolError::Timeout {
                 tool_name,
                 timeout_ms,
@@ -183,9 +191,11 @@ impl RuntimeError {
                 stage,
                 format!("tool '{tool_name}' timed out after {timeout_ms}ms"),
             ),
-            ToolError::Internal(message) => {
-                Self::new(RuntimeErrorKind::ToolExecutionFailed, stage, message.clone())
-            }
+            ToolError::Internal(message) => Self::new(
+                RuntimeErrorKind::ToolExecutionFailed,
+                stage,
+                message.clone(),
+            ),
         }
     }
 

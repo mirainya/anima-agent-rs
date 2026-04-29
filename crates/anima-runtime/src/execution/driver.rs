@@ -39,14 +39,11 @@ pub fn execute_api_call(
     request: ApiCallExecutionRequest,
 ) -> Result<TaskResult, RuntimeError> {
     let task = build_api_call_task(&request);
-    worker_pool
-        .submit_task(task)
-        .recv()
-        .map_err(|error| {
-            RuntimeError::new(
-                RuntimeErrorKind::TaskExecutionFailed,
-                RuntimeErrorStage::PlanExecute,
-                format!("Failed to receive {:?} result: {error}", request.kind),
-            )
-        })
+    worker_pool.submit_task(task).recv().map_err(|error| {
+        RuntimeError::new(
+            RuntimeErrorKind::TaskExecutionFailed,
+            RuntimeErrorStage::PlanExecute,
+            format!("Failed to receive {:?} result: {error}", request.kind),
+        )
+    })
 }

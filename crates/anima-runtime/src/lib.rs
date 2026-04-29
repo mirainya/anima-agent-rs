@@ -45,10 +45,10 @@ pub mod hooks;
 pub mod messages;
 /// 权限判定系统
 pub mod permissions;
-/// Provider 抽象：标准化 LLM 调用接口
-pub mod provider;
 /// System Prompt 段落化组装
 pub mod prompt;
+/// Provider 抽象：标准化 LLM 调用接口
+pub mod provider;
 /// 流式 API 解析与流式工具执行
 pub mod streaming;
 /// 工具注册与执行闭环
@@ -62,4 +62,3 @@ pub mod cli;
 pub mod metrics;
 /// 通用工具集：时间、缓存、指标等
 pub mod support;
-

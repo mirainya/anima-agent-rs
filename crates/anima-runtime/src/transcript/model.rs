@@ -113,15 +113,8 @@ mod tests {
 
     #[test]
     fn apply_text_delta() {
-        let mut block = ContentBlock::Text {
-            text: "hel".into(),
-        };
-        apply_delta(
-            &mut block,
-            &ContentDelta::TextDelta {
-                text: "lo".into(),
-            },
-        );
+        let mut block = ContentBlock::Text { text: "hel".into() };
+        apply_delta(&mut block, &ContentDelta::TextDelta { text: "lo".into() });
         assert_eq!(
             block,
             ContentBlock::Text {
@@ -172,14 +165,10 @@ mod tests {
 
     #[test]
     fn stream_block_to_transcript_maps_correctly() {
-        let text = StreamContentBlock::Text {
-            text: "hi".into(),
-        };
+        let text = StreamContentBlock::Text { text: "hi".into() };
         assert_eq!(
             stream_block_to_transcript(&text),
-            ContentBlock::Text {
-                text: "hi".into()
-            }
+            ContentBlock::Text { text: "hi".into() }
         );
 
         let tool = StreamContentBlock::ToolUse {

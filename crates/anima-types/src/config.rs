@@ -64,7 +64,6 @@ pub struct ProviderConfig {
     pub max_tokens: u32,
 }
 
-
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {

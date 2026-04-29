@@ -131,12 +131,7 @@ impl SessionStore {
     }
 
     pub fn get_all_sessions(&self) -> Vec<Session> {
-        self.state
-            .lock()
-            .sessions
-            .values()
-            .cloned()
-            .collect()
+        self.state.lock().sessions.values().cloned().collect()
     }
 
     pub fn session_exists(&self, session_id: &str) -> bool {

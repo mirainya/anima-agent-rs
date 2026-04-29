@@ -9,8 +9,6 @@ use std::thread;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::provider::{ChatRequest, ChatResponse, Provider, ProviderError};
-use crate::provider::types::{ChatMessage, ChatRole, StopReason};
 use crate::agent::runtime_error::{RuntimeError, RuntimeErrorKind, RuntimeErrorStage};
 use crate::hooks::HookRegistry;
 use crate::messages::compact::{compact_if_needed, CompactConfig};
@@ -18,6 +16,8 @@ use crate::messages::normalize::normalize_messages_for_api;
 use crate::messages::pairing::ensure_tool_result_pairing;
 use crate::messages::types::{blocks_from_value, ApiMsg, ContentBlock, InternalMsg, MessageRole};
 use crate::permissions::{PermissionChecker, PermissionRequest};
+use crate::provider::types::{ChatMessage, ChatRole, StopReason};
+use crate::provider::{ChatRequest, ChatResponse, Provider, ProviderError};
 use crate::streaming::types::StreamEvent;
 use crate::tools::definition::ToolContext;
 use crate::tools::execution::{
@@ -674,8 +674,14 @@ fn execute_tool_segment(
             .map(|(i, handle)| match handle.join() {
                 Ok(outcome) => outcome,
                 Err(_) => {
-                    let tool_use_id = segment.get(i).map(|s| s.tool_use.id.clone()).unwrap_or_default();
-                    let tool_name = segment.get(i).map(|s| s.tool_use.name.clone()).unwrap_or_default();
+                    let tool_use_id = segment
+                        .get(i)
+                        .map(|s| s.tool_use.id.clone())
+                        .unwrap_or_default();
+                    let tool_name = segment
+                        .get(i)
+                        .map(|s| s.tool_use.name.clone())
+                        .unwrap_or_default();
                     IndexedToolOutcome {
                         index: i,
                         tool_use_id: tool_use_id.clone(),
@@ -707,13 +713,11 @@ pub fn resume_suspended_tool_invocation(
     let (mut invocation, tool_result) = if allowed {
         let tool = tool_registry
             .get(&suspension.suspended_tool.tool_name)
-            .ok_or_else(|| {
-                AgenticLoopError::AllToolsFailed {
-                    internal_message: format!(
-                        "tool '{}' not found in registry during resume",
-                        suspension.suspended_tool.tool_name
-                    ),
-                }
+            .ok_or_else(|| AgenticLoopError::AllToolsFailed {
+                internal_message: format!(
+                    "tool '{}' not found in registry during resume",
+                    suspension.suspended_tool.tool_name
+                ),
             })?;
         let options = RunToolOptions {
             tool_name: suspension.suspended_tool.tool_name.clone(),
@@ -872,12 +876,11 @@ pub fn continue_agentic_loop(
             let stream = provider
                 .chat_stream(chat_request)
                 .map_err(|error| AgenticLoopError::ApiCall { error })?;
-            let (parsed, response_value) =
-                crate::streaming::executor::consume_stream_events(
-                    stream,
-                    config.on_stream_event.as_deref(),
-                )
-                .map_err(|error| AgenticLoopError::ApiCall { error })?;
+            let (parsed, response_value) = crate::streaming::executor::consume_stream_events(
+                stream,
+                config.on_stream_event.as_deref(),
+            )
+            .map_err(|error| AgenticLoopError::ApiCall { error })?;
             messages.push(build_assistant_msg(&response_value));
             parsed
         } else {
@@ -938,8 +941,10 @@ pub fn continue_agentic_loop(
                 is_tool_use_concurrency_safe(&indexed_tool_uses[cursor].tool_use, tool_registry);
             let mut segment_end = cursor + 1;
             while segment_end < indexed_tool_uses.len()
-                && is_tool_use_concurrency_safe(&indexed_tool_uses[segment_end].tool_use, tool_registry)
-                    == concurrency_safe
+                && is_tool_use_concurrency_safe(
+                    &indexed_tool_uses[segment_end].tool_use,
+                    tool_registry,
+                ) == concurrency_safe
             {
                 segment_end += 1;
             }
@@ -971,26 +976,27 @@ pub fn continue_agentic_loop(
             };
 
             let earliest_permission = outcomes.iter().find_map(|item| match &item.outcome {
-                SingleToolExecutionOutcome::AwaitingPermission(awaiting) => Some((
-                    item.tool_use_id.clone(),
-                    awaiting.clone(),
-                )),
+                SingleToolExecutionOutcome::AwaitingPermission(awaiting) => {
+                    Some((item.tool_use_id.clone(), awaiting.clone()))
+                }
                 _ => None,
             });
 
             if let Some((tool_use_id, awaiting)) = earliest_permission {
-                return Ok(AgenticLoopOutcome::Suspended(Box::new(AgenticLoopSuspension {
-                    suspended_tool: SuspendedToolInvocation {
-                        tool_use_id,
-                        tool_name: awaiting.invocation.tool_name.clone(),
-                        tool_input: awaiting.input,
-                        permission_request: awaiting.permission_request,
-                        invocation: awaiting.invocation,
+                return Ok(AgenticLoopOutcome::Suspended(Box::new(
+                    AgenticLoopSuspension {
+                        suspended_tool: SuspendedToolInvocation {
+                            tool_use_id,
+                            tool_name: awaiting.invocation.tool_name.clone(),
+                            tool_input: awaiting.input,
+                            permission_request: awaiting.permission_request,
+                            invocation: awaiting.invocation,
+                        },
+                        messages,
+                        iterations,
+                        compact_count,
                     },
-                    messages,
-                    iterations,
-                    compact_count,
-                })));
+                )));
             }
 
             for item in outcomes {
@@ -1060,8 +1066,8 @@ fn extract_last_assistant_text(messages: &[InternalMsg]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{ChatResponse, ProviderError};
     use crate::provider::types::StopReason;
+    use crate::provider::{ChatResponse, ProviderError};
     use crate::tools::definition::Tool;
     use crate::tools::result::{ToolError, ToolResult};
     use serde_json::json;
@@ -1087,10 +1093,16 @@ mod tests {
     fn value_to_response(raw: Value) -> ChatResponse {
         let content = raw.get("content").cloned().unwrap_or(Value::Null);
         let blocks = blocks_from_value(&content, None);
-        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let has_tool_use = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
         ChatResponse {
             content: blocks,
-            stop_reason: if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn },
+            stop_reason: if has_tool_use {
+                StopReason::ToolUse
+            } else {
+                StopReason::EndTurn
+            },
             usage: None,
             raw,
         }
@@ -1255,8 +1267,7 @@ mod tests {
         let config = make_config();
         let initial = vec![make_user_msg("What is the answer?")];
 
-        let result =
-            run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
+        let result = run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1288,8 +1299,7 @@ mod tests {
         let config = make_config();
         let initial = vec![make_user_msg("Echo hello for me")];
 
-        let result =
-            run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
+        let result = run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1316,7 +1326,6 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(EchoTool));
 
-
         let config = AgenticLoopConfig {
             max_iterations: 3,
             session_id: "test".into(),
@@ -1325,8 +1334,7 @@ mod tests {
         };
         let initial = vec![make_user_msg("Keep looping")];
 
-        let result =
-            run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
+        let result = run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1427,8 +1435,7 @@ mod tests {
         };
         let initial = vec![make_user_msg("Hello streaming")];
 
-        let result =
-            run_agentic_loop(&provider, &registry, None, None, initial, &config).unwrap();
+        let result = run_agentic_loop(&provider, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1483,7 +1490,6 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(EchoTool));
 
-
         let config = AgenticLoopConfig {
             max_iterations: 10,
             session_id: "test-stream".into(),
@@ -1493,8 +1499,7 @@ mod tests {
         };
         let initial = vec![make_user_msg("Echo stream for me")];
 
-        let result =
-            run_agentic_loop(&provider, &registry, None, None, initial, &config).unwrap();
+        let result = run_agentic_loop(&provider, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");
@@ -1545,8 +1550,7 @@ mod tests {
         };
         let initial = vec![make_user_msg("test callback")];
 
-        let result =
-            run_agentic_loop(&provider, &registry, None, None, initial, &config).unwrap();
+        let result = run_agentic_loop(&provider, &registry, None, None, initial, &config).unwrap();
 
         let AgenticLoopOutcome::Completed(result) = result else {
             panic!("loop should complete");

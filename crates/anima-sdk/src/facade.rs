@@ -71,9 +71,7 @@ impl ClientOptions {
             return 0;
         }
         let exp = attempt.saturating_sub(1).min(20);
-        let raw = self
-            .retry_backoff_ms
-            .saturating_mul(1u64 << exp);
+        let raw = self.retry_backoff_ms.saturating_mul(1u64 << exp);
         raw.min(self.retry_backoff_cap_ms)
     }
 }

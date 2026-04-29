@@ -162,9 +162,12 @@ pub fn judge_requirement(
     // Layer 2: lightweight LLM judgement
     if let Some(provider) = provider {
         let judge_tmpl = prompts.map(|p| p.requirement_judge.as_str());
-        if let Some(satisfied) =
-            llm_judge_requirement(provider, &ctx.original_user_request, &response_text, judge_tmpl)
-        {
+        if let Some(satisfied) = llm_judge_requirement(
+            provider,
+            &ctx.original_user_request,
+            &response_text,
+            judge_tmpl,
+        ) {
             if satisfied {
                 debug!("requirement judge: LLM says satisfied");
                 return RequirementJudgement::Satisfied;

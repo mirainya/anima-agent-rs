@@ -524,7 +524,10 @@ impl RuntimeEventEmitter {
         } else {
             "subtask_blocked"
         };
-        let text = format!("[{label}] {}", serde_json::to_string(reason).unwrap_or_default());
+        let text = format!(
+            "[{label}] {}",
+            serde_json::to_string(reason).unwrap_or_default()
+        );
         let msg = crate::messages::types::InternalMsg {
             role: crate::messages::types::MessageRole::System,
             blocks: vec![crate::messages::types::ContentBlock::Text { text }],

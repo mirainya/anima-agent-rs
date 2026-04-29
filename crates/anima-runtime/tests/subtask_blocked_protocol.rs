@@ -1,6 +1,6 @@
+use anima_runtime::agent::types::{make_task_result, MakeTaskResult};
 use anima_runtime::runtime::StateStore;
 use anima_runtime::tasks::{SubtaskBlockedReason, SuspensionKind, SuspensionStatus};
-use anima_runtime::agent::types::{make_task_result, MakeTaskResult};
 
 #[test]
 fn subtask_blocked_reason_serializes_with_tag() {
@@ -145,9 +145,7 @@ fn auto_resolve_matches_param_name_in_request() {
 fn projection_maps_subtask_blocked_source_kind() {
     use anima_runtime::agent::PendingQuestionSourceKind;
     use anima_runtime::runtime::{build_projection, RuntimeStateSnapshot};
-    use anima_runtime::tasks::{
-        RunRecord, RunStatus, SuspensionRecord, SuspensionStatus,
-    };
+    use anima_runtime::tasks::{RunRecord, RunStatus, SuspensionRecord, SuspensionStatus};
 
     let run_id = "run-sb-1".to_string();
     let job_id = "job-sb-1".to_string();
@@ -200,7 +198,10 @@ fn projection_maps_subtask_blocked_source_kind() {
 
     let projection = build_projection(&snapshot);
     let question = projection.pending_questions.get(&job_id).unwrap();
-    assert_eq!(question.source_kind, PendingQuestionSourceKind::SubtaskBlocked);
+    assert_eq!(
+        question.source_kind,
+        PendingQuestionSourceKind::SubtaskBlocked
+    );
 }
 
 #[test]
@@ -411,10 +412,9 @@ fn multiple_options_full_lifecycle_register_submit_resolve() {
 
     // Resolved suspension
     let snapshot = store.snapshot();
-    let resolved = snapshot
-        .suspensions
-        .values()
-        .find(|s| s.status == SuspensionStatus::Resolved && s.kind == SuspensionKind::SubtaskBlocked);
+    let resolved = snapshot.suspensions.values().find(|s| {
+        s.status == SuspensionStatus::Resolved && s.kind == SuspensionKind::SubtaskBlocked
+    });
     assert!(resolved.is_some());
     assert_eq!(resolved.unwrap().answer_summary, Some("ECS".into()));
 }
@@ -429,8 +429,14 @@ fn question_state_raw_question_contains_blocked_reason_fields() {
     };
     coordinator.register_subtask_blocked(&inbound.id, &inbound, "s1", &reason);
     let q = coordinator.question_state(&inbound.id, false).unwrap();
-    assert_eq!(q.raw_question.get("kind").and_then(|v| v.as_str()), Some("missing_parameter"));
-    assert_eq!(q.raw_question.get("name").and_then(|v| v.as_str()), Some("api_key"));
+    assert_eq!(
+        q.raw_question.get("kind").and_then(|v| v.as_str()),
+        Some("missing_parameter")
+    );
+    assert_eq!(
+        q.raw_question.get("name").and_then(|v| v.as_str()),
+        Some("api_key")
+    );
 }
 
 // ── Phase 6: Edge cases + transcript + auto-resolve 逻辑 ─────
@@ -444,7 +450,10 @@ fn double_register_overwrites_previous_question() {
         description: "first".into(),
     };
     coordinator.register_subtask_blocked(&inbound.id, &inbound, "s1", &reason1);
-    let q1_id = coordinator.question_state(&inbound.id, false).unwrap().question_id;
+    let q1_id = coordinator
+        .question_state(&inbound.id, false)
+        .unwrap()
+        .question_id;
 
     let reason2 = SubtaskBlockedReason::NeedsDecision {
         reason: "second".into(),
@@ -474,7 +483,10 @@ fn submit_answer_rejects_wrong_question_id() {
     let err = coordinator
         .submit_answer(&inbound.id, &answer, "answer".into())
         .unwrap_err();
-    assert!(err.to_string().contains("mismatch"), "error should mention mismatch: {err}");
+    assert!(
+        err.to_string().contains("mismatch"),
+        "error should mention mismatch: {err}"
+    );
 }
 
 #[test]
@@ -512,11 +524,15 @@ fn register_creates_transcript_entry() {
 fn auto_resolve_logic_matches_param_name_case_insensitive() {
     let user_request = "请使用 DB_URL=postgres://localhost/test 部署";
     let param_name = "db_url";
-    let matched = user_request.to_lowercase().contains(&param_name.to_lowercase());
+    let matched = user_request
+        .to_lowercase()
+        .contains(&param_name.to_lowercase());
     assert!(matched);
 
     let no_match_request = "请部署服务";
-    let not_matched = no_match_request.to_lowercase().contains(&param_name.to_lowercase());
+    let not_matched = no_match_request
+        .to_lowercase()
+        .contains(&param_name.to_lowercase());
     assert!(!not_matched);
 }
 
@@ -524,7 +540,9 @@ fn auto_resolve_logic_matches_param_name_case_insensitive() {
 fn auto_resolve_logic_matches_context_keyword() {
     let user_request = "我是管理员角色，请部署服务";
     let what_needed = "管理员角色";
-    let matched = user_request.to_lowercase().contains(&what_needed.to_lowercase());
+    let matched = user_request
+        .to_lowercase()
+        .contains(&what_needed.to_lowercase());
     assert!(matched);
 }
 
@@ -544,9 +562,9 @@ fn auto_resolve_skips_multiple_options_and_needs_decision() {
         SubtaskBlockedReason::MissingParameter { name, .. } => {
             user_request.to_lowercase().contains(&name.to_lowercase())
         }
-        SubtaskBlockedReason::MissingContext { what_needed } => {
-            user_request.to_lowercase().contains(&what_needed.to_lowercase())
-        }
+        SubtaskBlockedReason::MissingContext { what_needed } => user_request
+            .to_lowercase()
+            .contains(&what_needed.to_lowercase()),
         _ => false,
     };
     assert!(!can_resolve_opts);
@@ -555,9 +573,9 @@ fn auto_resolve_skips_multiple_options_and_needs_decision() {
         SubtaskBlockedReason::MissingParameter { name, .. } => {
             user_request.to_lowercase().contains(&name.to_lowercase())
         }
-        SubtaskBlockedReason::MissingContext { what_needed } => {
-            user_request.to_lowercase().contains(&what_needed.to_lowercase())
-        }
+        SubtaskBlockedReason::MissingContext { what_needed } => user_request
+            .to_lowercase()
+            .contains(&what_needed.to_lowercase()),
         _ => false,
     };
     assert!(!can_resolve_decision);
@@ -581,9 +599,9 @@ fn cleared_question_no_longer_returned_by_question_state() {
 
 #[test]
 fn worker_extracts_blocked_reason_from_response() {
+    use anima_runtime::agent::{make_task, MakeTask};
     use anima_runtime::worker::executor::TaskExecutor;
     use anima_runtime::worker::WorkerPool;
-    use anima_runtime::agent::{make_task, MakeTask};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -645,13 +663,13 @@ fn worker_extracts_blocked_reason_from_response() {
 
 #[test]
 fn orchestrator_propagates_blocked_reason_on_final_result() {
-    use anima_runtime::worker::executor::TaskExecutor;
-    use anima_runtime::worker::WorkerPool;
+    use anima_runtime::messages::types::ContentBlock;
     use anima_runtime::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
     use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
     use anima_runtime::provider::{ChatRequest, ChatResponse, Provider, ProviderError, StopReason};
-    use anima_runtime::messages::types::ContentBlock;
     use anima_runtime::runtime::{RuntimeStateStore, StateStore};
+    use anima_runtime::worker::executor::TaskExecutor;
+    use anima_runtime::worker::WorkerPool;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -743,7 +761,9 @@ fn main_agent_llm_resolves_blocked_subtask() {
 
     impl EscalationResolvedExecutor {
         fn new() -> Self {
-            Self { call_count: AtomicUsize::new(0) }
+            Self {
+                call_count: AtomicUsize::new(0),
+            }
         }
     }
 
@@ -834,7 +854,9 @@ fn main_agent_llm_cannot_resolve_falls_through_to_suspension() {
 
     impl EscalationFailedExecutor {
         fn new() -> Self {
-            Self { call_count: AtomicUsize::new(0) }
+            Self {
+                call_count: AtomicUsize::new(0),
+            }
         }
     }
 

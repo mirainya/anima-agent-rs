@@ -1,7 +1,7 @@
-use anima_runtime::classifier::rule::ClassificationKind;
-use anima_runtime::classifier::ai::*;
 use anima_runtime::bus::{make_inbound, MakeInbound};
 use anima_runtime::cache::LruCache;
+use anima_runtime::classifier::ai::*;
+use anima_runtime::classifier::rule::ClassificationKind;
 use serde_json::json;
 use std::sync::Arc;
 

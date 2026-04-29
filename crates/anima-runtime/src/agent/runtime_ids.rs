@@ -54,10 +54,22 @@ mod tests {
     #[test]
     fn task_id_all_phases() {
         assert_eq!(runtime_task_id("j", RuntimeTaskPhase::Main), "task_j_main");
-        assert_eq!(runtime_task_id("j", RuntimeTaskPhase::Question), "task_j_question");
-        assert_eq!(runtime_task_id("j", RuntimeTaskPhase::ToolPermission), "task_j_tool_permission");
-        assert_eq!(runtime_task_id("j", RuntimeTaskPhase::Followup), "task_j_followup");
-        assert_eq!(runtime_task_id("j", RuntimeTaskPhase::Requirement), "task_j_requirement");
+        assert_eq!(
+            runtime_task_id("j", RuntimeTaskPhase::Question),
+            "task_j_question"
+        );
+        assert_eq!(
+            runtime_task_id("j", RuntimeTaskPhase::ToolPermission),
+            "task_j_tool_permission"
+        );
+        assert_eq!(
+            runtime_task_id("j", RuntimeTaskPhase::Followup),
+            "task_j_followup"
+        );
+        assert_eq!(
+            runtime_task_id("j", RuntimeTaskPhase::Requirement),
+            "task_j_requirement"
+        );
     }
 
     #[test]
@@ -73,7 +85,10 @@ mod tests {
     #[test]
     fn execution_kind_labels() {
         assert_eq!(execution_kind_label(ExecutionKind::Initial), "initial");
-        assert_eq!(execution_kind_label(ExecutionKind::QuestionContinuation), "question_continuation");
+        assert_eq!(
+            execution_kind_label(ExecutionKind::QuestionContinuation),
+            "question_continuation"
+        );
         assert_eq!(execution_kind_label(ExecutionKind::Followup), "followup");
     }
 }

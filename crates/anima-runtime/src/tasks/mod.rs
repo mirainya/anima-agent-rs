@@ -3,11 +3,13 @@ pub(crate) mod model;
 pub(crate) mod query;
 pub(crate) mod scheduler;
 
-pub use lifecycle::{mark_task_completed, mark_task_failed, mark_task_running, mark_task_suspended};
+pub use lifecycle::{
+    mark_task_completed, mark_task_failed, mark_task_running, mark_task_suspended,
+};
 pub use model::{
     RequirementRecord, RequirementStatus, RunRecord, RunStatus, RuntimeTaskIndex,
-    SubtaskBlockedReason, SuspensionKind, SuspensionRecord, SuspensionStatus, TaskKind,
-    TaskRecord, TaskStatus, ToolInvocationRuntimeRecord, TurnRecord, TurnStatus,
+    SubtaskBlockedReason, SuspensionKind, SuspensionRecord, SuspensionStatus, TaskKind, TaskRecord,
+    TaskStatus, ToolInvocationRuntimeRecord, TurnRecord, TurnStatus,
 };
 pub use query::{
     active_requirement, active_suspension, active_turn, invocation_by_question_id,

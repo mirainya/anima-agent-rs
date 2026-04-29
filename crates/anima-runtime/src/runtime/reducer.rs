@@ -98,8 +98,8 @@ pub fn reduce_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::model::*;
     use crate::messages::types::ContentBlock;
+    use crate::tasks::model::*;
     use crate::transcript::model::MessageRecord;
     use serde_json::json;
 
@@ -168,7 +168,12 @@ mod tests {
     #[test]
     fn run_upserted_inserts_run_and_index() {
         let mut state = RuntimeStateSnapshot::default();
-        apply(&mut state, RuntimeDomainEvent::RunUpserted { run: make_run("r1", "j1") });
+        apply(
+            &mut state,
+            RuntimeDomainEvent::RunUpserted {
+                run: make_run("r1", "j1"),
+            },
+        );
         assert!(state.runs.contains_key("r1"));
         assert_eq!(state.index.run_ids_by_job_id.get("j1"), Some(&"r1".into()));
     }
@@ -176,8 +181,18 @@ mod tests {
     #[test]
     fn turn_upserted_updates_parent_run() {
         let mut state = RuntimeStateSnapshot::default();
-        apply(&mut state, RuntimeDomainEvent::RunUpserted { run: make_run("r1", "j1") });
-        apply(&mut state, RuntimeDomainEvent::TurnUpserted { turn: make_turn("t1", "r1") });
+        apply(
+            &mut state,
+            RuntimeDomainEvent::RunUpserted {
+                run: make_run("r1", "j1"),
+            },
+        );
+        apply(
+            &mut state,
+            RuntimeDomainEvent::TurnUpserted {
+                turn: make_turn("t1", "r1"),
+            },
+        );
         assert_eq!(state.runs["r1"].current_turn_id, Some("t1".into()));
         assert!(state.turns.contains_key("t1"));
     }
@@ -186,7 +201,10 @@ mod tests {
     fn task_upserted_maintains_plan_index_dedup() {
         let mut state = RuntimeStateSnapshot::default();
         let task = make_task("tk1", Some("plan_a"));
-        apply(&mut state, RuntimeDomainEvent::TaskUpserted { task: task.clone() });
+        apply(
+            &mut state,
+            RuntimeDomainEvent::TaskUpserted { task: task.clone() },
+        );
         apply(&mut state, RuntimeDomainEvent::TaskUpserted { task });
         let ids = &state.index.task_ids_by_plan_id["plan_a"];
         assert_eq!(ids.len(), 1);
@@ -196,7 +214,12 @@ mod tests {
     #[test]
     fn task_without_plan_id_skips_index() {
         let mut state = RuntimeStateSnapshot::default();
-        apply(&mut state, RuntimeDomainEvent::TaskUpserted { task: make_task("tk1", None) });
+        apply(
+            &mut state,
+            RuntimeDomainEvent::TaskUpserted {
+                task: make_task("tk1", None),
+            },
+        );
         assert!(state.index.task_ids_by_plan_id.is_empty());
         assert!(state.tasks.contains_key("tk1"));
     }
@@ -223,9 +246,18 @@ mod tests {
             resolved_at_ms: None,
             cleared_at_ms: None,
         };
-        apply(&mut state, RuntimeDomainEvent::SuspensionUpserted { suspension });
-        assert_eq!(state.index.suspension_ids_by_question_id.get("q1"), Some(&"s1".into()));
-        assert_eq!(state.index.invocation_ids_by_question_id.get("q1"), Some(&"inv1".into()));
+        apply(
+            &mut state,
+            RuntimeDomainEvent::SuspensionUpserted { suspension },
+        );
+        assert_eq!(
+            state.index.suspension_ids_by_question_id.get("q1"),
+            Some(&"s1".into())
+        );
+        assert_eq!(
+            state.index.invocation_ids_by_question_id.get("q1"),
+            Some(&"inv1".into())
+        );
     }
 
     #[test]
@@ -246,7 +278,10 @@ mod tests {
             started_at_ms: 0,
             finished_at_ms: None,
         };
-        apply(&mut state, RuntimeDomainEvent::ToolInvocationUpserted { invocation: inv });
+        apply(
+            &mut state,
+            RuntimeDomainEvent::ToolInvocationUpserted { invocation: inv },
+        );
         assert!(state.tool_invocations.contains_key("inv1"));
     }
 
@@ -267,7 +302,10 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
         };
-        apply(&mut state, RuntimeDomainEvent::RequirementUpserted { requirement: req });
+        apply(
+            &mut state,
+            RuntimeDomainEvent::RequirementUpserted { requirement: req },
+        );
         assert!(state.requirements.contains_key("req1"));
     }
 
@@ -285,7 +323,10 @@ mod tests {
             filtered: false,
             appended_at_ms: 0,
         };
-        apply(&mut state, RuntimeDomainEvent::MessageAppended { message: msg });
+        apply(
+            &mut state,
+            RuntimeDomainEvent::MessageAppended { message: msg },
+        );
         assert_eq!(state.transcript.len(), 1);
         assert_eq!(state.transcript[0].message_id, "m1");
     }
@@ -293,12 +334,15 @@ mod tests {
     #[test]
     fn projection_hint_recorded_uses_scope_dot_key() {
         let mut state = RuntimeStateSnapshot::default();
-        apply(&mut state, RuntimeDomainEvent::ProjectionHintRecorded {
-            run_id: "r1".into(),
-            scope: "job".into(),
-            key: "lifecycle".into(),
-            value: json!({"status": "done"}),
-        });
+        apply(
+            &mut state,
+            RuntimeDomainEvent::ProjectionHintRecorded {
+                run_id: "r1".into(),
+                scope: "job".into(),
+                key: "lifecycle".into(),
+                value: json!({"status": "done"}),
+            },
+        );
         let hints = &state.projection_hints["r1"];
         assert!(hints.contains_key("job.lifecycle"));
     }

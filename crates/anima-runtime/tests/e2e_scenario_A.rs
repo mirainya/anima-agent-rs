@@ -45,10 +45,7 @@ fn e2e_act1_backend_readonly_smoke() {
     let started = Instant::now();
 
     let created = sessions::create_session(&client, None).expect("create_session ok");
-    let session_id = created["id"]
-        .as_str()
-        .expect("session has id")
-        .to_string();
+    let session_id = created["id"].as_str().expect("session has id").to_string();
     assert!(
         session_id.starts_with("ses_"),
         "unexpected session id: {session_id}"
@@ -108,7 +105,10 @@ fn e2e_act2_single_turn_real_llm() {
             outbound.content.chars().take(80).collect::<String>()
         ),
     );
-    assert!(!outbound.content.is_empty(), "outbound content must not be empty");
+    assert!(
+        !outbound.content.is_empty(),
+        "outbound content must not be empty"
+    );
     assert!(
         !outbound.content.starts_with("Error ["),
         "outbound should not be an error envelope: {}",
@@ -157,7 +157,10 @@ fn e2e_act3_multi_turn_session_reuse() {
     let client = make_client();
 
     let before_ids = snapshot_session_ids(&client);
-    log("act3", format!("before: {} existing sessions", before_ids.len()));
+    log(
+        "act3",
+        format!("before: {} existing sessions", before_ids.len()),
+    );
 
     let bus = Arc::new(Bus::create());
     let agent = Agent::create(
@@ -207,7 +210,11 @@ fn e2e_act3_multi_turn_session_reuse() {
         .collect();
     log(
         "act3",
-        format!("after: {} sessions, newly created: {:?}", after_ids.len(), new_ids),
+        format!(
+            "after: {} sessions, newly created: {:?}",
+            after_ids.len(),
+            new_ids
+        ),
     );
     assert_eq!(
         new_ids.len(),
@@ -218,15 +225,12 @@ fn e2e_act3_multi_turn_session_reuse() {
     );
 
     let new_session_id = &new_ids[0];
-    let listed = messages::list_messages(&client, new_session_id, None)
-        .expect("list_messages ok");
+    let listed = messages::list_messages(&client, new_session_id, None).expect("list_messages ok");
     let count = listed.as_array().map(Vec::len).unwrap_or_default();
     let (user_count, assistant_count) = count_roles(&listed);
     log(
         "act3",
-        format!(
-            "list_messages: total={count} user={user_count} assistant={assistant_count}"
-        ),
+        format!("list_messages: total={count} user={user_count} assistant={assistant_count}"),
     );
     assert!(
         count >= 4,

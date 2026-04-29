@@ -102,7 +102,8 @@ pub fn quick_classify(message: &str) -> Option<AiClassificationResult> {
 
 // ── AI Classifier ───────────────────────────────────────────────────
 
-pub static DEFAULT_CLASSIFICATION_PROMPT: &str = anima_types::config::DEFAULT_MESSAGE_CLASSIFIER_PROMPT;
+pub static DEFAULT_CLASSIFICATION_PROMPT: &str =
+    anima_types::config::DEFAULT_MESSAGE_CLASSIFIER_PROMPT;
 
 pub struct AiClassifier {
     pub id: String,

@@ -39,32 +39,19 @@ pub async fn get_tool_ids(
     client: &AsyncClient,
     params: Option<&Map<String, Value>>,
 ) -> Result<Value> {
-    utils::handle_response(
-        http::get_request(client, "/experimental/tool/ids", params).await?,
-    )
+    utils::handle_response(http::get_request(client, "/experimental/tool/ids", params).await?)
 }
 
-pub async fn list_tools(
-    client: &AsyncClient,
-    params: &Map<String, Value>,
-) -> Result<Value> {
+pub async fn list_tools(client: &AsyncClient, params: &Map<String, Value>) -> Result<Value> {
     utils::validate_required(params, &["provider", "model"])?;
-    utils::handle_response(
-        http::get_request(client, "/experimental/tool", Some(params)).await?,
-    )
+    utils::handle_response(http::get_request(client, "/experimental/tool", Some(params)).await?)
 }
 
-pub async fn get_path(
-    client: &AsyncClient,
-    params: Option<&Map<String, Value>>,
-) -> Result<Value> {
+pub async fn get_path(client: &AsyncClient, params: Option<&Map<String, Value>>) -> Result<Value> {
     utils::handle_response(http::get_request(client, "/path", params).await?)
 }
 
-pub async fn write_log(
-    client: &AsyncClient,
-    params: &Map<String, Value>,
-) -> Result<Value> {
+pub async fn write_log(client: &AsyncClient, params: &Map<String, Value>) -> Result<Value> {
     utils::validate_required(params, &["service", "level", "message"])?;
     let level = params
         .get("level")
@@ -82,9 +69,7 @@ pub async fn write_log(
         body.insert("extra".into(), extra.clone());
     }
 
-    utils::handle_response(
-        http::post_request(client, "/log", &Value::Object(body), None).await?,
-    )
+    utils::handle_response(http::post_request(client, "/log", &Value::Object(body), None).await?)
 }
 
 pub async fn get_mcp_status(

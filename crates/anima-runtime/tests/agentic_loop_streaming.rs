@@ -32,7 +32,8 @@ impl StreamingApiCallExecutor {
 
 impl TaskExecutor for StreamingApiCallExecutor {
     fn send_prompt(
-        &self,        _session_id: &str,
+        &self,
+        _session_id: &str,
         _content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         self.sync_call_count.fetch_add(1, Ordering::SeqCst);
@@ -44,15 +45,19 @@ impl TaskExecutor for StreamingApiCallExecutor {
     }
 
     fn send_prompt_streaming(
-        &self,        _session_id: &str,
+        &self,
+        _session_id: &str,
         _content: Value,
-    ) -> Result<anima_runtime::worker::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
+    ) -> Result<
+        anima_runtime::worker::executor::UnifiedStreamSource,
+        anima_runtime::agent::runtime_error::RuntimeError,
+    > {
         let idx = self.streaming_call_count.fetch_add(1, Ordering::SeqCst);
-        let lines = self
-            .sse_sequences
-            .get(idx)
-            .cloned()
-            .ok_or_else(|| anima_runtime::agent::runtime_error::RuntimeError::from("no more streaming mock sequences"))?;
+        let lines = self.sse_sequences.get(idx).cloned().ok_or_else(|| {
+            anima_runtime::agent::runtime_error::RuntimeError::from(
+                "no more streaming mock sequences",
+            )
+        })?;
         Ok(Box::new(lines.into_iter().map(Ok)))
     }
 }
@@ -65,11 +70,11 @@ fn make_pool(
     executor: Arc<dyn TaskExecutor>,
     events: Arc<Mutex<Vec<(String, Value)>>>,
 ) -> WorkerPool {
-    WorkerPool::new(executor, Some(1), None, Some(200)).with_runtime_event_publisher(
-        Arc::new(move |_trace_id, event, payload| {
+    WorkerPool::new(executor, Some(1), None, Some(200)).with_runtime_event_publisher(Arc::new(
+        move |_trace_id, event, payload| {
             events.lock().unwrap().push((event.to_string(), payload));
-        }),
-    )
+        },
+    ))
 }
 
 fn collect_event_names(events: &[(String, Value)]) -> Vec<String> {

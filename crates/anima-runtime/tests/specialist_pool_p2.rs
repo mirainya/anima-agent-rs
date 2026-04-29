@@ -1,6 +1,6 @@
-use anima_runtime::worker::executor::TaskExecutor;
-use anima_runtime::orchestrator::specialist_pool::*;
 use anima_runtime::agent::types::*;
+use anima_runtime::orchestrator::specialist_pool::*;
+use anima_runtime::worker::executor::TaskExecutor;
 use anima_runtime::worker::WorkerPool;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -8,7 +8,8 @@ use std::sync::Arc;
 struct EchoExecutor;
 impl TaskExecutor for EchoExecutor {
     fn send_prompt(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({

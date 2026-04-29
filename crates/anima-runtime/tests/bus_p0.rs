@@ -64,7 +64,10 @@ fn inbound_drop_updates_last_drop_timestamp_and_emits_internal_event() {
             break;
         }
     }
-    assert!(seen_drop_event, "expected bus_message_dropped internal event");
+    assert!(
+        seen_drop_event,
+        "expected bus_message_dropped internal event"
+    );
 }
 
 #[test]
@@ -355,17 +358,20 @@ fn inbound_uses_dropping_outbound_uses_sliding() {
 #[test]
 fn core_agent_stops_on_shutdown_signal() {
     use anima_runtime::agent::{CoreAgent, TaskExecutor};
-        use serde_json::Value;
+    use serde_json::Value;
 
     struct NoopExecutor;
     impl TaskExecutor for NoopExecutor {
         fn send_prompt(
-            &self,            _session_id: &str,
+            &self,
+            _session_id: &str,
             _content: Value,
         ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!("ok"))
         }
-        fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+        fn create_session(
+            &self,
+        ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
             Ok(json!({"id": "noop"}))
         }
     }

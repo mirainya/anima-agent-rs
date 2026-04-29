@@ -145,7 +145,9 @@ where
                     .map_err(|err| AnimaError::Transport(err.to_string()))?;
                 if should_retry_status(status) && attempt < client.options.max_retries {
                     attempt += 1;
-                    thread::sleep(Duration::from_millis(client.options.backoff_delay_ms(attempt)));
+                    thread::sleep(Duration::from_millis(
+                        client.options.backoff_delay_ms(attempt),
+                    ));
                     continue;
                 }
                 return Ok(parse_response(status, &body));
@@ -153,7 +155,9 @@ where
             Err(err) => {
                 if attempt < client.options.max_retries {
                     attempt += 1;
-                    thread::sleep(Duration::from_millis(client.options.backoff_delay_ms(attempt)));
+                    thread::sleep(Duration::from_millis(
+                        client.options.backoff_delay_ms(attempt),
+                    ));
                     continue;
                 }
                 return Err(AnimaError::Transport(err.to_string()));
@@ -183,7 +187,8 @@ pub fn post_request(
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    let request_body = serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?;
+    let request_body =
+        serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?;
     send_with_retry(client, || {
         client
             .http_client
@@ -201,7 +206,8 @@ pub fn patch_request(
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    let request_body = serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?;
+    let request_body =
+        serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?;
     send_with_retry(client, || {
         client
             .http_client
@@ -219,7 +225,8 @@ pub fn put_request(
     params: Option<&Map<String, Value>>,
 ) -> Result<ApiResponse> {
     let url = add_query_params(build_url(&client.base_url, endpoint), params);
-    let request_body = serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?;
+    let request_body =
+        serde_json::to_string(body).map_err(|err| AnimaError::Json(err.to_string()))?;
     send_with_retry(client, || {
         client
             .http_client

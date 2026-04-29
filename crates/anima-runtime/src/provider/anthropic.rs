@@ -36,7 +36,9 @@ impl AnthropicProvider {
         self
     }
 
-    pub fn from_config(config: &anima_types::config::ProviderConfig) -> Result<Self, ProviderError> {
+    pub fn from_config(
+        config: &anima_types::config::ProviderConfig,
+    ) -> Result<Self, ProviderError> {
         let api_key = std::env::var(&config.api_key_env).map_err(|_| {
             ProviderError::new(
                 ProviderErrorKind::Authentication,
@@ -116,7 +118,11 @@ impl Provider for AnthropicProvider {
             let text = resp.text().unwrap_or_default();
             let msg = serde_json::from_str::<Value>(&text)
                 .ok()
-                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(String::from))
+                .and_then(|v| {
+                    v.pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .map(String::from)
+                })
                 .unwrap_or_else(|| format!("HTTP {status}"));
             return Err(ProviderError::new(kind, msg));
         }
@@ -127,7 +133,9 @@ impl Provider for AnthropicProvider {
 
         let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
         let blocks = blocks_from_value(&content_value, None);
-        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let has_tool_use = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
 
         let stop_reason = if has_tool_use {
             StopReason::ToolUse
@@ -167,7 +175,11 @@ impl Provider for AnthropicProvider {
             let text = resp.text().unwrap_or_default();
             let msg = serde_json::from_str::<Value>(&text)
                 .ok()
-                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(String::from))
+                .and_then(|v| {
+                    v.pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .map(String::from)
+                })
                 .unwrap_or_else(|| format!("HTTP {status}"));
             return Err(ProviderError::new(ProviderErrorKind::StreamFailed, msg));
         }

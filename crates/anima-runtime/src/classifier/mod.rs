@@ -10,9 +10,9 @@ pub use ai::{
     AiClassificationType, AiClassifier, DEFAULT_CLASSIFICATION_PROMPT,
 };
 pub use router::{
-    format_response, DialogContext, FormattedResponse, IntelligentRouter,
-    IntelligentRouterConfig, ProcessResult, ProcessStatus, RouterMetrics, RoutedDialog,
-    RoutedDialogStatus, SpecialistDef, DEFAULT_SPECIALISTS,
+    format_response, DialogContext, FormattedResponse, IntelligentRouter, IntelligentRouterConfig,
+    ProcessResult, ProcessStatus, RoutedDialog, RoutedDialogStatus, RouterMetrics, SpecialistDef,
+    DEFAULT_SPECIALISTS,
 };
 pub use rule::{AgentClassifier, ClassificationDecision, ClassificationKind};
 pub use task::{

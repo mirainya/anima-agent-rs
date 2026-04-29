@@ -8,23 +8,23 @@
 
 use crate::agent::detect_pending_question;
 use crate::agent::runtime_error::AgentError;
-use crate::provider::Provider;
 use crate::agent::types::{
     make_task, make_task_result, ExecutionPlan, ExecutionPlanKind, MakeTask, MakeTaskResult, Task,
     TaskResult,
 };
-use crate::worker::WorkerPool;
 use crate::orchestrator::parallel_pool::ParallelPool;
 use crate::orchestrator::specialist_pool::SpecialistPool;
+use crate::provider::Provider;
 use crate::runtime::{RuntimeDomainEvent, SharedRuntimeStateStore};
 use crate::support::now_ms;
 use crate::tasks::query::{plan_task, subtasks_for_plan};
 use crate::tasks::{TaskKind, TaskRecord, TaskStatus};
+use crate::worker::WorkerPool;
 use indexmap::IndexMap;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use parking_lot::Mutex;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -229,7 +229,9 @@ impl AgentOrchestrator {
             running: AtomicBool::new(false),
             metrics: Mutex::new(OrchestratorMetrics::default()),
             provider: parking_lot::RwLock::new(None),
-            prompts: parking_lot::RwLock::new(Arc::new(anima_types::config::PromptsConfig::default())),
+            prompts: parking_lot::RwLock::new(Arc::new(
+                anima_types::config::PromptsConfig::default(),
+            )),
         }
     }
 
@@ -501,9 +503,7 @@ impl AgentOrchestrator {
     }
 
     pub fn metrics(&self) -> OrchestratorMetrics {
-        self.metrics
-            .lock()
-            .clone()
+        self.metrics.lock().clone()
     }
 
     // ── Task Decomposition ────────────────────────────────────────
@@ -520,12 +520,7 @@ impl AgentOrchestrator {
     ) -> OrchestrationPlan {
         if let Some(sid) = session_id {
             if let Some(specs) = self.try_llm_decompose(request, sid) {
-                return self.build_plan_from_llm_specs(
-                    specs,
-                    request,
-                    trace_id,
-                    parent_job_id,
-                );
+                return self.build_plan_from_llm_specs(specs, request, trace_id, parent_job_id);
             }
         }
 
@@ -756,13 +751,19 @@ impl AgentOrchestrator {
             return Err(AgentError::OrchestrationForcedFallback);
         }
 
-        let plan = Arc::new(self.decompose_task(request, trace_id, parent_job_id, Some(session_id)));
-        let was_decomposed = plan.subtasks.len() > 1
-            || plan.matched_rule.is_some();
+        let plan =
+            Arc::new(self.decompose_task(request, trace_id, parent_job_id, Some(session_id)));
+        let was_decomposed = plan.subtasks.len() > 1 || plan.matched_rule.is_some();
         if !was_decomposed {
             return Err(AgentError::OrchestrationNoDecomposition);
         }
-        self.execute_orchestration_plan_impl(plan, request, parent_job_id, session_id, publish_event)
+        self.execute_orchestration_plan_impl(
+            plan,
+            request,
+            parent_job_id,
+            session_id,
+            publish_event,
+        )
     }
 
     /// Execute a pre-built OrchestrationPlan (used by agentic loop fallback).
@@ -777,8 +778,14 @@ impl AgentOrchestrator {
     where
         F: FnMut(&str, Value),
     {
-        self.execute_orchestration_plan_impl(plan, request, parent_job_id, session_id, publish_event)
-            .map(|r| r.result)
+        self.execute_orchestration_plan_impl(
+            plan,
+            request,
+            parent_job_id,
+            session_id,
+            publish_event,
+        )
+        .map(|r| r.result)
     }
 
     fn execute_orchestration_plan_impl<F>(
@@ -962,9 +969,10 @@ impl AgentOrchestrator {
             }
         }
 
-        let mut final_result = if let Some(result) = last_success.as_ref().filter(|result| {
-            detect_pending_question(result.result.as_ref(), session_id).is_some()
-        }) {
+        let mut final_result = if let Some(result) = last_success
+            .as_ref()
+            .filter(|result| detect_pending_question(result.result.as_ref(), session_id).is_some())
+        {
             result.clone()
         } else {
             self.build_orchestration_final_result(
@@ -1314,9 +1322,7 @@ impl AgentOrchestrator {
     ) where
         F: FnMut(&str, Value),
     {
-        *subtask
-            .completed_at
-            .lock() = Some(now_ms());
+        *subtask.completed_at.lock() = Some(now_ms());
         *subtask.result.lock() = Some(result.clone());
         {
             let mut m = self.metrics.lock();
@@ -1700,8 +1706,7 @@ impl AgentOrchestrator {
                 let mut receivers = Vec::new();
                 for name in group {
                     if let Some(subtask) = plan.subtasks.get(name) {
-                        *subtask.started_at.lock() =
-                            Some(now_ms());
+                        *subtask.started_at.lock() = Some(now_ms());
 
                         let task = make_task(MakeTask {
                             trace_id: Some(subtask.trace_id.clone()),
@@ -1738,9 +1743,7 @@ impl AgentOrchestrator {
                     });
 
                     if let Some(subtask) = plan.subtasks.get(&name) {
-                        *subtask
-                            .completed_at
-                            .lock() = Some(now_ms());
+                        *subtask.completed_at.lock() = Some(now_ms());
 
                         let mut m = self.metrics.lock();
                         m.subtasks_executed += 1;
@@ -1753,8 +1756,7 @@ impl AgentOrchestrator {
                                 fail_result = Some(result.clone());
                             }
                         }
-                        *subtask.result.lock() =
-                            Some(result.clone());
+                        *subtask.result.lock() = Some(result.clone());
                     }
                 }
 
@@ -1830,9 +1832,7 @@ impl AgentOrchestrator {
             })
         };
 
-        *subtask
-            .completed_at
-            .lock() = Some(now_ms());
+        *subtask.completed_at.lock() = Some(now_ms());
 
         {
             let mut m = self.metrics.lock();
@@ -2102,12 +2102,8 @@ mod tests {
     #[test]
     fn topo_sort_diamond_dependency() {
         // a → b, a → c, b → d, c → d
-        let subtasks = build_subtasks(&[
-            ("a", &[]),
-            ("b", &["a"]),
-            ("c", &["a"]),
-            ("d", &["b", "c"]),
-        ]);
+        let subtasks =
+            build_subtasks(&[("a", &[]), ("b", &["a"]), ("c", &["a"]), ("d", &["b", "c"])]);
         let order = AgentOrchestrator::topological_sort(&subtasks);
         let pos = |n: &str| order.iter().position(|x| x == n).unwrap();
         assert!(pos("a") < pos("b"));
@@ -2119,10 +2115,7 @@ mod tests {
     #[test]
     fn topo_sort_single_task() {
         let subtasks = build_subtasks(&[("only", &[])]);
-        assert_eq!(
-            AgentOrchestrator::topological_sort(&subtasks),
-            vec!["only"]
-        );
+        assert_eq!(AgentOrchestrator::topological_sort(&subtasks), vec!["only"]);
     }
 
     #[test]
@@ -2156,12 +2149,8 @@ mod tests {
 
     #[test]
     fn parallel_groups_diamond() {
-        let subtasks = build_subtasks(&[
-            ("a", &[]),
-            ("b", &["a"]),
-            ("c", &["a"]),
-            ("d", &["b", "c"]),
-        ]);
+        let subtasks =
+            build_subtasks(&[("a", &[]), ("b", &["a"]), ("c", &["a"]), ("d", &["b", "c"])]);
         let order = AgentOrchestrator::topological_sort(&subtasks);
         let groups = AgentOrchestrator::compute_parallel_groups(&subtasks, &order);
         assert_eq!(groups.len(), 3);
@@ -2174,12 +2163,7 @@ mod tests {
     #[test]
     fn parallel_groups_mixed() {
         // a, b independent; c depends on a; d depends on b
-        let subtasks = build_subtasks(&[
-            ("a", &[]),
-            ("b", &[]),
-            ("c", &["a"]),
-            ("d", &["b"]),
-        ]);
+        let subtasks = build_subtasks(&[("a", &[]), ("b", &[]), ("c", &["a"]), ("d", &["b"])]);
         let order = AgentOrchestrator::topological_sort(&subtasks);
         let groups = AgentOrchestrator::compute_parallel_groups(&subtasks, &order);
         assert_eq!(groups.len(), 2);
@@ -2194,7 +2178,10 @@ mod tests {
     #[test]
     fn extract_result_text_string_content() {
         let v = json!({"content": "hello world"});
-        assert_eq!(AgentOrchestrator::extract_result_text(Some(&v)), "hello world");
+        assert_eq!(
+            AgentOrchestrator::extract_result_text(Some(&v)),
+            "hello world"
+        );
     }
 
     #[test]
@@ -2204,13 +2191,19 @@ mod tests {
             {"type": "image"},
             {"type": "text", "text": "part2"}
         ]});
-        assert_eq!(AgentOrchestrator::extract_result_text(Some(&v)), "part1\npart2");
+        assert_eq!(
+            AgentOrchestrator::extract_result_text(Some(&v)),
+            "part1\npart2"
+        );
     }
 
     #[test]
     fn extract_result_text_plain_string() {
         let v = json!("just a string");
-        assert_eq!(AgentOrchestrator::extract_result_text(Some(&v)), "just a string");
+        assert_eq!(
+            AgentOrchestrator::extract_result_text(Some(&v)),
+            "just a string"
+        );
     }
 
     #[test]

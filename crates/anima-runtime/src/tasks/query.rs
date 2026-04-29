@@ -171,7 +171,14 @@ mod tests {
         }
     }
 
-    fn task(id: &str, run_id: &str, plan_id: Option<&str>, parent: Option<&str>, started: Option<u64>, updated: u64) -> TaskRecord {
+    fn task(
+        id: &str,
+        run_id: &str,
+        plan_id: Option<&str>,
+        parent: Option<&str>,
+        started: Option<u64>,
+        updated: u64,
+    ) -> TaskRecord {
         TaskRecord {
             task_id: id.into(),
             run_id: run_id.into(),
@@ -201,9 +208,12 @@ mod tests {
     #[test]
     fn tasks_for_run_sorted_by_started_at() {
         let mut snap = make_snapshot();
-        snap.tasks.insert("t1".into(), task("t1", "r1", None, None, Some(300), 300));
-        snap.tasks.insert("t2".into(), task("t2", "r1", None, None, Some(100), 100));
-        snap.tasks.insert("t3".into(), task("t3", "r1", None, None, Some(200), 200));
+        snap.tasks
+            .insert("t1".into(), task("t1", "r1", None, None, Some(300), 300));
+        snap.tasks
+            .insert("t2".into(), task("t2", "r1", None, None, Some(100), 100));
+        snap.tasks
+            .insert("t3".into(), task("t3", "r1", None, None, Some(200), 200));
         let result = tasks_for_run(&snap, "r1");
         let ids: Vec<&str> = result.iter().map(|t| t.task_id.as_str()).collect();
         assert_eq!(ids, vec!["t2", "t3", "t1"]);
@@ -212,8 +222,10 @@ mod tests {
     #[test]
     fn tasks_for_run_fallback_to_updated_at() {
         let mut snap = make_snapshot();
-        snap.tasks.insert("t1".into(), task("t1", "r1", None, None, None, 50));
-        snap.tasks.insert("t2".into(), task("t2", "r1", None, None, None, 100));
+        snap.tasks
+            .insert("t1".into(), task("t1", "r1", None, None, None, 50));
+        snap.tasks
+            .insert("t2".into(), task("t2", "r1", None, None, None, 100));
         let result = tasks_for_run(&snap, "r1");
         let ids: Vec<&str> = result.iter().map(|t| t.task_id.as_str()).collect();
         assert_eq!(ids, vec!["t1", "t2"]);
@@ -223,7 +235,9 @@ mod tests {
     fn run_by_job_id_uses_index() {
         let mut snap = make_snapshot();
         snap.runs.insert("r1".into(), run("r1", "j1"));
-        snap.index.run_ids_by_job_id.insert("j1".into(), "r1".into());
+        snap.index
+            .run_ids_by_job_id
+            .insert("j1".into(), "r1".into());
         assert_eq!(run_by_job_id(&snap, "j1").unwrap().run_id, "r1");
         assert!(run_by_job_id(&snap, "missing").is_none());
     }
@@ -237,56 +251,68 @@ mod tests {
         snap.tasks.insert("root".into(), root);
         snap.tasks.insert("sub1".into(), sub1);
         snap.tasks.insert("sub2".into(), sub2);
-        snap.index.task_ids_by_plan_id.insert("p1".into(), vec!["root".into(), "sub1".into(), "sub2".into()]);
+        snap.index.task_ids_by_plan_id.insert(
+            "p1".into(),
+            vec!["root".into(), "sub1".into(), "sub2".into()],
+        );
 
         assert_eq!(plan_task(&snap, "p1").unwrap().task_id, "root");
-        let subs: Vec<&str> = subtasks_for_plan(&snap, "p1").iter().map(|t| t.task_id.as_str()).collect();
+        let subs: Vec<&str> = subtasks_for_plan(&snap, "p1")
+            .iter()
+            .map(|t| t.task_id.as_str())
+            .collect();
         assert_eq!(subs, vec!["sub1", "sub2"]);
     }
 
     #[test]
     fn active_suspension_only_returns_active() {
         let mut snap = make_snapshot();
-        snap.suspensions.insert("s1".into(), SuspensionRecord {
-            suspension_id: "s1".into(),
-            run_id: "r1".into(),
-            turn_id: "t1".into(),
-            task_id: None,
-            question_id: None,
-            invocation_id: None,
-            kind: SuspensionKind::Question,
-            status: SuspensionStatus::Resolved,
-            prompt: None,
-            options: vec![],
-            raw_payload: json!({}),
-            resolution_source: None,
-            answer_summary: None,
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            resolved_at_ms: None,
-            cleared_at_ms: None,
-        });
+        snap.suspensions.insert(
+            "s1".into(),
+            SuspensionRecord {
+                suspension_id: "s1".into(),
+                run_id: "r1".into(),
+                turn_id: "t1".into(),
+                task_id: None,
+                question_id: None,
+                invocation_id: None,
+                kind: SuspensionKind::Question,
+                status: SuspensionStatus::Resolved,
+                prompt: None,
+                options: vec![],
+                raw_payload: json!({}),
+                resolution_source: None,
+                answer_summary: None,
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                resolved_at_ms: None,
+                cleared_at_ms: None,
+            },
+        );
         assert!(active_suspension(&snap, "r1").is_none());
 
-        snap.suspensions.insert("s2".into(), SuspensionRecord {
-            suspension_id: "s2".into(),
-            run_id: "r1".into(),
-            turn_id: "t1".into(),
-            task_id: None,
-            question_id: None,
-            invocation_id: None,
-            kind: SuspensionKind::Question,
-            status: SuspensionStatus::Active,
-            prompt: None,
-            options: vec![],
-            raw_payload: json!({}),
-            resolution_source: None,
-            answer_summary: None,
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            resolved_at_ms: None,
-            cleared_at_ms: None,
-        });
+        snap.suspensions.insert(
+            "s2".into(),
+            SuspensionRecord {
+                suspension_id: "s2".into(),
+                run_id: "r1".into(),
+                turn_id: "t1".into(),
+                task_id: None,
+                question_id: None,
+                invocation_id: None,
+                kind: SuspensionKind::Question,
+                status: SuspensionStatus::Active,
+                prompt: None,
+                options: vec![],
+                raw_payload: json!({}),
+                resolution_source: None,
+                answer_summary: None,
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                resolved_at_ms: None,
+                cleared_at_ms: None,
+            },
+        );
         assert_eq!(active_suspension(&snap, "r1").unwrap().suspension_id, "s2");
     }
 
@@ -311,6 +337,9 @@ mod tests {
         snap.tool_invocations.insert("i1".into(), inv("i1", 100));
         snap.tool_invocations.insert("i2".into(), inv("i2", 300));
         snap.tool_invocations.insert("i3".into(), inv("i3", 200));
-        assert_eq!(latest_tool_invocation(&snap, "r1").unwrap().invocation_id, "i2");
+        assert_eq!(
+            latest_tool_invocation(&snap, "r1").unwrap().invocation_id,
+            "i2"
+        );
     }
 }

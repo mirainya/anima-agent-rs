@@ -174,19 +174,27 @@ mod tests {
     #[test]
     fn thinking_block_round_trip() {
         let blocks = vec![
-            ContentBlock::Thinking { thinking: "let me think...".into() },
-            ContentBlock::Text { text: "answer".into() },
+            ContentBlock::Thinking {
+                thinking: "let me think...".into(),
+            },
+            ContentBlock::Text {
+                text: "answer".into(),
+            },
         ];
         let val = value_from_blocks(&blocks);
         let restored = blocks_from_value(&val, None);
         assert_eq!(restored.len(), 2);
-        assert!(matches!(&restored[0], ContentBlock::Thinking { thinking } if thinking == "let me think..."));
+        assert!(
+            matches!(&restored[0], ContentBlock::Thinking { thinking } if thinking == "let me think...")
+        );
         assert!(matches!(&restored[1], ContentBlock::Text { text } if text == "answer"));
     }
 
     #[test]
     fn thinking_block_serializes_to_wire_format() {
-        let blocks = vec![ContentBlock::Thinking { thinking: "hmm".into() }];
+        let blocks = vec![ContentBlock::Thinking {
+            thinking: "hmm".into(),
+        }];
         let val = value_from_blocks(&blocks);
         let arr = val.as_array().unwrap();
         assert_eq!(arr[0], json!({"type": "thinking", "thinking": "hmm"}));

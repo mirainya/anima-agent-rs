@@ -163,11 +163,7 @@ impl ChannelRegistry {
     }
 
     pub fn channel_count(&self) -> usize {
-        self.channels
-            .lock()
-            .values()
-            .map(IndexMap::len)
-            .sum()
+        self.channels.lock().values().map(IndexMap::len).sum()
     }
 
     pub fn start_all(&self) {

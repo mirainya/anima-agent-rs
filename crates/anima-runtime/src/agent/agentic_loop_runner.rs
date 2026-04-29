@@ -223,13 +223,11 @@ impl CoreAgent {
             Ok(AgenticLoopOutcome::Completed(loop_result)) => {
                 self.finalize_completed_agentic_loop_run(inbound_msg, started, loop_result)
             }
-            Ok(AgenticLoopOutcome::Suspended(_)) => {
-                self.build_failed_agentic_loop_task_result(
-                    inbound_msg,
-                    started,
-                    "followup suspended on tool permission",
-                )
-            }
+            Ok(AgenticLoopOutcome::Suspended(_)) => self.build_failed_agentic_loop_task_result(
+                inbound_msg,
+                started,
+                "followup suspended on tool permission",
+            ),
             Err(err) => {
                 let runtime_error = err.to_runtime_error();
                 self.build_failed_agentic_loop_task_result_from_runtime_error(
@@ -320,8 +318,14 @@ impl CoreAgent {
         }
         // Validate that items look like subtask specs (must have "name" and "description")
         let all_valid = specs.iter().all(|s| {
-            s.get("name").and_then(|v| v.as_str()).filter(|v| !v.is_empty()).is_some()
-                && s.get("description").and_then(|v| v.as_str()).filter(|v| !v.is_empty()).is_some()
+            s.get("name")
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+                .is_some()
+                && s.get("description")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.is_empty())
+                    .is_some()
         });
         if !all_valid {
             return None;
@@ -389,7 +393,8 @@ impl CoreAgent {
     }
 
     fn is_auto_approval_mode(&self) -> bool {
-        self.auto_approve_tools.load(std::sync::atomic::Ordering::Relaxed)
+        self.auto_approve_tools
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn auto_resume_suspended_tool(
@@ -434,14 +439,13 @@ impl CoreAgent {
             Ok(AgenticLoopOutcome::Completed(loop_result)) => {
                 self.finalize_completed_agentic_loop_run(inbound_msg, started, loop_result)
             }
-            Ok(AgenticLoopOutcome::Suspended(next_suspension)) => self
-                .auto_resume_suspended_tool(
-                    inbound_msg,
-                    _opencode_session_id,
-                    *next_suspension,
-                    config,
-                    started,
-                ),
+            Ok(AgenticLoopOutcome::Suspended(next_suspension)) => self.auto_resume_suspended_tool(
+                inbound_msg,
+                _opencode_session_id,
+                *next_suspension,
+                config,
+                started,
+            ),
             Err(err) => self.build_failed_agentic_loop_task_result_from_runtime_error(
                 inbound_msg,
                 started,

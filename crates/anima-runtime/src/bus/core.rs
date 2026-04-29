@@ -8,9 +8,7 @@
 //! - control（控制）：生命周期管理信号，使用 Sliding 策略
 
 use crate::agent::runtime_error::AgentError;
-use crate::bus::bounded::{
-    bounded_channel_full, BoundedReceiver, BoundedSender, BufferStrategy,
-};
+use crate::bus::bounded::{bounded_channel_full, BoundedReceiver, BoundedSender, BufferStrategy};
 use crate::bus::message::{
     make_internal, ControlMessage, InboundMessage, InternalMessage, InternalMessageType,
     MakeInternal, OutboundMessage,
@@ -116,12 +114,13 @@ impl Bus {
         let internal_last_drop_at_ms = Arc::new(AtomicU64::new(0));
         let control_last_drop_at_ms = Arc::new(AtomicU64::new(0));
 
-        let make_hook = |channel_name: &'static str, stamp: Arc<AtomicU64>| -> crate::bus::bounded::DropHook {
-            Arc::new(move || {
-                stamp.store(now_ms(), Ordering::SeqCst);
-                tracing::warn!(channel = channel_name, "bus message dropped (channel full)");
-            })
-        };
+        let make_hook =
+            |channel_name: &'static str, stamp: Arc<AtomicU64>| -> crate::bus::bounded::DropHook {
+                Arc::new(move || {
+                    stamp.store(now_ms(), Ordering::SeqCst);
+                    tracing::warn!(channel = channel_name, "bus message dropped (channel full)");
+                })
+            };
 
         let (inbound_tx, inbound_rx) = bounded_channel_full(
             BufferStrategy::Dropping(config.inbound_capacity),

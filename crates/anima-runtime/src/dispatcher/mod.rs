@@ -20,9 +20,9 @@ pub use control::{
 };
 pub use core::{start_dispatch_scheduler, start_dispatcher_outbound_loop, Dispatcher};
 pub use diagnostics::{
-    DispatchDiagnosticSnapshot, DispatchFailureStage, DispatchOutcomeReason,
-    DispatcherRouteReport, DispatcherRouteStatus, DispatcherState, DispatcherStats,
-    DispatcherStatsSnapshot, DispatcherStatus, RouteTargetStats,
+    DispatchDiagnosticSnapshot, DispatchFailureStage, DispatchOutcomeReason, DispatcherRouteReport,
+    DispatcherRouteStatus, DispatcherState, DispatcherStats, DispatcherStatsSnapshot,
+    DispatcherStatus, RouteTargetStats,
 };
 pub use message::{DispatchMessage, DispatcherConfig};
 pub use queue::{DispatchEnvelope, DispatchQueue, DispatchQueueSnapshot};

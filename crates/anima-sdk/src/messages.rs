@@ -45,7 +45,10 @@ pub fn execute_command(
     params: &Map<String, Value>,
 ) -> Result<Value> {
     let mut body = Map::new();
-    body.insert("arguments".into(), utils::require_param(params, "arguments")?);
+    body.insert(
+        "arguments".into(),
+        utils::require_param(params, "arguments")?,
+    );
     body.insert("command".into(), utils::require_param(params, "command")?);
     if let Some(agent) = params.get("agent") {
         body.insert("agent".into(), agent.clone());
@@ -87,7 +90,10 @@ pub fn revert_message(
     params: &Map<String, Value>,
 ) -> Result<Value> {
     let mut body = Map::new();
-    body.insert("messageID".into(), utils::require_param(params, "message-id")?);
+    body.insert(
+        "messageID".into(),
+        utils::require_param(params, "message-id")?,
+    );
     if let Some(part_id) = params.get("part-id") {
         body.insert("partID".into(), part_id.clone());
     }

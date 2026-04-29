@@ -333,8 +333,10 @@ impl SuspensionCoordinator {
             PendingQuestionSourceKind::PlanApproval => SuspensionKind::HumanApproval,
             _ => SuspensionKind::Question,
         };
-        let is_tool_permission =
-            matches!(question.source_kind, PendingQuestionSourceKind::ToolPermission);
+        let is_tool_permission = matches!(
+            question.source_kind,
+            PendingQuestionSourceKind::ToolPermission
+        );
         let invocation_id = question
             .raw_question
             .get("invocation_id")
@@ -1065,9 +1067,10 @@ impl SuspensionCoordinator {
             .lock()
             .insert(job_id.to_string(), pending.clone());
 
-        let inbound = pending.inbound.as_ref().ok_or_else(|| {
-            AgentError::MissingInboundContext(job_id.into())
-        })?;
+        let inbound = pending
+            .inbound
+            .as_ref()
+            .ok_or_else(|| AgentError::MissingInboundContext(job_id.into()))?;
 
         if matches!(
             pending.source_kind,
@@ -1359,10 +1362,22 @@ mod tests {
 
     #[test]
     fn source_kind_str_roundtrip() {
-        assert_eq!(source_kind_str(&PendingQuestionSourceKind::PlanApproval), "plan_approval");
-        assert_eq!(source_kind_str(&PendingQuestionSourceKind::ToolPermission), "tool_permission");
-        assert_eq!(source_kind_str(&PendingQuestionSourceKind::SubtaskBlocked), "subtask_blocked");
-        assert_eq!(source_kind_str(&PendingQuestionSourceKind::UpstreamQuestion), "upstream_question");
+        assert_eq!(
+            source_kind_str(&PendingQuestionSourceKind::PlanApproval),
+            "plan_approval"
+        );
+        assert_eq!(
+            source_kind_str(&PendingQuestionSourceKind::ToolPermission),
+            "tool_permission"
+        );
+        assert_eq!(
+            source_kind_str(&PendingQuestionSourceKind::SubtaskBlocked),
+            "subtask_blocked"
+        );
+        assert_eq!(
+            source_kind_str(&PendingQuestionSourceKind::UpstreamQuestion),
+            "upstream_question"
+        );
     }
 
     #[test]

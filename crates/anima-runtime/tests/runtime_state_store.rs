@@ -1,15 +1,15 @@
 use anima_runtime::messages::types::MessageRole;
+use anima_runtime::messages::ContentBlock;
 use anima_runtime::runtime::{build_projection, RuntimeDomainEvent, RuntimeStateStore, StateStore};
 use anima_runtime::support::now_ms;
-use std::path::PathBuf;
 use anima_runtime::tasks::{
     RequirementRecord, RequirementStatus, RunRecord, RunStatus, SuspensionKind, SuspensionRecord,
     SuspensionStatus, TaskKind, TaskRecord, TaskStatus, ToolInvocationRuntimeRecord, TurnRecord,
     TurnStatus,
 };
-use anima_runtime::messages::ContentBlock;
 use anima_runtime::transcript::{validate_pairing, MessageRecord};
 use serde_json::json;
+use std::path::PathBuf;
 
 #[test]
 fn reducer_updates_unified_runtime_snapshot() {
@@ -391,7 +391,10 @@ fn transcript_pairing_validator_reports_missing_tool_result() {
 
 fn temp_runtime_state_path(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
-    path.push(format!("anima_runtime_state_store_{name}_{}.json", now_ms()));
+    path.push(format!(
+        "anima_runtime_state_store_{name}_{}.json",
+        now_ms()
+    ));
     path
 }
 

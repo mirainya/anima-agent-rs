@@ -2,13 +2,13 @@
 //!
 //! 验证 register_all 注册、以及内置工具与 agentic loop 的端到端集成。
 
-use anima_runtime::provider::{Provider, ProviderError, ChatResponse, StopReason};
-use anima_runtime::provider::types::ChatRequest;
-use anima_runtime::messages::types::blocks_from_value;
 use anima_runtime::execution::agentic_loop::{
     run_agentic_loop, AgenticLoopConfig, AgenticLoopOutcome,
 };
+use anima_runtime::messages::types::blocks_from_value;
 use anima_runtime::messages::types::{ContentBlock, InternalMsg, MessageRole};
+use anima_runtime::provider::types::ChatRequest;
+use anima_runtime::provider::{ChatResponse, Provider, ProviderError, StopReason};
 use anima_runtime::tools::builtins::register_all;
 use anima_runtime::tools::registry::ToolRegistry;
 
@@ -36,13 +36,27 @@ impl SequenceExecutor {
 impl Provider for SequenceExecutor {
     fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-        let raw = self.responses.get(idx).cloned()
+        let raw = self
+            .responses
+            .get(idx)
+            .cloned()
             .ok_or_else(|| ProviderError::internal("no more mock responses"))?;
         let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
         let blocks = blocks_from_value(&content_value, None);
-        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-        let stop_reason = if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn };
-        Ok(ChatResponse { content: blocks, stop_reason, usage: None, raw })
+        let has_tool_use = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let stop_reason = if has_tool_use {
+            StopReason::ToolUse
+        } else {
+            StopReason::EndTurn
+        };
+        Ok(ChatResponse {
+            content: blocks,
+            stop_reason,
+            usage: None,
+            raw,
+        })
     }
 }
 

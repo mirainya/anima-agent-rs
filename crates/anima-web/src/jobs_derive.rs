@@ -13,7 +13,7 @@ use anima_runtime::runtime::{
     session_ready_current_step, tool_execution_failed_current_step,
     tool_execution_finished_current_step, tool_permission_resolved_current_step,
     tool_phase_current_step, tool_result_recorded_current_step, waiting_user_input_current_step,
-    ProjectionToolStateSummary, worker_executing_current_step, ProjectionJobStatusSummary,
+    worker_executing_current_step, ProjectionJobStatusSummary, ProjectionToolStateSummary,
     RuntimeProjectionView, RuntimeStateSnapshot,
 };
 use anima_runtime::support::now_ms;
@@ -89,15 +89,9 @@ pub(crate) fn source_kind_label(kind: &anima_runtime::agent::PendingQuestionSour
         anima_runtime::agent::PendingQuestionSourceKind::UpstreamQuestion => {
             "upstream_question".into()
         }
-        anima_runtime::agent::PendingQuestionSourceKind::ToolPermission => {
-            "tool_permission".into()
-        }
-        anima_runtime::agent::PendingQuestionSourceKind::SubtaskBlocked => {
-            "subtask_blocked".into()
-        }
-        anima_runtime::agent::PendingQuestionSourceKind::PlanApproval => {
-            "plan_approval".into()
-        }
+        anima_runtime::agent::PendingQuestionSourceKind::ToolPermission => "tool_permission".into(),
+        anima_runtime::agent::PendingQuestionSourceKind::SubtaskBlocked => "subtask_blocked".into(),
+        anima_runtime::agent::PendingQuestionSourceKind::PlanApproval => "plan_approval".into(),
     }
 }
 
@@ -165,7 +159,8 @@ pub(crate) fn runtime_status_with_worker(
         summary.status_label.as_str(),
         "executing" | "planning" | "preparing_context"
     ) {
-        let current_step = worker_executing_current_step(&worker.task_type, worker.phase.as_deref());
+        let current_step =
+            worker_executing_current_step(&worker.task_type, worker.phase.as_deref());
         return Some((JobStatus::Executing, "executing".into(), current_step));
     }
 
@@ -395,7 +390,11 @@ fn runtime_parent_job_id(snapshot: &RuntimeStateSnapshot, job_id: &str) -> Optio
         .find_map(|task| task.parent_job_id.clone())
 }
 
-fn latest_payload_string(events: &[JobEventView], event_names: &[&str], key: &str) -> Option<String> {
+fn latest_payload_string(
+    events: &[JobEventView],
+    event_names: &[&str],
+    key: &str,
+) -> Option<String> {
     events
         .iter()
         .rev()
@@ -471,7 +470,11 @@ pub(crate) fn derive_pending_question(events: &[RuntimeTimelineEvent]) -> Option
             .payload
             .get("prompt")
             .and_then(|value| value.as_str())
-            .or_else(|| normalized_raw_question.get("prompt").and_then(Value::as_str))
+            .or_else(|| {
+                normalized_raw_question
+                    .get("prompt")
+                    .and_then(Value::as_str)
+            })
             .unwrap_or_default()
             .to_string(),
         options: asked
@@ -617,7 +620,8 @@ pub(crate) fn derive_job_status(
                     .unwrap_or_else(|| "正在创建上游会话".into()),
             );
         }
-        let current_step = worker_executing_current_step(&worker.task_type, worker.phase.as_deref());
+        let current_step =
+            worker_executing_current_step(&worker.task_type, worker.phase.as_deref());
         return (JobStatus::Executing, "executing".into(), current_step);
     }
 
@@ -814,7 +818,11 @@ pub(crate) fn derive_tool_state(
         .payload
         .get("error_summary")
         .and_then(Value::as_str)
-        .or_else(|| details.and_then(|value| value.get("error")).and_then(Value::as_str))
+        .or_else(|| {
+            details
+                .and_then(|value| value.get("error"))
+                .and_then(Value::as_str)
+        })
         .or_else(|| {
             tool_invocation
                 .and_then(|value| value.get("error_summary"))

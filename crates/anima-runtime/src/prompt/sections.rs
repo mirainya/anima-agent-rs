@@ -10,8 +10,7 @@ use super::types::{EnvironmentInfo, PromptSection};
 pub(crate) fn identity_section(agent_name: &str) -> PromptSection {
     PromptSection {
         id: "identity".into(),
-        content: anima_types::config::DEFAULT_IDENTITY_PROMPT
-            .replace("{agent_name}", agent_name),
+        content: anima_types::config::DEFAULT_IDENTITY_PROMPT.replace("{agent_name}", agent_name),
         order: 0,
     }
 }

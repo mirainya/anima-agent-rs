@@ -6,11 +6,11 @@
 //! - 同时保留了向后兼容的简单 `execute` 接口
 
 use crate::agent::types::{make_task_result, MakeTaskResult, Task, TaskResult};
-use crate::worker::WorkerPool;
 use crate::support::now_ms;
+use crate::worker::WorkerPool;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
-use parking_lot::Mutex;
 use std::sync::Arc;
 use uuid::Uuid;
 

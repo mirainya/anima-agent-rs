@@ -1,8 +1,8 @@
+use anima_runtime::agent::types::ExecutionPlanKind;
 use anima_runtime::agent::{TaskExecutor, WorkerPool};
+use anima_runtime::bus::{make_inbound, MakeInbound};
 use anima_runtime::classifier::rule::{AgentClassifier, ClassificationKind};
 use anima_runtime::orchestrator::core::AgentOrchestrator;
-use anima_runtime::agent::types::ExecutionPlanKind;
-use anima_runtime::bus::{make_inbound, MakeInbound};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -11,7 +11,8 @@ struct MockExecutor;
 
 impl TaskExecutor for MockExecutor {
     fn send_prompt(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({

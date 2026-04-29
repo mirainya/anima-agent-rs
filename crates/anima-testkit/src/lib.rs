@@ -48,11 +48,7 @@ impl FakeExecutor {
 }
 
 impl TaskExecutor for FakeExecutor {
-    fn send_prompt(
-        &self,
-        session_id: &str,
-        content: Value,
-    ) -> Result<Value, RuntimeError> {
+    fn send_prompt(&self, session_id: &str, content: Value) -> Result<Value, RuntimeError> {
         if let Some(error) = &self.fail_prompts_with {
             return Err(error.clone().into());
         }

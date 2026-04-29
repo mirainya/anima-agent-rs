@@ -239,7 +239,9 @@ fn start_cli(opts: &CliOptions, config: &AnimaConfig) -> std::io::Result<()> {
 
 fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let opts = parse_args(std::env::args().skip(1));

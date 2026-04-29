@@ -3,18 +3,12 @@ use serde_json::{Map, Value};
 
 use crate::{client_async as http, facade_async::AsyncClient, utils};
 
-pub async fn list_files(
-    client: &AsyncClient,
-    params: &Map<String, Value>,
-) -> Result<Value> {
+pub async fn list_files(client: &AsyncClient, params: &Map<String, Value>) -> Result<Value> {
     utils::validate_required(params, &["path"])?;
     utils::handle_response(http::get_request(client, "/file", Some(params)).await?)
 }
 
-pub async fn read_file(
-    client: &AsyncClient,
-    params: &Map<String, Value>,
-) -> Result<Value> {
+pub async fn read_file(client: &AsyncClient, params: &Map<String, Value>) -> Result<Value> {
     utils::validate_required(params, &["path"])?;
     utils::handle_response(http::get_request(client, "/file/content", Some(params)).await?)
 }

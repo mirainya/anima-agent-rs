@@ -12,11 +12,8 @@ use super::context_types::{
     SessionPreparation,
 };
 use super::event_emitter::RuntimeEventEmitter;
-use crate::worker::executor::TaskExecutor;
-use crate::provider::{Provider, OpenCodeProvider};
 use super::requirement::RequirementCoordinator;
 use super::runtime_helpers::truncate_preview;
-use crate::worker::{WorkerPool, WorkerPoolStatus};
 use crate::bus::{
     make_internal, make_outbound, Bus, InboundMessage, MakeInternal, MakeOutbound, OutboundMessage,
 };
@@ -29,26 +26,27 @@ use crate::hooks::HookRegistry;
 use crate::orchestrator::core::{AgentOrchestrator, OrchestratorConfig};
 use crate::orchestrator::specialist_pool::SpecialistPool;
 use crate::permissions::PermissionChecker;
-use crate::runtime::{
-    RuntimeStateStore, SharedRuntimeStateStore,
-};
+use crate::provider::{OpenCodeProvider, Provider};
 use crate::runtime::{
     planning_ready_current_step, preparing_context_current_step, session_ready_current_step,
 };
+use crate::runtime::{RuntimeStateStore, SharedRuntimeStateStore};
 use crate::support::{now_ms, ContextManager, LruCache, MetricsCollector};
 use crate::tasks::{RunStatus, SuspensionKind, SuspensionStatus, TaskStatus, TurnStatus};
 use crate::tools::registry::ToolRegistry;
+use crate::worker::executor::TaskExecutor;
+use crate::worker::{WorkerPool, WorkerPoolStatus};
 
 pub use anima_types::event::{
     ExecutionStageDurations, ExecutionSummary, RuntimeFailureSnapshot, RuntimeFailureStatus,
     RuntimeTimelineEvent,
 };
 
+use super::suspension::SuspensionCoordinator;
 pub use super::suspension::{
     PendingQuestion, PendingQuestionSourceKind, QuestionAnswerInput, QuestionDecisionMode,
     QuestionKind, QuestionRiskLevel,
 };
-use super::suspension::SuspensionCoordinator;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionContext {
@@ -198,12 +196,15 @@ impl CoreAgent {
         );
         let specialist_pool = Arc::new(SpecialistPool::new(worker_pool.clone()));
         let provider: Arc<dyn Provider> = Arc::new(OpenCodeProvider::new(executor.clone()));
-        let orchestrator = Arc::new(AgentOrchestrator::new(
-            worker_pool.clone(),
-            specialist_pool,
-            runtime_state_store.clone(),
-            OrchestratorConfig::default(),
-        ).with_llm(provider.clone()));
+        let orchestrator = Arc::new(
+            AgentOrchestrator::new(
+                worker_pool.clone(),
+                specialist_pool,
+                runtime_state_store.clone(),
+                OrchestratorConfig::default(),
+            )
+            .with_llm(provider.clone()),
+        );
         let emitter = Arc::new(RuntimeEventEmitter::new(
             bus.clone(),
             worker_timeline.clone(),
@@ -235,7 +236,9 @@ impl CoreAgent {
             )),
             approval_mode: Arc::new(Mutex::new(ApprovalMode::default())),
             auto_approve_tools: Arc::new(AtomicBool::new(false)),
-            prompts: parking_lot::RwLock::new(Arc::new(anima_types::config::PromptsConfig::default())),
+            prompts: parking_lot::RwLock::new(Arc::new(
+                anima_types::config::PromptsConfig::default(),
+            )),
             running: AtomicBool::new(false),
             loop_handle: Mutex::new(None),
             control_handle: Mutex::new(None),
@@ -370,7 +373,9 @@ impl CoreAgent {
         let session_started = now_ms();
         let opencode_session_id = if !self.tool_registry.is_empty() {
             // Direct provider mode: skip SDK session, use local session ID
-            let local_id = inbound_msg.session_key.clone()
+            let local_id = inbound_msg
+                .session_key
+                .clone()
                 .unwrap_or_else(|| inbound_msg.id.clone());
             self.store_opencode_session_id(key, &local_id);
             local_id
@@ -520,9 +525,10 @@ impl CoreAgent {
         pending_question: Option<PendingQuestion>,
         followup_prompt: Option<String>,
     ) -> ContextAssemblyResult {
-        let progress = self
-            .requirement
-            .ensure(inbound_msg, super::context_types::DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS);
+        let progress = self.requirement.ensure(
+            inbound_msg,
+            super::context_types::DEFAULT_MAX_REQUIREMENT_FOLLOWUP_ROUNDS,
+        );
         assemble_context(ContextAssemblyRequest {
             mode,
             inbound_id: inbound_msg.id.clone(),

@@ -1,5 +1,5 @@
-use rusqlite::{params, Connection, Transaction};
 use parking_lot::Mutex;
+use rusqlite::{params, Connection, Transaction};
 use std::path::Path;
 
 pub struct SqliteStore {
@@ -13,12 +13,16 @@ impl SqliteStore {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn open_in_memory() -> Result<Self, rusqlite::Error> {
         let conn = Connection::open_in_memory()?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn ensure_table(&self, table: &str) -> Result<(), rusqlite::Error> {
@@ -86,7 +90,11 @@ impl SqliteStore {
         Ok(result)
     }
 
-    pub fn execute_in_transaction(&self, table: &str, ops: &[(&str, &str)]) -> Result<(), rusqlite::Error> {
+    pub fn execute_in_transaction(
+        &self,
+        table: &str,
+        ops: &[(&str, &str)],
+    ) -> Result<(), rusqlite::Error> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         for (id, data) in ops {
@@ -101,15 +109,15 @@ impl SqliteStore {
 
     pub fn count(&self, table: &str) -> Result<usize, rusqlite::Error> {
         let conn = self.conn.lock();
-        conn.query_row(&format!("SELECT COUNT(*) FROM [{table}]"), [], |row| row.get(0))
+        conn.query_row(&format!("SELECT COUNT(*) FROM [{table}]"), [], |row| {
+            row.get(0)
+        })
     }
 
     pub fn delete(&self, table: &str, id: &str) -> Result<bool, rusqlite::Error> {
         let conn = self.conn.lock();
-        let affected = conn.execute(
-            &format!("DELETE FROM [{table}] WHERE id = ?1"),
-            params![id],
-        )?;
+        let affected =
+            conn.execute(&format!("DELETE FROM [{table}] WHERE id = ?1"), params![id])?;
         Ok(affected > 0)
     }
 }
@@ -178,7 +186,9 @@ mod tests {
     fn transaction_batch() {
         let store = SqliteStore::open_in_memory().unwrap();
         store.ensure_table("t").unwrap();
-        store.execute_in_transaction("t", &[("a", "1"), ("b", "2")]).unwrap();
+        store
+            .execute_in_transaction("t", &[("a", "1"), ("b", "2")])
+            .unwrap();
         assert_eq!(store.count("t").unwrap(), 2);
     }
 }

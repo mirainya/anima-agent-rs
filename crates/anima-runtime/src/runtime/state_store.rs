@@ -211,7 +211,10 @@ impl StateStore for JsonStateStore {
 
     fn set_session_title(&self, chat_id: &str, title: String) {
         let mut inner = self.inner.lock();
-        inner.snapshot.session_titles.insert(chat_id.to_string(), title);
+        inner
+            .snapshot
+            .session_titles
+            .insert(chat_id.to_string(), title);
         if let Some(path) = &self.persistence_path {
             let persisted = PersistedRuntimeState {
                 version: RUNTIME_STATE_PERSISTENCE_VERSION,
@@ -238,8 +241,15 @@ impl StateStore for JsonStateStore {
 }
 
 const TABLES: &[&str] = &[
-    "runs", "turns", "tasks", "suspensions", "tool_invocations",
-    "requirements", "transcript", "events", "meta",
+    "runs",
+    "turns",
+    "tasks",
+    "suspensions",
+    "tool_invocations",
+    "requirements",
+    "transcript",
+    "events",
+    "meta",
 ];
 
 pub struct SqliteStateStore {
@@ -278,7 +288,10 @@ impl SqliteStateStore {
 
         Ok(Self {
             store,
-            inner: Mutex::new(SqliteStoreInner { next_sequence, snapshot }),
+            inner: Mutex::new(SqliteStoreInner {
+                next_sequence,
+                snapshot,
+            }),
         })
     }
 
@@ -287,7 +300,9 @@ impl SqliteStateStore {
 
         for (id, data) in store.get_all("runs").map_err(|e| e.to_string())? {
             if let Ok(r) = serde_json::from_str::<RunRecord>(&data) {
-                snap.index.run_ids_by_job_id.insert(r.job_id.clone(), id.clone());
+                snap.index
+                    .run_ids_by_job_id
+                    .insert(r.job_id.clone(), id.clone());
                 snap.runs.insert(id, r);
             }
         }
@@ -299,7 +314,11 @@ impl SqliteStateStore {
         for (id, data) in store.get_all("tasks").map_err(|e| e.to_string())? {
             if let Ok(r) = serde_json::from_str::<TaskRecord>(&data) {
                 if let Some(plan_id) = r.plan_id.clone() {
-                    snap.index.task_ids_by_plan_id.entry(plan_id).or_default().push(id.clone());
+                    snap.index
+                        .task_ids_by_plan_id
+                        .entry(plan_id)
+                        .or_default()
+                        .push(id.clone());
                 }
                 snap.tasks.insert(id, r);
             }
@@ -307,7 +326,9 @@ impl SqliteStateStore {
         for (id, data) in store.get_all("suspensions").map_err(|e| e.to_string())? {
             if let Ok(r) = serde_json::from_str::<SuspensionRecord>(&data) {
                 if let Some(qid) = r.question_id.clone() {
-                    snap.index.suspension_ids_by_question_id.insert(qid.clone(), id.clone());
+                    snap.index
+                        .suspension_ids_by_question_id
+                        .insert(qid.clone(), id.clone());
                     if let Some(inv_id) = r.invocation_id.clone() {
                         snap.index.invocation_ids_by_question_id.insert(qid, inv_id);
                     }
@@ -315,7 +336,10 @@ impl SqliteStateStore {
                 snap.suspensions.insert(id, r);
             }
         }
-        for (id, data) in store.get_all("tool_invocations").map_err(|e| e.to_string())? {
+        for (id, data) in store
+            .get_all("tool_invocations")
+            .map_err(|e| e.to_string())?
+        {
             if let Ok(r) = serde_json::from_str::<ToolInvocationRuntimeRecord>(&data) {
                 snap.tool_invocations.insert(id, r);
             }
@@ -325,7 +349,10 @@ impl SqliteStateStore {
                 snap.requirements.insert(id, r);
             }
         }
-        for (_id, data) in store.get_all_ordered("transcript").map_err(|e| e.to_string())? {
+        for (_id, data) in store
+            .get_all_ordered("transcript")
+            .map_err(|e| e.to_string())?
+        {
             if let Ok(r) = serde_json::from_str::<MessageRecord>(&data) {
                 snap.transcript.push(r);
             }
@@ -343,41 +370,80 @@ impl SqliteStateStore {
     fn persist_event(&self, event: &RuntimeDomainEvent, sequence: u64) {
         let event_type = match event {
             RuntimeDomainEvent::RunUpserted { run } => {
-                let _ = self.store.upsert("runs", &run.run_id, &serde_json::to_string(run).unwrap_or_default());
+                let _ = self.store.upsert(
+                    "runs",
+                    &run.run_id,
+                    &serde_json::to_string(run).unwrap_or_default(),
+                );
                 "run_upserted"
             }
             RuntimeDomainEvent::TurnUpserted { turn } => {
-                let _ = self.store.upsert("turns", &turn.turn_id, &serde_json::to_string(turn).unwrap_or_default());
+                let _ = self.store.upsert(
+                    "turns",
+                    &turn.turn_id,
+                    &serde_json::to_string(turn).unwrap_or_default(),
+                );
                 "turn_upserted"
             }
             RuntimeDomainEvent::TaskUpserted { task } => {
-                let _ = self.store.upsert("tasks", &task.task_id, &serde_json::to_string(task).unwrap_or_default());
+                let _ = self.store.upsert(
+                    "tasks",
+                    &task.task_id,
+                    &serde_json::to_string(task).unwrap_or_default(),
+                );
                 "task_upserted"
             }
             RuntimeDomainEvent::SuspensionUpserted { suspension } => {
-                let _ = self.store.upsert("suspensions", &suspension.suspension_id, &serde_json::to_string(suspension).unwrap_or_default());
+                let _ = self.store.upsert(
+                    "suspensions",
+                    &suspension.suspension_id,
+                    &serde_json::to_string(suspension).unwrap_or_default(),
+                );
                 "suspension_upserted"
             }
             RuntimeDomainEvent::ToolInvocationUpserted { invocation } => {
-                let _ = self.store.upsert("tool_invocations", &invocation.invocation_id, &serde_json::to_string(invocation).unwrap_or_default());
+                let _ = self.store.upsert(
+                    "tool_invocations",
+                    &invocation.invocation_id,
+                    &serde_json::to_string(invocation).unwrap_or_default(),
+                );
                 "tool_invocation_upserted"
             }
             RuntimeDomainEvent::RequirementUpserted { requirement } => {
-                let _ = self.store.upsert("requirements", &requirement.requirement_id, &serde_json::to_string(requirement).unwrap_or_default());
+                let _ = self.store.upsert(
+                    "requirements",
+                    &requirement.requirement_id,
+                    &serde_json::to_string(requirement).unwrap_or_default(),
+                );
                 "requirement_upserted"
             }
             RuntimeDomainEvent::MessageAppended { message } => {
-                let _ = self.store.append("transcript", &message.message_id, &serde_json::to_string(message).unwrap_or_default());
+                let _ = self.store.append(
+                    "transcript",
+                    &message.message_id,
+                    &serde_json::to_string(message).unwrap_or_default(),
+                );
                 "message_appended"
             }
-            RuntimeDomainEvent::ProjectionHintRecorded { run_id, scope, key, value } => {
+            RuntimeDomainEvent::ProjectionHintRecorded {
+                run_id,
+                scope,
+                key,
+                value,
+            } => {
                 let hint_key = format!("{run_id}.{scope}.{key}");
-                let _ = self.store.upsert("meta", &format!("hint:{hint_key}"), &value.to_string());
+                let _ = self
+                    .store
+                    .upsert("meta", &format!("hint:{hint_key}"), &value.to_string());
                 "projection_hint_recorded"
             }
         };
-        let _ = self.store.upsert("meta", "next_sequence", &sequence.to_string());
-        let _ = self.store.append("events", &sequence.to_string(), event_type);
+        let _ = self
+            .store
+            .upsert("meta", "next_sequence", &sequence.to_string());
+        let _ = self
+            .store
+            .append("events", &sequence.to_string(), event_type);
     }
 }
 
@@ -435,20 +501,29 @@ impl StateStore for SqliteStateStore {
                 }
             }
         }
-        let _ = self.store.delete("meta", &format!("session_title:{chat_id}"));
+        let _ = self
+            .store
+            .delete("meta", &format!("session_title:{chat_id}"));
         count
     }
 
     fn set_session_title(&self, chat_id: &str, title: String) {
         let mut inner = self.inner.lock();
-        inner.snapshot.session_titles.insert(chat_id.to_string(), title.clone());
-        let _ = self.store.upsert("meta", &format!("session_title:{chat_id}"), &title);
+        inner
+            .snapshot
+            .session_titles
+            .insert(chat_id.to_string(), title.clone());
+        let _ = self
+            .store
+            .upsert("meta", &format!("session_title:{chat_id}"), &title);
     }
 
     fn delete_session_title(&self, chat_id: &str) {
         let mut inner = self.inner.lock();
         inner.snapshot.session_titles.remove(chat_id);
-        let _ = self.store.delete("meta", &format!("session_title:{chat_id}"));
+        let _ = self
+            .store
+            .delete("meta", &format!("session_title:{chat_id}"));
     }
 }
 
@@ -496,7 +571,10 @@ mod tests {
         assert_eq!(seq, 1);
         let snap = store.snapshot();
         assert!(snap.runs.contains_key("r1"));
-        assert_eq!(snap.index.run_ids_by_job_id.get("j1"), Some(&"r1".to_string()));
+        assert_eq!(
+            snap.index.run_ids_by_job_id.get("j1"),
+            Some(&"r1".to_string())
+        );
     }
 
     #[test]

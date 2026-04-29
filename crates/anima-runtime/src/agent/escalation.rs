@@ -30,7 +30,10 @@ impl CoreAgent {
             }
         };
 
-        let prompt = self.prompts.read().escalation_resolve
+        let prompt = self
+            .prompts
+            .read()
+            .escalation_resolve
             .replace("{request}", &inbound_msg.content)
             .replace("{reason}", &reason_desc);
 

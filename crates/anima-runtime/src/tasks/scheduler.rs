@@ -76,9 +76,7 @@ mod tests {
 
     #[test]
     fn missing_dep_treated_as_satisfied() {
-        let ids = ready_task_ids(vec![
-            task("b", TaskStatus::Pending, vec!["nonexistent"]),
-        ]);
+        let ids = ready_task_ids(vec![task("b", TaskStatus::Pending, vec!["nonexistent"])]);
         assert_eq!(ids, vec!["b"]);
     }
 

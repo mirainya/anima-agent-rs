@@ -7,7 +7,7 @@ pub(crate) mod registry;
 pub mod session;
 
 pub use adapter::{
-    err, ok, success, error, Channel, SendOptions, SendResult, SentMessage, StreamingChannel,
+    err, error, ok, success, Channel, SendOptions, SendResult, SentMessage, StreamingChannel,
     TestChannel,
 };
 pub use dispatch::{
@@ -26,6 +26,4 @@ pub use registry::{
     ChannelHealth, ChannelLookupReason, ChannelLookupSnapshot, ChannelRegistry,
     ChannelRegistryEntry, HealthReport,
 };
-pub use session::{
-    FindSessionOptions, Session, SessionCreateOptions, SessionStats, SessionStore,
-};
+pub use session::{FindSessionOptions, Session, SessionCreateOptions, SessionStats, SessionStore};

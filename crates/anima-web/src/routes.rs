@@ -19,8 +19,7 @@ pub fn create_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/api/sessions/{session_id}",
-            delete(routes_commands::delete_session)
-                .patch(routes_commands::rename_session),
+            delete(routes_commands::delete_session).patch(routes_commands::rename_session),
         )
         .route("/api/events", get(routes_queries::sse_events))
         .route("/api/status", get(routes_queries::system_status))

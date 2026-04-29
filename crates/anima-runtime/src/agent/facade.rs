@@ -4,17 +4,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::core::{CoreAgent, CoreAgentStatus};
-use crate::worker::TaskExecutor;
 use super::runtime_error::AgentError;
 use super::suspension::{PendingQuestion, QuestionAnswerInput};
-use crate::worker::WorkerPool;
 use crate::bus::{Bus, InboundMessage};
-use anima_types::approval::ApprovalMode;
 use crate::channel::SessionStore;
 use crate::hooks::HookRegistry;
 use crate::permissions::PermissionChecker;
 use crate::provider::Provider;
 use crate::runtime::{RuntimeProjectionView, SharedRuntimeStateStore};
+use crate::worker::TaskExecutor;
+use crate::worker::WorkerPool;
+use anima_types::approval::ApprovalMode;
 
 pub struct Agent {
     pub bus: Arc<Bus>,
@@ -133,11 +133,15 @@ impl Agent {
     pub fn set_approval_mode(&self, mode: ApprovalMode) {
         let auto = matches!(mode, ApprovalMode::Auto);
         *self.core_agent.approval_mode.lock() = mode;
-        self.core_agent.auto_approve_tools.store(auto, std::sync::atomic::Ordering::Relaxed);
+        self.core_agent
+            .auto_approve_tools
+            .store(auto, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn set_auto_approve_tools(&self, enabled: bool) {
-        self.core_agent.auto_approve_tools.store(enabled, std::sync::atomic::Ordering::Relaxed);
+        self.core_agent
+            .auto_approve_tools
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn enable_llm_judge(&self) {
@@ -181,6 +185,8 @@ impl Agent {
     }
 
     pub fn set_session_title(&self, chat_id: &str, title: String) {
-        self.core_agent.runtime_state_store.set_session_title(chat_id, title);
+        self.core_agent
+            .runtime_state_store
+            .set_session_title(chat_id, title);
     }
 }

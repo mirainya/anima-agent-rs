@@ -68,14 +68,11 @@ impl Provider for OpenCodeProvider {
             .executor
             .send_prompt_streaming(&session_id, content)
             .map_err(map_executor_error)?;
-        Ok(Box::new(
-            lines
-                .filter_map(|r| match r {
-                    Err(e) => Some(Err(map_executor_error(e))),
-                    Ok(line) if line.trim().is_empty() => None,
-                    Ok(line) => Some(parse_sse_to_stream_event(line)),
-                }),
-        ))
+        Ok(Box::new(lines.filter_map(|r| match r {
+            Err(e) => Some(Err(map_executor_error(e))),
+            Ok(line) if line.trim().is_empty() => None,
+            Ok(line) => Some(parse_sse_to_stream_event(line)),
+        })))
     }
 
     fn label(&self) -> &str {
@@ -92,9 +89,8 @@ fn chat_request_to_value(req: &ChatRequest) -> Value {
         return Value::Null;
     }
 
-    let has_structured_messages = req.messages.len() > 1
-        || req.system.is_some()
-        || req.tools.is_some();
+    let has_structured_messages =
+        req.messages.len() > 1 || req.system.is_some() || req.tools.is_some();
 
     if has_structured_messages {
         let messages: Vec<Value> = req
@@ -166,10 +162,10 @@ fn value_to_chat_response(raw: Value) -> Result<ChatResponse, ProviderError> {
     })
 }
 
-fn parse_sse_to_stream_event(line: String) -> Result<crate::streaming::types::StreamEvent, ProviderError> {
-    let data = line
-        .strip_prefix("data: ")
-        .unwrap_or(&line);
+fn parse_sse_to_stream_event(
+    line: String,
+) -> Result<crate::streaming::types::StreamEvent, ProviderError> {
+    let data = line.strip_prefix("data: ").unwrap_or(&line);
     crate::streaming::parse_sse_event(data)
         .ok_or_else(|| ProviderError::internal(format!("unrecognized stream event: {data}")))
 }

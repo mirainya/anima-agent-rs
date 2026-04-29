@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use anima_runtime::agent::TaskExecutor;
-use anima_runtime::worker::WorkerPool;
 use anima_runtime::execution::driver::{execute_api_call, ApiCallExecutionRequest, ExecutionKind};
+use anima_runtime::worker::WorkerPool;
 use serde_json::{json, Value};
 
 #[derive(Debug, Default)]
@@ -12,7 +12,8 @@ struct RecordingExecutor {
 
 impl TaskExecutor for RecordingExecutor {
     fn send_prompt(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         self.payloads.lock().unwrap().push(content.clone());
@@ -30,12 +31,7 @@ impl TaskExecutor for RecordingExecutor {
 #[test]
 fn execute_api_call_sends_expected_payload() {
     let executor = Arc::new(RecordingExecutor::default());
-    let worker_pool = Arc::new(WorkerPool::new(
-        executor.clone(),
-        Some(1),
-        None,
-        None,
-    ));
+    let worker_pool = Arc::new(WorkerPool::new(executor.clone(), Some(1), None, None));
     worker_pool.start();
 
     let result = execute_api_call(

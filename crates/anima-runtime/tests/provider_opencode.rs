@@ -36,17 +36,14 @@ impl TaskExecutor for MockLlmExecutor {
         }))
     }
 
-    fn create_session(
-        &self,
-    ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
+    fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-1"}))
     }
 }
 
 #[test]
 fn chat_round_trip_with_session_in_metadata() {
-    let provider: Arc<dyn Provider> =
-        Arc::new(OpenCodeProvider::new(Arc::new(MockLlmExecutor)));
+    let provider: Arc<dyn Provider> = Arc::new(OpenCodeProvider::new(Arc::new(MockLlmExecutor)));
 
     let req = ChatRequest {
         messages: vec![ChatMessage {
@@ -75,8 +72,7 @@ fn chat_round_trip_with_session_in_metadata() {
 
 #[test]
 fn chat_round_trip_auto_creates_session() {
-    let provider: Arc<dyn Provider> =
-        Arc::new(OpenCodeProvider::new(Arc::new(MockLlmExecutor)));
+    let provider: Arc<dyn Provider> = Arc::new(OpenCodeProvider::new(Arc::new(MockLlmExecutor)));
 
     // 不传 session_id → 自动 create_session
     let req = ChatRequest {
@@ -116,8 +112,7 @@ fn chat_round_trip_with_preset_session() {
 
 #[test]
 fn chat_response_has_correct_content_blocks() {
-    let provider: Arc<dyn Provider> =
-        Arc::new(OpenCodeProvider::new(Arc::new(MockLlmExecutor)));
+    let provider: Arc<dyn Provider> = Arc::new(OpenCodeProvider::new(Arc::new(MockLlmExecutor)));
 
     let req = ChatRequest {
         messages: vec![ChatMessage {

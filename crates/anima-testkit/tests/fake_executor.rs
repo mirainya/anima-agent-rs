@@ -9,9 +9,7 @@ fn fake_executor_returns_configured_session_and_prompt_format() {
         .with_prompt_prefix("mock-reply");
 
     let session = executor.create_session().unwrap();
-    let prompt = executor
-        .send_prompt("session-x", json!("hello"))
-        .unwrap();
+    let prompt = executor.send_prompt("session-x", json!("hello")).unwrap();
 
     assert_eq!(session["id"], "session-x");
     assert_eq!(prompt["content"], "mock-reply[session-x]: hello");

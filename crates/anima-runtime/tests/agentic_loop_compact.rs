@@ -5,8 +5,8 @@ use anima_runtime::execution::agentic_loop::{
 };
 use anima_runtime::messages::compact::CompactConfig;
 use anima_runtime::messages::types::{blocks_from_value, ContentBlock, InternalMsg, MessageRole};
-use anima_runtime::provider::{ChatResponse, Provider, ProviderError, StopReason};
 use anima_runtime::provider::types::ChatRequest;
+use anima_runtime::provider::{ChatResponse, Provider, ProviderError, StopReason};
 use anima_runtime::tools::definition::{Tool, ToolContext};
 use anima_runtime::tools::registry::ToolRegistry;
 use anima_runtime::tools::result::{ToolError, ToolResult};
@@ -37,13 +37,27 @@ impl MockExecutor {
 impl Provider for MockExecutor {
     fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-        let raw = self.responses.get(idx).cloned()
+        let raw = self
+            .responses
+            .get(idx)
+            .cloned()
             .ok_or_else(|| ProviderError::internal("no more mock responses"))?;
         let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
         let blocks = blocks_from_value(&content_value, None);
-        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-        let stop_reason = if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn };
-        Ok(ChatResponse { content: blocks, stop_reason, usage: None, raw })
+        let has_tool_use = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let stop_reason = if has_tool_use {
+            StopReason::ToolUse
+        } else {
+            StopReason::EndTurn
+        };
+        Ok(ChatResponse {
+            content: blocks,
+            stop_reason,
+            usage: None,
+            raw,
+        })
     }
 }
 
@@ -68,7 +82,6 @@ impl Tool for BigEchoTool {
         Ok(ToolResult::text("x".repeat(8000)))
     }
 }
-
 
 fn make_user_msg(text: &str) -> InternalMsg {
     InternalMsg {
@@ -102,8 +115,7 @@ fn test_loop_compact_enabled_no_trigger() {
     };
     let initial = vec![make_user_msg("hello")];
 
-    let result =
-        run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
+    let result = run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
     let AgenticLoopOutcome::Completed(result) = result else {
         panic!("loop should complete");
@@ -146,8 +158,7 @@ fn test_loop_compact_triggered() {
     };
     let initial = vec![make_user_msg("run big echo 5 times")];
 
-    let result =
-        run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
+    let result = run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
     let AgenticLoopOutcome::Completed(result) = result else {
         panic!("loop should complete");
@@ -195,8 +206,7 @@ fn test_loop_compact_preserves_latest_turn() {
     };
     let initial = vec![make_user_msg("test")];
 
-    let result =
-        run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
+    let result = run_agentic_loop(&executor, &registry, None, None, initial, &config).unwrap();
 
     let AgenticLoopOutcome::Completed(result) = result else {
         panic!("loop should complete");

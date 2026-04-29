@@ -27,9 +27,7 @@ impl HookHandler for StopHook {
         }
 
         HookResult::TransformToolResult(ToolResult::error(build_feedback_message(
-            tool_name,
-            &text,
-            &lower,
+            tool_name, &text, &lower,
         )))
     }
 }
@@ -66,7 +64,10 @@ fn build_feedback_message(tool_name: &str, text: &str, lower: &str) -> String {
         "lint 检查失败，请根据下面的输出修复告警或错误后再继续。"
     } else if lower.contains("cargo test") || lower.contains("test failed") {
         "测试失败，请根据下面的输出修复失败项后再继续。"
-    } else if lower.contains("npm run build") || lower.contains("vite build") || lower.contains("build failed") {
+    } else if lower.contains("npm run build")
+        || lower.contains("vite build")
+        || lower.contains("build failed")
+    {
         "构建失败，请根据下面的输出修复构建错误后再继续。"
     } else if lower.contains("npm run lint") || lower.contains("eslint") {
         "前端 lint 检查失败，请根据下面的输出修复问题后再继续。"

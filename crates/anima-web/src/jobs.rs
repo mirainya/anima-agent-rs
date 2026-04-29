@@ -1,15 +1,14 @@
+use crate::jobs_derive::{
+    collect_recent_job_events, derive_job_hierarchy, derive_job_status, derive_orchestration_view,
+    derive_pending_question, derive_tool_state, failure_to_value, job_status_from_label,
+    match_worker, runtime_failure_from_run, runtime_pending_question_view,
+    runtime_status_with_worker, runtime_tool_state_view, summary_to_value,
+};
 pub use crate::jobs_store::JobStore;
 pub use crate::jobs_types::{
     AcceptedJob, JobEventView, JobKind, JobReviewInput, JobReviewView, JobStatus, JobView,
     OrchestrationView, PlanProposalView, PlanTaskView, QuestionView, ToolStateView, UserVerdict,
     WorkerTaskView,
-};
-use crate::jobs_derive::{
-    collect_recent_job_events, derive_job_hierarchy, derive_job_status,
-    derive_orchestration_view, derive_pending_question, derive_tool_state, failure_to_value,
-    job_status_from_label, match_worker, runtime_failure_from_run,
-    runtime_pending_question_view, runtime_status_with_worker, runtime_tool_state_view,
-    summary_to_value,
 };
 use anima_runtime::agent::{
     ExecutionSummary, PendingQuestionSourceKind, RuntimeFailureSnapshot, RuntimeTimelineEvent,
@@ -174,7 +173,10 @@ fn build_job_timeline_index(
         grouped.entry(job_id).or_default().push(event.clone());
     }
 
-    JobTimelineIndex { ordered_ids, grouped }
+    JobTimelineIndex {
+        ordered_ids,
+        grouped,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -204,8 +206,15 @@ fn build_job_view(
         .cloned();
     let review = store.review_for(job_id);
     let worker = match_worker(job_id, workers);
-    let started_at_ms = derive_started_at_ms(now, runtime_run, first.as_ref(), accepted_job.as_ref());
-    let updated_at_ms = derive_updated_at_ms(now, runtime_run, last.as_ref(), worker.as_ref(), started_at_ms);
+    let started_at_ms =
+        derive_started_at_ms(now, runtime_run, first.as_ref(), accepted_job.as_ref());
+    let updated_at_ms = derive_updated_at_ms(
+        now,
+        runtime_run,
+        last.as_ref(),
+        worker.as_ref(),
+        started_at_ms,
+    );
     let derived = derive_job_state(
         job_id,
         events,
@@ -253,15 +262,21 @@ fn build_job_view(
         .as_ref()
         .map(|job| job.user_content.clone())
         .or_else(|| {
-            events.iter().find(|e| e.event == "message_received")
+            events
+                .iter()
+                .find(|e| e.event == "message_received")
                 .and_then(|e| e.payload.get("content_preview"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         })
         .or_else(|| {
             let run = runtime_run?;
-            runtime_snapshot.transcript.iter()
-                .find(|m| m.run_id == run.run_id && m.role == anima_runtime::messages::MessageRole::User)
+            runtime_snapshot
+                .transcript
+                .iter()
+                .find(|m| {
+                    m.run_id == run.run_id && m.role == anima_runtime::messages::MessageRole::User
+                })
                 .and_then(|m| m.blocks.first())
                 .and_then(|b| match b {
                     anima_runtime::messages::ContentBlock::Text { text } => Some(text.clone()),
@@ -298,22 +313,46 @@ fn build_job_view(
     }
 }
 
-fn derive_pending_plan(job_id: &str, projection: &RuntimeProjectionView) -> Option<PlanProposalView> {
+fn derive_pending_plan(
+    job_id: &str,
+    projection: &RuntimeProjectionView,
+) -> Option<PlanProposalView> {
     let question = projection.pending_questions.get(job_id)?;
     if question.source_kind != PendingQuestionSourceKind::PlanApproval {
         return None;
     }
     let raw = &question.raw_question;
-    let proposal_id = raw.get("proposal_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let summary = raw.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let tasks = raw.get("plan")
+    let proposal_id = raw
+        .get("proposal_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let summary = raw
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let tasks = raw
+        .get("plan")
         .and_then(|p| p.get("tasks"))
         .and_then(|t| t.as_array())
-        .map(|arr| arr.iter().map(|t| PlanTaskView {
-            id: t.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            task_type: t.get("task_type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            payload: t.get("payload").cloned().unwrap_or_default(),
-        }).collect())
+        .map(|arr| {
+            arr.iter()
+                .map(|t| PlanTaskView {
+                    id: t
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    task_type: t
+                        .get("task_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    payload: t.get("payload").cloned().unwrap_or_default(),
+                })
+                .collect()
+        })
         .unwrap_or_default();
     Some(PlanProposalView {
         proposal_id,
@@ -455,9 +494,7 @@ fn apply_legacy_observability_fallback(
     let execution_summary = base
         .execution_summary
         .or_else(|| summary.map(summary_to_value));
-    let failure_value = base
-        .failure_value
-        .or_else(|| failure.map(failure_to_value));
+    let failure_value = base.failure_value.or_else(|| failure.map(failure_to_value));
 
     JobObservabilityState {
         pending_question,
@@ -501,7 +538,13 @@ fn derive_runtime_backed_status(
         worker,
         runtime_projection,
     )
-    .unwrap_or_else(|| (JobStatus::Queued, "queued".to_string(), queued_current_step()))
+    .unwrap_or_else(|| {
+        (
+            JobStatus::Queued,
+            "queued".to_string(),
+            queued_current_step(),
+        )
+    })
 }
 
 fn derive_legacy_status(context: LegacyStatusContext<'_>) -> (JobStatus, String, String) {
@@ -588,16 +631,16 @@ fn attach_orchestration_views(
     runtime_snapshot: &RuntimeStateSnapshot,
     runtime_projection: &RuntimeProjectionView,
 ) {
-    let child_ids_by_parent = jobs
-        .iter()
-        .fold(HashMap::<String, Vec<String>>::new(), |mut acc, job| {
-            if let Some(parent_job_id) = &job.parent_job_id {
-                acc.entry(parent_job_id.clone())
-                    .or_default()
-                    .push(job.job_id.clone());
-            }
-            acc
-        });
+    let child_ids_by_parent =
+        jobs.iter()
+            .fold(HashMap::<String, Vec<String>>::new(), |mut acc, job| {
+                if let Some(parent_job_id) = &job.parent_job_id {
+                    acc.entry(parent_job_id.clone())
+                        .or_default()
+                        .push(job.job_id.clone());
+                }
+                acc
+            });
 
     for job in jobs {
         if job.kind != JobKind::Main {
@@ -685,15 +728,18 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("legacy_failure")
         );
-        assert_eq!(jobs[0].execution_summary, Some(json!({
-            "plan_type": "single",
-            "status": "running",
-            "cache_hit": false,
-            "worker_id": null,
-            "error_code": null,
-            "error_stage": null,
-            "task_duration_ms": 10,
-            "stages": {}
-        })));
+        assert_eq!(
+            jobs[0].execution_summary,
+            Some(json!({
+                "plan_type": "single",
+                "status": "running",
+                "cache_hit": false,
+                "worker_id": null,
+                "error_code": null,
+                "error_stage": null,
+                "task_duration_ms": 10,
+                "stages": {}
+            }))
+        );
     }
 }

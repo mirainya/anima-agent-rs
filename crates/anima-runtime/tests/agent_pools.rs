@@ -1,7 +1,7 @@
+use anima_runtime::agent::types::{make_task, MakeTask};
 use anima_runtime::agent::{TaskExecutor, WorkerPool};
 use anima_runtime::orchestrator::parallel_pool::ParallelPool;
 use anima_runtime::orchestrator::specialist_pool::SpecialistPool;
-use anima_runtime::agent::types::{make_task, MakeTask};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -10,7 +10,8 @@ struct MockExecutor;
 
 impl TaskExecutor for MockExecutor {
     fn send_prompt(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({

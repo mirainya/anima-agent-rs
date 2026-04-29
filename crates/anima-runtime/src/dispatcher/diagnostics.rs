@@ -245,7 +245,9 @@ impl DispatcherRuntimeState {
         queue_depth: usize,
         queue_by_route: &IndexMap<String, usize>,
     ) -> DispatcherStatus {
-        let routes = balancers.lock().iter()
+        let routes = balancers
+            .lock()
+            .iter()
             .map(|(channel, balancer)| {
                 let balancer_status = balancer.balancer_status();
                 let diagnostics = balancer.diagnostics_snapshot();

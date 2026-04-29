@@ -203,12 +203,16 @@ impl SpecialistPool {
 
     /// 旧版注册：按名称关联一个 WorkerPool
     pub fn register(&self, specialist: impl Into<String>, worker_pool: Arc<WorkerPool>) {
-        self.specialists.lock().insert(specialist.into(), worker_pool);
+        self.specialists
+            .lock()
+            .insert(specialist.into(), worker_pool);
     }
 
     /// 旧版解析：按名称查找 WorkerPool，找不到则返回默认池
     pub fn resolve(&self, specialist: &str) -> Arc<WorkerPool> {
-        self.specialists.lock().get(specialist)
+        self.specialists
+            .lock()
+            .get(specialist)
             .cloned()
             .unwrap_or_else(|| self.default_pool.clone())
     }
@@ -265,7 +269,9 @@ impl SpecialistPool {
             pool: opts.pool,
         });
 
-        self.specialist_registry.lock().insert(opts.id.clone(), specialist);
+        self.specialist_registry
+            .lock()
+            .insert(opts.id.clone(), specialist);
 
         // Update capability index
         let mut caps = self.capabilities.lock();
@@ -283,9 +289,7 @@ impl SpecialistPool {
         // capabilities, then immediately drop the registry lock.
         let spec_caps: Option<Vec<String>> = {
             let registry = self.specialist_registry.lock();
-            registry
-                .get(id)
-                .map(|s| s.capabilities.lock().clone())
+            registry.get(id).map(|s| s.capabilities.lock().clone())
         };
 
         // Step 2: lock capabilities (no registry lock held) and clean up the

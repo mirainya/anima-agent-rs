@@ -1,10 +1,10 @@
 use anima_runtime::bus::{make_inbound, make_outbound, Bus, MakeInbound, MakeOutbound};
 use anima_runtime::channel::{ChannelLookupReason, ChannelRegistry, SessionStore, TestChannel};
+use anima_runtime::context::ContextManager;
 use anima_runtime::dispatcher::{
     Balancer, BalancerMissReason, BalancerOptions, BalancerRuntimeConfig, BalancerStrategy,
     CircuitBreakerConfig, Dispatcher, HealthPolicy, Target, TargetStatus,
 };
-use anima_runtime::context::ContextManager;
 use anima_runtime::metrics::MetricsCollector;
 use serde_json::json;
 use std::sync::Arc;

@@ -2,16 +2,16 @@
 //!
 //! 验证 agentic loop 与 ToolRegistry、MockExecutor、EchoTool 的端到端集成。
 
-use anima_runtime::provider::{Provider, ProviderError, ChatResponse, StopReason};
-use anima_runtime::provider::types::ChatRequest;
-use anima_runtime::messages::types::blocks_from_value;
 use anima_runtime::execution::agentic_loop::{
     continue_agentic_loop, resume_suspended_tool_invocation, run_agentic_loop, AgenticLoopConfig,
     AgenticLoopOutcome,
 };
 use anima_runtime::hooks::{HookEvent, HookHandler, HookRegistry, HookResult, StopHook};
+use anima_runtime::messages::types::blocks_from_value;
 use anima_runtime::messages::types::{ContentBlock, InternalMsg, MessageRole};
 use anima_runtime::permissions::{PermissionChecker, PermissionMode};
+use anima_runtime::provider::types::ChatRequest;
+use anima_runtime::provider::{ChatResponse, Provider, ProviderError, StopReason};
 use anima_runtime::tools::definition::{Tool, ToolContext};
 use anima_runtime::tools::registry::ToolRegistry;
 use anima_runtime::tools::result::{ToolError, ToolResult};
@@ -44,13 +44,27 @@ impl SequenceExecutor {
 impl Provider for SequenceExecutor {
     fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-        let raw = self.responses.get(idx).cloned()
+        let raw = self
+            .responses
+            .get(idx)
+            .cloned()
             .ok_or_else(|| ProviderError::internal("no more mock responses"))?;
         let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
         let blocks = blocks_from_value(&content_value, None);
-        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-        let stop_reason = if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn };
-        Ok(ChatResponse { content: blocks, stop_reason, usage: None, raw })
+        let has_tool_use = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let stop_reason = if has_tool_use {
+            StopReason::ToolUse
+        } else {
+            StopReason::EndTurn
+        };
+        Ok(ChatResponse {
+            content: blocks,
+            stop_reason,
+            usage: None,
+            raw,
+        })
     }
 }
 
@@ -188,7 +202,6 @@ impl Tool for FailingTool {
 // ---------------------------------------------------------------------------
 // 辅助
 // ---------------------------------------------------------------------------
-
 
 fn make_user_msg(text: &str) -> InternalMsg {
     InternalMsg {
@@ -412,16 +425,32 @@ fn agentic_loop_runs_safe_tools_concurrently_and_preserves_result_order() {
 
     let first_tool_result = &result.messages[2];
     let second_tool_result = &result.messages[3];
-    let ContentBlock::ToolResult { tool_use_id: id1, content: c1, .. } = &first_tool_result.blocks[0] else {
+    let ContentBlock::ToolResult {
+        tool_use_id: id1,
+        content: c1,
+        ..
+    } = &first_tool_result.blocks[0]
+    else {
         panic!("expected ToolResult");
     };
-    let ContentBlock::ToolResult { tool_use_id: id2, content: c2, .. } = &second_tool_result.blocks[0] else {
+    let ContentBlock::ToolResult {
+        tool_use_id: id2,
+        content: c2,
+        ..
+    } = &second_tool_result.blocks[0]
+    else {
         panic!("expected ToolResult");
     };
     assert_eq!(id1, "tu_safe_1");
-    assert!(c1.as_str().unwrap_or_default().contains("slow_read_a:first"));
+    assert!(c1
+        .as_str()
+        .unwrap_or_default()
+        .contains("slow_read_a:first"));
     assert_eq!(id2, "tu_safe_2");
-    assert!(c2.as_str().unwrap_or_default().contains("slow_read_b:second"));
+    assert!(c2
+        .as_str()
+        .unwrap_or_default()
+        .contains("slow_read_b:second"));
 }
 
 #[test]
@@ -498,11 +527,19 @@ fn agentic_loop_mixed_safe_and_unsafe_segments_preserve_order() {
         ("tu_mixed_4", "slow_read_c:fourth"),
     ];
     for (offset, (tool_use_id, content_fragment)) in expected.iter().enumerate() {
-        let ContentBlock::ToolResult { tool_use_id: tid, content, .. } = &result.messages[2 + offset].blocks[0] else {
+        let ContentBlock::ToolResult {
+            tool_use_id: tid,
+            content,
+            ..
+        } = &result.messages[2 + offset].blocks[0]
+        else {
             panic!("expected ToolResult block");
         };
         assert_eq!(tid, tool_use_id);
-        assert!(content.as_str().unwrap_or_default().contains(content_fragment));
+        assert!(content
+            .as_str()
+            .unwrap_or_default()
+            .contains(content_fragment));
     }
 }
 
@@ -590,13 +627,27 @@ impl Provider for CapturingExecutor {
     fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         self.captured_requests.lock().push(req);
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-        let raw = self.responses.get(idx).cloned()
+        let raw = self
+            .responses
+            .get(idx)
+            .cloned()
             .ok_or_else(|| ProviderError::internal("no more mock responses"))?;
         let content_value = raw.get("content").cloned().unwrap_or(Value::Null);
         let blocks = blocks_from_value(&content_value, None);
-        let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-        let stop_reason = if has_tool_use { StopReason::ToolUse } else { StopReason::EndTurn };
-        Ok(ChatResponse { content: blocks, stop_reason, usage: None, raw })
+        let has_tool_use = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let stop_reason = if has_tool_use {
+            StopReason::ToolUse
+        } else {
+            StopReason::EndTurn
+        };
+        Ok(ChatResponse {
+            content: blocks,
+            stop_reason,
+            usage: None,
+            raw,
+        })
     }
 }
 
@@ -741,12 +792,20 @@ fn agentic_loop_allow_resumes_original_tool_invocation() {
     };
     assert_eq!(result.final_text, "Approval finished.");
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { tool_use_id, content, is_error } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        tool_use_id,
+        content,
+        is_error,
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert_eq!(tool_use_id, "tu_perm_allow");
     assert!(!is_error);
-    assert!(content.as_str().unwrap_or_default().contains("echoed: approved"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("echoed: approved"));
 }
 
 #[test]
@@ -791,11 +850,17 @@ fn agentic_loop_pre_tool_transform_changes_actual_tool_input() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        is_error, content, ..
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert!(!is_error);
-    assert!(content.as_str().unwrap_or_default().contains("echoed: transformed"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("echoed: transformed"));
 }
 
 #[test]
@@ -841,7 +906,10 @@ fn agentic_loop_post_tool_stop_hook_transforms_failing_output() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        is_error, content, ..
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert!(*is_error);
@@ -894,7 +962,10 @@ fn agentic_loop_post_tool_stop_hook_passthrough_for_non_matching_error_output() 
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        is_error, content, ..
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert!(*is_error);
@@ -944,12 +1015,21 @@ fn agentic_loop_post_tool_stop_hook_transforms_clippy_output() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        is_error, content, ..
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert!(*is_error);
-    assert!(content.as_str().unwrap_or_default().contains("lint 检查失败"));
-    assert!(content.as_str().unwrap_or_default().contains("cargo clippy"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("lint 检查失败"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("cargo clippy"));
 }
 
 #[test]
@@ -995,12 +1075,21 @@ fn agentic_loop_post_tool_stop_hook_transforms_npm_lint_output() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        is_error, content, ..
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert!(*is_error);
-    assert!(content.as_str().unwrap_or_default().contains("前端 lint 检查失败"));
-    assert!(content.as_str().unwrap_or_default().contains("npm run lint"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("前端 lint 检查失败"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("npm run lint"));
 }
 
 #[test]
@@ -1043,11 +1132,17 @@ fn agentic_loop_post_tool_block_converts_output_to_error_result() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        is_error, content, ..
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert!(*is_error);
-    assert!(content.as_str().unwrap_or_default().contains("stop hook blocked output"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("stop hook blocked output"));
 }
 
 #[test]
@@ -1090,11 +1185,17 @@ fn agentic_loop_pre_tool_block_returns_error_tool_result() {
         panic!("agentic loop should complete");
     };
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        is_error, content, ..
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert!(*is_error);
-    assert!(content.as_str().unwrap_or_default().contains("blocked by hook: policy denied"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("blocked by hook: policy denied"));
 }
 
 #[test]
@@ -1166,7 +1267,10 @@ fn agentic_loop_resume_path_applies_pre_tool_transform() {
     let ContentBlock::ToolResult { content, .. } = &tool_result_msg.blocks[0] else {
         panic!("expected ToolResult block");
     };
-    assert!(content.as_str().unwrap_or_default().contains("echoed: transformed-on-resume"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("echoed: transformed-on-resume"));
 }
 
 #[test]
@@ -1236,7 +1340,10 @@ fn agentic_loop_resume_path_applies_post_tool_stop_hook() {
         panic!("loop should complete after allow");
     };
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        is_error, content, ..
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert!(*is_error);
@@ -1300,12 +1407,20 @@ fn agentic_loop_deny_injects_error_tool_result_and_continues() {
     };
     assert_eq!(result.final_text, "Denied path finished.");
     let tool_result_msg = &result.messages[2];
-    let ContentBlock::ToolResult { tool_use_id, is_error, content } = &tool_result_msg.blocks[0] else {
+    let ContentBlock::ToolResult {
+        tool_use_id,
+        is_error,
+        content,
+    } = &tool_result_msg.blocks[0]
+    else {
         panic!("expected ToolResult block");
     };
     assert_eq!(tool_use_id, "tu_perm_deny");
     assert!(*is_error);
-    assert!(content.as_str().unwrap_or_default().contains("denied by user"));
+    assert!(content
+        .as_str()
+        .unwrap_or_default()
+        .contains("denied by user"));
 }
 
 /// 验证 payload 中包含 tool definitions

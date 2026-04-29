@@ -489,7 +489,10 @@ fn derive_job_status_summary(
         if let Some(active_subtask_name) = summary.active_subtask_name.as_ref() {
             Some(format!("正在执行子任务：{active_subtask_name}"))
         } else if summary.total_subtasks > 0 {
-            Some(format!("orchestration v1：共 {} 个子任务", summary.total_subtasks))
+            Some(format!(
+                "orchestration v1：共 {} 个子任务",
+                summary.total_subtasks
+            ))
         } else {
             None
         }
@@ -537,7 +540,9 @@ fn derive_job_status_summary(
             }
 
             if let Some(value) = lifecycle_hint {
-                if let Ok(summary) = serde_json::from_value::<ProjectionJobStatusSummary>(value.clone()) {
+                if let Ok(summary) =
+                    serde_json::from_value::<ProjectionJobStatusSummary>(value.clone())
+                {
                     return summary;
                 }
                 if let Some(status_label) = value.get("status_label").and_then(Value::as_str) {

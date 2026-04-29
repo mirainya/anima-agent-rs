@@ -158,9 +158,7 @@ pub struct SetApprovalModeRequest {
     pub mode: ApprovalMode,
 }
 
-pub async fn get_approval_mode(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+pub async fn get_approval_mode(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let mode = state.approval_mode.lock().clone();
     Json(serde_json::json!({ "ok": true, "mode": mode }))
 }
@@ -170,7 +168,11 @@ pub async fn set_approval_mode(
     Json(req): Json<SetApprovalModeRequest>,
 ) -> Json<serde_json::Value> {
     *state.approval_mode.lock() = req.mode.clone();
-    state.runtime.lock().agent.set_approval_mode(req.mode.clone());
+    state
+        .runtime
+        .lock()
+        .agent
+        .set_approval_mode(req.mode.clone());
     Json(serde_json::json!({ "ok": true, "mode": req.mode }))
 }
 
@@ -270,7 +272,9 @@ pub async fn rename_session(
 ) -> Json<serde_json::Value> {
     {
         let runtime = state.runtime.lock();
-        runtime.agent.set_session_title(&session_id, req.title.clone());
+        runtime
+            .agent
+            .set_session_title(&session_id, req.title.clone());
     }
     Json(serde_json::json!({
         "ok": true,
@@ -281,9 +285,7 @@ pub async fn rename_session(
 
 // ── Prompts Management ───────────────────────────────────────
 
-pub async fn get_prompts(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+pub async fn get_prompts(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let prompts = state.runtime.lock().agent.prompts();
     Json(serde_json::json!({ "ok": true, "prompts": *prompts }))
 }

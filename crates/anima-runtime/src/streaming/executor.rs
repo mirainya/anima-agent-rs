@@ -212,8 +212,16 @@ impl StreamAccumulator {
         }
         let mut indexed: Vec<(usize, String)> = self.thinking_bufs.drain().collect();
         indexed.sort_by_key(|(idx, _)| *idx);
-        let combined: String = indexed.into_iter().map(|(_, s)| s).collect::<Vec<_>>().join("\n");
-        if combined.is_empty() { None } else { Some(combined) }
+        let combined: String = indexed
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if combined.is_empty() {
+            None
+        } else {
+            Some(combined)
+        }
     }
 
     /// 开始追踪一个 tool_use 块

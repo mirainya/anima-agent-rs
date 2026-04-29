@@ -9,13 +9,14 @@ use tracing_subscriber::EnvFilter;
 
 fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
     let web_channel = Arc::new(web_channel::WebChannel::new());
 
     let config = AnimaConfig::load(None);
-    let builder = RuntimeBootstrapBuilder::from_config(&config)
-        .with_cli_enabled(false);
+    let builder = RuntimeBootstrapBuilder::from_config(&config).with_cli_enabled(false);
     let mut runtime = builder.build();
 
     // 注册 WebChannel 到 ChannelRegistry

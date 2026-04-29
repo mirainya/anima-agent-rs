@@ -5,7 +5,9 @@ use crate::dispatcher::{start_dispatcher_outbound_loop, Dispatcher};
 use crate::hooks::{HookRegistry, StopHook};
 use crate::permissions::{PermissionChecker, PermissionDecision, PermissionMode, PermissionRule};
 use crate::provider::{AnthropicProvider, OpenAiCompatProvider, Provider};
-use crate::runtime::{JsonStateStore, RuntimeStateStore, SharedRuntimeStateStore, SqliteStateStore};
+use crate::runtime::{
+    JsonStateStore, RuntimeStateStore, SharedRuntimeStateStore, SqliteStateStore,
+};
 use anima_sdk::facade::{Client as SdkClient, ClientOptions as SdkClientOptions};
 use anima_types::config::AnimaConfig;
 use std::sync::Arc;
@@ -60,15 +62,16 @@ impl RuntimeBootstrapBuilder {
                             "failed to open sqlite at {}: {e}, falling back to in-memory",
                             db_path.display()
                         );
-                        Arc::new(SqliteStateStore::open_in_memory().unwrap_or_else(|e2| {
-                            panic!("in-memory sqlite also failed: {e2}")
-                        }))
+                        Arc::new(
+                            SqliteStateStore::open_in_memory()
+                                .unwrap_or_else(|e2| panic!("in-memory sqlite also failed: {e2}")),
+                        )
                     }
                 }
             }
-            _ => Arc::new(JsonStateStore::with_persistence(
-                std::path::PathBuf::from(state_path),
-            )),
+            _ => Arc::new(JsonStateStore::with_persistence(std::path::PathBuf::from(
+                state_path,
+            ))),
         };
         Self {
             url: config.server.url.clone(),
@@ -190,7 +193,9 @@ impl RuntimeBootstrapBuilder {
             for rule in &pc.rules {
                 let decision = match rule.decision.as_str() {
                     "allow" => PermissionDecision::Allow,
-                    "deny" => PermissionDecision::Deny(format!("denied by config: {}", rule.tool_pattern)),
+                    "deny" => {
+                        PermissionDecision::Deny(format!("denied by config: {}", rule.tool_pattern))
+                    }
                     _ => continue,
                 };
                 checker.add_rule(PermissionRule {

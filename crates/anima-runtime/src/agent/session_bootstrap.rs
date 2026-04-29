@@ -39,28 +39,25 @@ impl CoreAgent {
                 "task_preview": "创建新的上游会话",
             }),
         );
-        self.worker_pool
-            .submit_task(task)
-            .recv()
-            .map_err(|error| {
-                let internal_message = format!("Failed to receive session-create result: {error}");
-                let error_info = classify_runtime_error(
-                    Some(internal_message.as_str()),
-                    Some(RuntimeErrorStage::SessionCreate.as_str()),
-                );
-                RuntimeError::new(
-                    match error_info.code {
-                        "worker_unavailable" => RuntimeErrorKind::WorkerUnavailable,
-                        "worker_capacity_exhausted" => RuntimeErrorKind::WorkerCapacityExhausted,
-                        _ => RuntimeErrorKind::SessionCreateFailed,
-                    },
-                    match error_info.stage {
-                        "worker_pool" => RuntimeErrorStage::WorkerPool,
-                        _ => RuntimeErrorStage::SessionCreate,
-                    },
-                    internal_message,
-                )
-            })
+        self.worker_pool.submit_task(task).recv().map_err(|error| {
+            let internal_message = format!("Failed to receive session-create result: {error}");
+            let error_info = classify_runtime_error(
+                Some(internal_message.as_str()),
+                Some(RuntimeErrorStage::SessionCreate.as_str()),
+            );
+            RuntimeError::new(
+                match error_info.code {
+                    "worker_unavailable" => RuntimeErrorKind::WorkerUnavailable,
+                    "worker_capacity_exhausted" => RuntimeErrorKind::WorkerCapacityExhausted,
+                    _ => RuntimeErrorKind::SessionCreateFailed,
+                },
+                match error_info.stage {
+                    "worker_pool" => RuntimeErrorStage::WorkerPool,
+                    _ => RuntimeErrorStage::SessionCreate,
+                },
+                internal_message,
+            )
+        })
     }
 
     pub(crate) fn extract_created_opencode_session_id(

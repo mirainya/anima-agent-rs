@@ -1,8 +1,8 @@
 use crate::jobs::build_job_views_with_projection;
 use crate::AppState;
 use anima_runtime::messages::types::MessageRole;
-use anima_runtime::runtime::{build_projection, RuntimeStateSnapshot};
 use anima_runtime::messages::{value_from_blocks, ContentBlock};
+use anima_runtime::runtime::{build_projection, RuntimeStateSnapshot};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -70,7 +70,9 @@ fn transcript_content_value(blocks: &[ContentBlock]) -> Value {
     }
 }
 
-pub fn build_session_summaries_from_runtime(snapshot: &RuntimeStateSnapshot) -> Vec<SessionListItem> {
+pub fn build_session_summaries_from_runtime(
+    snapshot: &RuntimeStateSnapshot,
+) -> Vec<SessionListItem> {
     let mut sessions = HashMap::<String, SessionListItem>::new();
 
     for run in snapshot.runs.values() {
@@ -385,15 +387,16 @@ pub fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_session_history_from_runtime, build_session_summaries_from_runtime, build_status_snapshot,
+        build_session_history_from_runtime, build_session_summaries_from_runtime,
+        build_status_snapshot,
     };
     use crate::{jobs::JobStore, web_channel::WebChannel, AppState};
     use anima_runtime::bootstrap::RuntimeBootstrapBuilder;
     use anima_runtime::bus::{make_inbound, Bus, BusConfig, MakeInbound};
     use anima_runtime::messages::types::MessageRole;
+    use anima_runtime::messages::ContentBlock;
     use anima_runtime::runtime::RuntimeStateSnapshot;
     use anima_runtime::tasks::{RunRecord, RunStatus};
-    use anima_runtime::messages::ContentBlock;
     use anima_runtime::transcript::MessageRecord;
     use parking_lot::Mutex;
     use serde_json::json;
@@ -439,7 +442,10 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "session-1");
         assert_eq!(sessions[0].history_len, 1);
-        assert_eq!(sessions[0].last_user_message_preview, "hello runtime session");
+        assert_eq!(
+            sessions[0].last_user_message_preview,
+            "hello runtime session"
+        );
         assert_eq!(sessions[0].last_active, 50);
 
         let history = build_session_history_from_runtime(&snapshot, "session-1")
@@ -449,7 +455,10 @@ mod tests {
         assert_eq!(history[0].recorded_at, Some(50));
         assert_eq!(history[0].content, json!("hello runtime session"));
         assert_eq!(
-            history[0].raw.get("recorded_at_ms").and_then(|value| value.as_u64()),
+            history[0]
+                .raw
+                .get("recorded_at_ms")
+                .and_then(|value| value.as_u64()),
             Some(50)
         );
         assert!(build_session_history_from_runtime(&snapshot, "missing").is_none());
@@ -473,7 +482,9 @@ mod tests {
             .unwrap();
         }
 
-        let runtime = RuntimeBootstrapBuilder::new().with_cli_enabled(false).build();
+        let runtime = RuntimeBootstrapBuilder::new()
+            .with_cli_enabled(false)
+            .build();
         let state = AppState {
             runtime: Mutex::new(runtime),
             bus,
@@ -485,7 +496,12 @@ mod tests {
         let snapshot = build_status_snapshot(&state);
         let warnings = snapshot.warnings;
         assert!(warnings["bus_drop_total"].as_u64().unwrap_or(0) > 0);
-        assert!(warnings["bus_inbound_last_drop_at_ms"].as_u64().unwrap_or(0) > 0);
+        assert!(
+            warnings["bus_inbound_last_drop_at_ms"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
         assert_eq!(warnings["bus_outbound_last_drop_at_ms"].as_u64(), Some(0));
     }
 }

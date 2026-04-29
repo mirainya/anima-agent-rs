@@ -23,13 +23,17 @@ impl SequenceExecutor {
     }
 
     fn payloads(&self) -> Vec<Value> {
-        self.payloads.lock().expect("payloads lock poisoned").clone()
+        self.payloads
+            .lock()
+            .expect("payloads lock poisoned")
+            .clone()
     }
 }
 
 impl TaskExecutor for SequenceExecutor {
     fn send_prompt(
-        &self,        _session_id: &str,
+        &self,
+        _session_id: &str,
         content: Value,
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.as_str().unwrap_or("");
@@ -52,11 +56,17 @@ impl TaskExecutor for SequenceExecutor {
     }
 
     fn send_prompt_streaming(
-        &self,        session_id: &str,
+        &self,
+        session_id: &str,
         content: Value,
-    ) -> Result<anima_runtime::worker::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
+    ) -> Result<
+        anima_runtime::worker::executor::UnifiedStreamSource,
+        anima_runtime::agent::runtime_error::RuntimeError,
+    > {
         let response = self.send_prompt(session_id, content)?;
-        Ok(Box::new(response_to_sse_lines(&response).into_iter().map(Ok)))
+        Ok(Box::new(
+            response_to_sse_lines(&response).into_iter().map(Ok),
+        ))
     }
 }
 
@@ -74,7 +84,11 @@ fn response_to_sse_lines(response: &Value) -> Vec<String> {
         .flatten()
         .enumerate()
     {
-        match block.get("type").and_then(Value::as_str).unwrap_or_default() {
+        match block
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
             "text" => {
                 lines.push(format!(
                     "data: {}",
@@ -104,7 +118,10 @@ fn response_to_sse_lines(response: &Value) -> Vec<String> {
                 lines.push(String::new());
             }
             "tool_use" => {
-                let tool_id = block.get("id").and_then(Value::as_str).unwrap_or("tool_use");
+                let tool_id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool_use");
                 let tool_name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
                 let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
                 let input_json = serde_json::to_string(&input).unwrap_or_else(|_| "{}".into());
@@ -148,7 +165,9 @@ fn response_to_sse_lines(response: &Value) -> Vec<String> {
         .get("content")
         .and_then(Value::as_array)
         .is_some_and(|content| {
-            content.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+            content
+                .iter()
+                .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
         }) {
         "tool_calls"
     } else {
@@ -291,7 +310,10 @@ fn runtime_bootstrap_builder_stop_hook_applies_on_real_runtime_message_flow() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!payloads.is_empty(), "expected at least one executor payload");
+    assert!(
+        !payloads.is_empty(),
+        "expected at least one executor payload"
+    );
     let last_payload_messages = payloads
         .last()
         .and_then(|payload| payload["messages"].as_array())
@@ -322,4 +344,3 @@ fn runtime_bootstrap_builder_stop_hook_applies_on_real_runtime_message_flow() {
 
     runtime.stop();
 }
-

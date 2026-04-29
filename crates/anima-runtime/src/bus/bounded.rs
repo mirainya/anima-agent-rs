@@ -64,7 +64,9 @@ impl<T> BoundedSender<T> {
                     self.record_drop();
                     return Ok(());
                 }
-                self.tx.send(msg).map_err(|e| AgentError::BusSendFailed(e.to_string()))
+                self.tx
+                    .send(msg)
+                    .map_err(|e| AgentError::BusSendFailed(e.to_string()))
             }
             BufferStrategy::Sliding(_cap) => {
                 while self.tx.len() >= self.strategy.capacity() {
@@ -74,7 +76,9 @@ impl<T> BoundedSender<T> {
                         break;
                     }
                 }
-                self.tx.send(msg).map_err(|e| AgentError::BusSendFailed(e.to_string()))
+                self.tx
+                    .send(msg)
+                    .map_err(|e| AgentError::BusSendFailed(e.to_string()))
             }
         }
     }
@@ -168,7 +172,8 @@ mod tests {
     #[test]
     fn drop_counter_increments_on_dropping() {
         let counter = Arc::new(AtomicU64::new(0));
-        let (tx, _rx) = bounded_channel_with_counter(BufferStrategy::Dropping(2), Some(counter.clone()));
+        let (tx, _rx) =
+            bounded_channel_with_counter(BufferStrategy::Dropping(2), Some(counter.clone()));
         tx.send(1).unwrap();
         tx.send(2).unwrap();
         tx.send(3).unwrap(); // dropped
@@ -178,7 +183,8 @@ mod tests {
     #[test]
     fn drop_counter_increments_on_sliding() {
         let counter = Arc::new(AtomicU64::new(0));
-        let (tx, _rx) = bounded_channel_with_counter(BufferStrategy::Sliding(2), Some(counter.clone()));
+        let (tx, _rx) =
+            bounded_channel_with_counter(BufferStrategy::Sliding(2), Some(counter.clone()));
         tx.send(1).unwrap();
         tx.send(2).unwrap();
         tx.send(3).unwrap(); // evicts oldest
@@ -189,7 +195,9 @@ mod tests {
     fn on_drop_hook_fires() {
         let fired = Arc::new(AtomicU64::new(0));
         let fired_clone = fired.clone();
-        let hook: DropHook = Arc::new(move || { fired_clone.fetch_add(1, Ordering::SeqCst); });
+        let hook: DropHook = Arc::new(move || {
+            fired_clone.fetch_add(1, Ordering::SeqCst);
+        });
         let (tx, _rx) = bounded_channel_full(BufferStrategy::Dropping(1), None, Some(hook));
         tx.send(1).unwrap();
         tx.send(2).unwrap(); // dropped, hook fires
