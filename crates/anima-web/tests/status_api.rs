@@ -1504,12 +1504,24 @@ fn build_job_views_runtime_task_orchestration_beats_legacy_timeline_fallback() {
         .orchestration
         .as_ref()
         .expect("expected runtime orchestration priority");
-    assert_eq!(orchestration.plan_id.as_deref(), Some("plan-runtime-priority"));
+    assert_eq!(
+        orchestration.plan_id.as_deref(),
+        Some("plan-runtime-priority")
+    );
     assert_eq!(orchestration.total_subtasks, 1);
     assert_eq!(orchestration.active_subtasks, 1);
-    assert_eq!(orchestration.active_subtask_name.as_deref(), Some("runtime-subtask"));
-    assert_eq!(orchestration.active_subtask_type.as_deref(), Some("runtime_type"));
-    assert_eq!(orchestration.active_subtask_id.as_deref(), Some("subtask-priority"));
+    assert_eq!(
+        orchestration.active_subtask_name.as_deref(),
+        Some("runtime-subtask")
+    );
+    assert_eq!(
+        orchestration.active_subtask_type.as_deref(),
+        Some("runtime_type")
+    );
+    assert_eq!(
+        orchestration.active_subtask_id.as_deref(),
+        Some("subtask-priority")
+    );
 }
 
 #[test]
@@ -2458,7 +2470,10 @@ fn mock_response_to_sse_lines(response: &Value) -> Vec<String> {
             })
         ),
         String::new(),
-        format!("data: {}", json!({"type": "content_block_stop", "index": 0})),
+        format!(
+            "data: {}",
+            json!({"type": "content_block_stop", "index": 0})
+        ),
         String::new(),
         format!(
             "data: {}",
@@ -2489,7 +2504,10 @@ impl TaskExecutor for MockExecutor {
         &self,
         session_id: &str,
         content: Value,
-    ) -> Result<anima_runtime::worker::executor::UnifiedStreamSource, anima_runtime::agent::runtime_error::RuntimeError> {
+    ) -> Result<
+        anima_runtime::worker::executor::UnifiedStreamSource,
+        anima_runtime::agent::runtime_error::RuntimeError,
+    > {
         let response = self.send_prompt(session_id, content)?;
         Ok(Box::new(
             mock_response_to_sse_lines(&response).into_iter().map(Ok),
@@ -2535,7 +2553,9 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.to_string();
         if text.contains("任务分解引擎") {
-            return Ok(json!({"content": r#"[{"name":"design-api","task_type":"design","specialist_type":"default","dependencies":[],"description":"design REST API"}]"#}));
+            return Ok(
+                json!({"content": r#"[{"name":"design-api","task_type":"design","specialist_type":"default","dependencies":[],"description":"design REST API"}]"#}),
+            );
         }
         let text = content.as_str().unwrap_or("");
         if text.contains("[orchestration/") {
@@ -2557,6 +2577,20 @@ impl TaskExecutor for OrchestrationQuestionExecutor {
     fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-orch-question"}))
     }
+
+    fn send_prompt_streaming(
+        &self,
+        session_id: &str,
+        content: Value,
+    ) -> Result<
+        anima_runtime::worker::executor::UnifiedStreamSource,
+        anima_runtime::agent::runtime_error::RuntimeError,
+    > {
+        let response = self.send_prompt(session_id, content)?;
+        Ok(Box::new(
+            mock_response_to_sse_lines(&response).into_iter().map(Ok),
+        ))
+    }
 }
 
 impl TaskExecutor for OrchestrationFollowupExecutor {
@@ -2567,7 +2601,9 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
     ) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         let text = content.to_string();
         if text.contains("任务分解引擎") {
-            return Ok(json!({"content": r#"[{"name":"design-api","task_type":"design","specialist_type":"default","dependencies":[],"description":"design REST API"}]"#}));
+            return Ok(
+                json!({"content": r#"[{"name":"design-api","task_type":"design","specialist_type":"default","dependencies":[],"description":"design REST API"}]"#}),
+            );
         }
         let text = content.as_str().unwrap_or("");
         if text.contains("[orchestration/") {
@@ -2583,6 +2619,20 @@ impl TaskExecutor for OrchestrationFollowupExecutor {
 
     fn create_session(&self) -> Result<Value, anima_runtime::agent::runtime_error::RuntimeError> {
         Ok(json!({"id": "mock-session-web-orch-followup"}))
+    }
+
+    fn send_prompt_streaming(
+        &self,
+        session_id: &str,
+        content: Value,
+    ) -> Result<
+        anima_runtime::worker::executor::UnifiedStreamSource,
+        anima_runtime::agent::runtime_error::RuntimeError,
+    > {
+        let response = self.send_prompt(session_id, content)?;
+        Ok(Box::new(
+            mock_response_to_sse_lines(&response).into_iter().map(Ok),
+        ))
     }
 }
 
@@ -2663,11 +2713,10 @@ fn jobs_api_prefers_runtime_payload_hierarchy_for_subtasks() {
 
     let mut status = state.runtime.lock().agent.status();
     for _ in 0..120 {
-        let has_activity = status
-            .core
-            .runtime_timeline
-            .iter()
-            .any(|event| event.message_id == "job-subtask" && event.event == "message_received");
+        let has_activity =
+            status.core.runtime_timeline.iter().any(|event| {
+                event.message_id == "job-subtask" && event.event == "message_received"
+            });
         if has_activity {
             break;
         }
@@ -3017,7 +3066,11 @@ fn status_api_exposes_runtime_summary() {
             .unwrap_or(false);
         let has_runtime_summary = current_payload["recent_execution_summaries"]
             .as_array()
-            .map(|summaries| summaries.iter().any(|entry| entry["chat_id"] == "web-session"))
+            .map(|summaries| {
+                summaries
+                    .iter()
+                    .any(|entry| entry["chat_id"] == "web-session")
+            })
             .unwrap_or(false);
         if processed >= 1
             && has_runtime_summary
@@ -3048,10 +3101,7 @@ fn status_api_exposes_runtime_summary() {
     assert_eq!(payload["warnings"]["bus_drop_total"], 0);
     assert_eq!(payload["recent_sessions"].as_array().unwrap().len(), 1);
     assert_eq!(payload["recent_sessions"][0]["chat_id"], "web-session");
-    assert_eq!(
-        payload["recent_sessions"][0]["session_id"],
-        "mock-session-web"
-    );
+    assert_eq!(payload["recent_sessions"][0]["session_id"], "web-session");
     assert!(payload["failures"]["last_failure"].is_null());
     assert_eq!(
         payload["failures"]["counts_by_error_code"]
@@ -3094,7 +3144,7 @@ fn status_api_exposes_runtime_summary() {
         .contains("派发"));
     assert_eq!(
         assignment_event["payload"]["opencode_session_id"],
-        "mock-session-web"
+        "web-session"
     );
 
     let api_started_event = timeline
@@ -3104,7 +3154,7 @@ fn status_api_exposes_runtime_summary() {
     assert_eq!(api_started_event["payload"]["task_type"], "api-call");
     assert_eq!(
         api_started_event["payload"]["opencode_session_id"],
-        "mock-session-web"
+        "web-session"
     );
     assert!(!api_started_event["payload"]["request_preview"]
         .as_str()
@@ -3120,7 +3170,7 @@ fn status_api_exposes_runtime_summary() {
     assert_eq!(upstream_event["payload"]["operation"], "send_prompt");
     assert_eq!(
         upstream_event["payload"]["opencode_session_id"],
-        "mock-session-web"
+        "web-session"
     );
     assert!(
         upstream_event["payload"]["worker_id"].is_string()
@@ -3129,7 +3179,7 @@ fn status_api_exposes_runtime_summary() {
     assert!(upstream_event["payload"]["response_preview"]
         .as_str()
         .unwrap_or("")
-        .contains("reply[mock-session-web]"));
+        .contains("reply[web-session]"));
     assert!(upstream_event["payload"]["raw_result"]["content"]
         .as_str()
         .map(|content| !content.is_empty())
@@ -3191,7 +3241,7 @@ fn status_api_exposes_runtime_summary() {
     assert!(recent_upstream["payload"]["response_preview"]
         .as_str()
         .unwrap_or("")
-        .contains("reply[mock-session-web]"));
+        .contains("reply[web-session]"));
     assert!(recent_upstream["payload"]["raw_result"]["content"]
         .as_str()
         .map(|content| !content.is_empty())
@@ -3284,9 +3334,10 @@ fn status_api_exposes_failure_snapshot_and_counts() {
         .iter()
         .find(|job| job["chat_id"] == "web-failure")
         .expect("expected failure job for web-failure");
-    assert!(
-        matches!(failed_job["status"].as_str(), Some("failed" | "executing" | "planning"))
-    );
+    assert!(matches!(
+        failed_job["status"].as_str(),
+        Some("failed" | "executing" | "planning")
+    ));
     assert_eq!(failed_job["failure"]["error_code"], "task_execution_failed");
     assert!(failed_job["pending_question"].is_null());
 
@@ -3492,7 +3543,9 @@ fn sessions_api_lists_history_and_send_alias_reuses_existing_session() {
     let history_payload: Value = serde_json::from_slice(&history_body).unwrap();
     assert_eq!(history_payload["ok"], true);
     assert_eq!(history_payload["session_id"], "session-api-1");
-    let history = history_payload["history"].as_array().expect("expected history array");
+    let history = history_payload["history"]
+        .as_array()
+        .expect("expected history array");
     assert!(history.len() >= 2);
     assert_eq!(history[0]["role"], "user");
     assert_eq!(history[0]["content"], "hello from history");
@@ -3529,7 +3582,9 @@ fn sessions_api_lists_history_and_send_alias_reuses_existing_session() {
 #[test]
 fn status_api_includes_accepted_job_before_runtime_events() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
-    let runtime = RuntimeBootstrapBuilder::new().with_cli_enabled(false).build();
+    let runtime = RuntimeBootstrapBuilder::new()
+        .with_cli_enabled(false)
+        .build();
     let bus = runtime.bus.clone();
 
     let mut store = anima_web::jobs::JobStore::default();
@@ -3581,7 +3636,9 @@ fn status_api_includes_accepted_job_before_runtime_events() {
 #[test]
 fn review_api_rejects_unknown_job() {
     let web_channel = Arc::new(web_channel::WebChannel::new());
-    let runtime = RuntimeBootstrapBuilder::new().with_cli_enabled(false).build();
+    let runtime = RuntimeBootstrapBuilder::new()
+        .with_cli_enabled(false)
+        .build();
     let bus = runtime.bus.clone();
     let state = build_state_with_runtime(runtime, bus, web_channel);
     let app = routes::create_routes().with_state(state);
@@ -3798,8 +3855,7 @@ fn status_api_exposes_orchestration_p2_question_observability() {
             .as_array()
             .map(|jobs| {
                 jobs.iter().any(|job| {
-                    job["status"] == "waiting_user_input"
-                        && job["pending_question"].is_object()
+                    job["status"] == "waiting_user_input" && job["pending_question"].is_object()
                 })
             })
             .unwrap_or(false);
@@ -3891,7 +3947,6 @@ fn status_api_exposes_orchestration_p2_question_observability() {
 
     state.runtime.lock().stop();
 }
-
 
 #[test]
 fn build_job_views_runtime_backed_does_not_fallback_question_or_tool_from_timeline() {

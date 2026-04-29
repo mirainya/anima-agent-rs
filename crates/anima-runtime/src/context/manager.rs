@@ -179,7 +179,9 @@ impl ContextManager {
         if !current.is_array() {
             current = json!([]);
         }
-        current.as_array_mut().unwrap().push(entry);
+        if let Some(arr) = current.as_array_mut() {
+            arr.push(entry);
+        }
         self.set_context(&key, current);
     }
 
