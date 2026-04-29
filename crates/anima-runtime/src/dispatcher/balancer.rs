@@ -1194,3 +1194,299 @@ struct BalancerSelectionComputation {
     selected_target: Option<Target>,
     diagnostic: BalancerSelectionDiagnostic,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rr_balancer() -> Balancer {
+        Balancer::new(BalancerOptions::default())
+    }
+
+    fn runtime_balancer(failure_threshold: usize, cooldown_ms: u64) -> Balancer {
+        Balancer::new(BalancerOptions {
+            runtime: Some(BalancerRuntimeConfig {
+                circuit_breaker: Some(CircuitBreakerConfig {
+                    failure_threshold,
+                    success_threshold: 1,
+                    cooldown_ms,
+                }),
+                health: Some(HealthPolicy {
+                    heartbeat_ttl_ms: 5_000,
+                    check_on_select: false,
+                }),
+            }),
+            ..Default::default()
+        })
+    }
+
+    // ── Target CRUD ──
+
+    #[test]
+    fn add_and_list_targets() {
+        let b = rr_balancer();
+        b.add_target(Target::new("a"));
+        b.add_target(Target::new("b"));
+        assert_eq!(b.list_targets().len(), 2);
+    }
+
+    #[test]
+    fn remove_target_returns_removed() {
+        let b = rr_balancer();
+        b.add_target(Target::new("a"));
+        assert!(b.remove_target("a").is_some());
+        assert!(b.remove_target("a").is_none());
+        assert!(b.list_targets().is_empty());
+    }
+
+    #[test]
+    fn get_target_returns_clone() {
+        let b = rr_balancer();
+        b.add_target(Target::new("x"));
+        let t = b.get_target("x").unwrap();
+        assert_eq!(t.id, "x");
+        assert!(b.get_target("missing").is_none());
+    }
+
+    #[test]
+    fn list_available_excludes_busy_and_offline() {
+        let b = rr_balancer();
+        b.add_target(Target::new("a"));
+        let mut busy = Target::new("b");
+        busy.status = TargetStatus::Busy;
+        b.add_target(busy);
+        let mut offline = Target::new("c");
+        offline.status = TargetStatus::Offline;
+        b.add_target(offline);
+        assert_eq!(b.list_available_targets().len(), 1);
+    }
+
+    #[test]
+    fn set_target_status_transitions() {
+        let b = rr_balancer();
+        b.add_target(Target::new("a"));
+        b.mark_target_busy("a");
+        assert_eq!(b.get_target("a").unwrap().status, TargetStatus::Busy);
+        b.mark_target_offline("a");
+        assert_eq!(b.get_target("a").unwrap().status, TargetStatus::Offline);
+        b.mark_target_available("a");
+        assert_eq!(b.get_target("a").unwrap().status, TargetStatus::Available);
+    }
+
+    // ── Load tracking ──
+
+    #[test]
+    fn load_inc_dec_error_reset() {
+        let b = rr_balancer();
+        b.add_target(Target::new("a"));
+        b.update_load("a", LoadUpdate::Inc);
+        b.update_load("a", LoadUpdate::Inc);
+        assert_eq!(b.get_active_count("a"), Some(2));
+
+        b.update_load("a", LoadUpdate::Dec);
+        assert_eq!(b.get_active_count("a"), Some(1));
+
+        b.update_load("a", LoadUpdate::Error);
+        let load = b.get_load("a").unwrap();
+        assert_eq!(load.active, 0);
+        assert_eq!(load.errors, 1);
+
+        b.update_load("a", LoadUpdate::Inc);
+        b.update_load("a", LoadUpdate::Reset);
+        assert_eq!(b.get_active_count("a"), Some(0));
+    }
+
+    #[test]
+    fn load_update_nonexistent_returns_none() {
+        let b = rr_balancer();
+        assert!(b.update_load("ghost", LoadUpdate::Inc).is_none());
+    }
+
+    // ── Selection strategies ──
+
+    #[test]
+    fn round_robin_cycles() {
+        let b = rr_balancer();
+        b.add_target(Target::new("a"));
+        b.add_target(Target::new("b"));
+        b.add_target(Target::new("c"));
+        let ids: Vec<String> = (0..6).map(|_| b.select_target(None).unwrap().id).collect();
+        assert_eq!(ids, ["a", "b", "c", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn weighted_respects_weight() {
+        let b = Balancer::new(BalancerOptions {
+            strategy: BalancerStrategy::Weighted,
+            ..Default::default()
+        });
+        let mut heavy = Target::new("heavy");
+        heavy.weight = 3;
+        b.add_target(heavy);
+        b.add_target(Target::new("light"));
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..8 {
+            let id = b.select_target(None).unwrap().id;
+            *counts.entry(id).or_insert(0) += 1;
+        }
+        assert!(counts["heavy"] > counts["light"]);
+    }
+
+    #[test]
+    fn least_connections_picks_lowest() {
+        let b = Balancer::new(BalancerOptions {
+            strategy: BalancerStrategy::LeastConnections,
+            ..Default::default()
+        });
+        b.add_target(Target::new("a"));
+        b.add_target(Target::new("b"));
+        b.update_load("a", LoadUpdate::Inc);
+        b.update_load("a", LoadUpdate::Inc);
+        let selected = b.select_target(None).unwrap();
+        assert_eq!(selected.id, "b");
+    }
+
+    #[test]
+    fn hashing_consistent_for_same_key() {
+        let b = Balancer::new(BalancerOptions {
+            strategy: BalancerStrategy::Hashing,
+            ..Default::default()
+        });
+        b.add_target(Target::new("a"));
+        b.add_target(Target::new("b"));
+        b.add_target(Target::new("c"));
+        let first = b.select_target(Some("user-42")).unwrap().id;
+        let second = b.select_target(Some("user-42")).unwrap().id;
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn hashing_no_key_returns_none() {
+        let b = Balancer::new(BalancerOptions {
+            strategy: BalancerStrategy::Hashing,
+            ..Default::default()
+        });
+        b.add_target(Target::new("a"));
+        assert!(b.select_target(None).is_none());
+    }
+
+    #[test]
+    fn select_empty_returns_none() {
+        let b = rr_balancer();
+        assert!(b.select_target(None).is_none());
+    }
+
+    #[test]
+    fn select_all_offline_returns_none() {
+        let b = rr_balancer();
+        let mut t = Target::new("a");
+        t.status = TargetStatus::Offline;
+        b.add_target(t);
+        assert!(b.select_target(None).is_none());
+    }
+
+    // ── Circuit breaker ──
+
+    #[test]
+    fn circuit_breaker_opens_on_consecutive_failures() {
+        let b = runtime_balancer(3, 60_000);
+        b.add_target(Target::new("a"));
+        b.record_target_failure("a");
+        b.record_target_failure("a");
+        let h = b.record_target_failure("a").unwrap();
+        assert_eq!(h.circuit_state, CircuitState::Open);
+    }
+
+    #[test]
+    fn circuit_breaker_half_open_after_cooldown() {
+        let b = runtime_balancer(2, 100);
+        b.add_target(Target::new("a"));
+        b.record_target_failure("a");
+        b.record_target_failure("a");
+        let h = b.refresh_target_health("a", now_ms() + 200).unwrap();
+        assert_eq!(h.circuit_state, CircuitState::HalfOpen);
+    }
+
+    #[test]
+    fn circuit_breaker_closes_on_success_in_half_open() {
+        let b = runtime_balancer(2, 100);
+        b.add_target(Target::new("a"));
+        b.record_target_failure("a");
+        b.record_target_failure("a");
+        b.refresh_target_health("a", now_ms() + 200);
+        let h = b.record_target_success("a").unwrap();
+        assert_eq!(h.circuit_state, CircuitState::Closed);
+    }
+
+    #[test]
+    fn circuit_breaker_reopens_on_failure_in_half_open() {
+        let b = runtime_balancer(2, 100);
+        b.add_target(Target::new("a"));
+        b.record_target_failure("a");
+        b.record_target_failure("a");
+        b.refresh_target_health("a", now_ms() + 200);
+        let h = b.record_target_failure("a").unwrap();
+        assert_eq!(h.circuit_state, CircuitState::Open);
+    }
+
+    // ── Health check ──
+
+    #[test]
+    fn heartbeat_healthy_updates_state() {
+        let b = runtime_balancer(3, 60_000);
+        b.add_target(Target::new("a"));
+        let h = b.record_target_heartbeat("a", true).unwrap();
+        assert!(h.healthy);
+        assert!(h.last_heartbeat_at.is_some());
+    }
+
+    #[test]
+    fn heartbeat_unhealthy_resets_successes() {
+        let b = runtime_balancer(3, 60_000);
+        b.add_target(Target::new("a"));
+        b.record_target_heartbeat("a", true);
+        let h = b.record_target_heartbeat("a", false).unwrap();
+        assert!(!h.healthy);
+        assert_eq!(h.consecutive_successes, 0);
+    }
+
+    #[test]
+    fn heartbeat_expired_marks_unhealthy_on_refresh() {
+        let b = runtime_balancer(3, 60_000);
+        b.add_target(Target::new("a"));
+        let h = b.refresh_target_health("a", now_ms() + 10_000).unwrap();
+        assert!(!h.healthy);
+    }
+
+    // ── Snapshots ──
+
+    #[test]
+    fn balancer_status_snapshot_reflects_state() {
+        let b = rr_balancer();
+        b.add_target(Target::new("a"));
+        b.mark_target_busy("a");
+        let snap = b.balancer_status();
+        assert_eq!(snap.target_count, 1);
+        assert_eq!(snap.available_count, 0);
+    }
+
+    #[test]
+    fn balancer_metrics_counts() {
+        let b = rr_balancer();
+        b.add_target(Target::new("a"));
+        b.add_target(Target::new("b"));
+        b.mark_target_offline("b");
+        let m = b.balancer_metrics();
+        assert_eq!(m.total_targets, 2);
+        assert_eq!(m.available_targets, 1);
+    }
+
+    #[test]
+    fn diagnostics_snapshot_records_selections() {
+        let b = rr_balancer();
+        b.add_target(Target::new("a"));
+        b.select_target(None);
+        let diag = b.diagnostics_snapshot();
+        assert!(diag.last_selection.is_some());
+    }
+}

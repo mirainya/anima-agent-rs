@@ -1270,3 +1270,235 @@ impl WorkerPool {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[derive(Debug)]
+    struct MockExecutor;
+
+    impl TaskExecutor for MockExecutor {
+        fn send_prompt(&self, session_id: &str, content: Value) -> Result<Value, TaskExecutorError> {
+            Ok(json!({ "content": format!("echo[{session_id}]: {}", content) }))
+        }
+        fn create_session(&self) -> Result<Value, TaskExecutorError> {
+            Ok(json!({ "id": "mock-sess-1" }))
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailExecutor;
+
+    impl TaskExecutor for FailExecutor {
+        fn send_prompt(&self, _: &str, _: Value) -> Result<Value, TaskExecutorError> {
+            Err(crate::agent::runtime_error::RuntimeError::new(
+                crate::agent::runtime_error::RuntimeErrorKind::TaskExecutionFailed,
+                crate::agent::runtime_error::RuntimeErrorStage::PlanExecute,
+                "boom",
+            ))
+        }
+        fn create_session(&self) -> Result<Value, TaskExecutorError> {
+            Err(crate::agent::runtime_error::RuntimeError::new(
+                crate::agent::runtime_error::RuntimeErrorKind::SessionCreateFailed,
+                crate::agent::runtime_error::RuntimeErrorStage::SessionCreate,
+                "no session",
+            ))
+        }
+    }
+
+    fn make_test_task(task_type: &str, payload: Value) -> Task {
+        crate::agent::types::make_task(crate::agent::types::MakeTask {
+            task_type: task_type.into(),
+            payload: Some(payload),
+            ..Default::default()
+        })
+    }
+
+    // ── WorkerAgent lifecycle ──
+
+    #[test]
+    fn worker_starts_and_stops() {
+        let w = WorkerAgent::new(Arc::new(MockExecutor), None);
+        assert!(!w.is_running());
+        w.start();
+        assert!(w.is_running());
+        w.stop();
+        assert!(!w.is_running());
+    }
+
+    #[test]
+    fn worker_status_reflects_state() {
+        let w = WorkerAgent::new(Arc::new(MockExecutor), None);
+        assert_eq!(w.status().status, "stopped");
+        w.start();
+        assert_eq!(w.status().status, "idle");
+    }
+
+    // ── WorkerAgent submit_task ──
+
+    #[test]
+    fn submit_task_not_running_returns_failure() {
+        let w = Arc::new(WorkerAgent::new(Arc::new(MockExecutor), None));
+        let task = make_test_task("session-create", json!({}));
+        let rx = w.submit_task(task, None);
+        let result = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(result.status, "failure");
+        assert!(result.error.unwrap().contains("not running"));
+    }
+
+    #[test]
+    fn submit_session_create_succeeds() {
+        let w = Arc::new(WorkerAgent::new(Arc::new(MockExecutor), None));
+        w.start();
+        let task = make_test_task("session-create", json!({}));
+        let rx = w.submit_task(task, None);
+        let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result.status, "success");
+        assert!(result.result.unwrap().get("opencode-session-id").is_some());
+        w.stop();
+    }
+
+    #[test]
+    fn submit_api_call_succeeds() {
+        let w = Arc::new(WorkerAgent::new(Arc::new(MockExecutor), None));
+        w.start();
+        let task = make_test_task("api-call", json!({
+            "opencode-session-id": "s1",
+            "content": "hello"
+        }));
+        let rx = w.submit_task(task, None);
+        let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result.status, "success");
+        w.stop();
+    }
+
+    #[test]
+    fn submit_transform_returns_data() {
+        let w = Arc::new(WorkerAgent::new(Arc::new(MockExecutor), None));
+        w.start();
+        let task = make_test_task("transform", json!({ "data": {"key": "val"} }));
+        let rx = w.submit_task(task, None);
+        let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result.status, "success");
+        assert_eq!(result.result.unwrap()["key"], "val");
+        w.stop();
+    }
+
+    #[test]
+    fn submit_query_traverses_path() {
+        let w = Arc::new(WorkerAgent::new(Arc::new(MockExecutor), None));
+        w.start();
+        let task = make_test_task("query", json!({
+            "query": ["a", "b"],
+            "context": {"a": {"b": 42}}
+        }));
+        let rx = w.submit_task(task, None);
+        let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result.result.unwrap(), json!(42));
+        w.stop();
+    }
+
+    #[test]
+    fn submit_unknown_type_fails() {
+        let w = Arc::new(WorkerAgent::new(Arc::new(MockExecutor), None));
+        w.start();
+        let task = make_test_task("bogus", json!({}));
+        let rx = w.submit_task(task, None);
+        let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result.status, "failure");
+        assert!(result.error.unwrap().contains("Unknown task type"));
+        w.stop();
+    }
+
+    #[test]
+    fn submit_session_create_failure_propagates() {
+        let w = Arc::new(WorkerAgent::new(Arc::new(FailExecutor), None));
+        w.start();
+        let task = make_test_task("session-create", json!({}));
+        let rx = w.submit_task(task, None);
+        let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result.status, "failure");
+        w.stop();
+    }
+
+    #[test]
+    fn metrics_update_after_task() {
+        let w = Arc::new(WorkerAgent::new(Arc::new(MockExecutor), None));
+        w.start();
+        let task = make_test_task("session-create", json!({}));
+        let rx = w.submit_task(task, None);
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let m = w.status().metrics;
+        assert_eq!(m.tasks_completed, 1);
+        w.stop();
+    }
+
+    // ── WorkerPool ──
+
+    #[test]
+    fn pool_start_stop() {
+        let pool = WorkerPool::new(Arc::new(MockExecutor), Some(2), None, None);
+        pool.start();
+        assert!(pool.is_running());
+        assert_eq!(pool.size(), 2);
+        pool.stop();
+        assert!(!pool.is_running());
+    }
+
+    #[test]
+    fn pool_submit_task_succeeds() {
+        let pool = WorkerPool::new(Arc::new(MockExecutor), Some(2), None, None);
+        pool.start();
+        let task = make_test_task("session-create", json!({}));
+        let rx = pool.submit_task(task);
+        let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result.status, "success");
+        pool.stop();
+    }
+
+    #[test]
+    fn pool_not_running_returns_failure() {
+        let pool = WorkerPool::new(Arc::new(MockExecutor), Some(1), None, None);
+        let task = make_test_task("session-create", json!({}));
+        let rx = pool.submit_task(task);
+        let result = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(result.status, "failure");
+        assert!(result.error.unwrap().contains("not running"));
+    }
+
+    #[test]
+    fn pool_scale_to_grows_and_shrinks() {
+        let pool = WorkerPool::new(Arc::new(MockExecutor), Some(2), None, None);
+        pool.start();
+        assert_eq!(pool.size(), 2);
+        pool.scale_to(4);
+        assert_eq!(pool.size(), 4);
+        pool.scale_to(1);
+        assert_eq!(pool.size(), 1);
+        pool.stop();
+    }
+
+    #[test]
+    fn pool_scale_respects_bounds() {
+        let pool = WorkerPool::new(Arc::new(MockExecutor), Some(2), None, None)
+            .with_bounds(2, 5);
+        pool.start();
+        pool.scale_to(10);
+        assert_eq!(pool.size(), 5);
+        pool.scale_to(0);
+        assert_eq!(pool.size(), 2);
+        pool.stop();
+    }
+
+    #[test]
+    fn pool_status_reports_workers() {
+        let pool = WorkerPool::new(Arc::new(MockExecutor), Some(3), None, None);
+        pool.start();
+        let status = pool.status();
+        assert_eq!(status.status, "running");
+        assert_eq!(status.workers.len(), 3);
+        pool.stop();
+    }
+}

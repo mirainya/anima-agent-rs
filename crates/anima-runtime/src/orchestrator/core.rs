@@ -2047,3 +2047,200 @@ impl AgentOrchestrator {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_subtask(name: &str, deps: &[&str]) -> Arc<SubTask> {
+        Arc::new(SubTask {
+            id: Uuid::new_v4().to_string(),
+            parent_id: "plan-1".into(),
+            parent_job_id: "job-1".into(),
+            trace_id: "trace-1".into(),
+            name: name.into(),
+            task_type: "generic".into(),
+            description: format!("subtask {name}"),
+            dependencies: deps.iter().map(|d| d.to_string()).collect(),
+            priority: 5,
+            specialist_type: "default".into(),
+            payload: json!({}),
+            result: Mutex::new(None),
+            started_at: Mutex::new(None),
+            completed_at: Mutex::new(None),
+        })
+    }
+
+    fn build_subtasks(specs: &[(&str, &[&str])]) -> IndexMap<String, Arc<SubTask>> {
+        let mut map = IndexMap::new();
+        for (name, deps) in specs {
+            map.insert(name.to_string(), make_subtask(name, deps));
+        }
+        map
+    }
+
+    // ── topological_sort ──
+
+    #[test]
+    fn topo_sort_no_deps_preserves_insertion_order() {
+        let subtasks = build_subtasks(&[("a", &[]), ("b", &[]), ("c", &[])]);
+        let order = AgentOrchestrator::topological_sort(&subtasks);
+        assert_eq!(order, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn topo_sort_linear_chain() {
+        let subtasks = build_subtasks(&[("c", &["b"]), ("b", &["a"]), ("a", &[])]);
+        let order = AgentOrchestrator::topological_sort(&subtasks);
+        let pos_a = order.iter().position(|x| x == "a").unwrap();
+        let pos_b = order.iter().position(|x| x == "b").unwrap();
+        let pos_c = order.iter().position(|x| x == "c").unwrap();
+        assert!(pos_a < pos_b);
+        assert!(pos_b < pos_c);
+    }
+
+    #[test]
+    fn topo_sort_diamond_dependency() {
+        // a → b, a → c, b → d, c → d
+        let subtasks = build_subtasks(&[
+            ("a", &[]),
+            ("b", &["a"]),
+            ("c", &["a"]),
+            ("d", &["b", "c"]),
+        ]);
+        let order = AgentOrchestrator::topological_sort(&subtasks);
+        let pos = |n: &str| order.iter().position(|x| x == n).unwrap();
+        assert!(pos("a") < pos("b"));
+        assert!(pos("a") < pos("c"));
+        assert!(pos("b") < pos("d"));
+        assert!(pos("c") < pos("d"));
+    }
+
+    #[test]
+    fn topo_sort_single_task() {
+        let subtasks = build_subtasks(&[("only", &[])]);
+        assert_eq!(
+            AgentOrchestrator::topological_sort(&subtasks),
+            vec!["only"]
+        );
+    }
+
+    #[test]
+    fn topo_sort_cycle_does_not_hang() {
+        let subtasks = build_subtasks(&[("a", &["b"]), ("b", &["a"])]);
+        let order = AgentOrchestrator::topological_sort(&subtasks);
+        assert_eq!(order.len(), 2);
+    }
+
+    // ── compute_parallel_groups ──
+
+    #[test]
+    fn parallel_groups_all_independent() {
+        let subtasks = build_subtasks(&[("a", &[]), ("b", &[]), ("c", &[])]);
+        let order = AgentOrchestrator::topological_sort(&subtasks);
+        let groups = AgentOrchestrator::compute_parallel_groups(&subtasks, &order);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 3);
+    }
+
+    #[test]
+    fn parallel_groups_linear_chain() {
+        let subtasks = build_subtasks(&[("a", &[]), ("b", &["a"]), ("c", &["b"])]);
+        let order = AgentOrchestrator::topological_sort(&subtasks);
+        let groups = AgentOrchestrator::compute_parallel_groups(&subtasks, &order);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0], vec!["a"]);
+        assert_eq!(groups[1], vec!["b"]);
+        assert_eq!(groups[2], vec!["c"]);
+    }
+
+    #[test]
+    fn parallel_groups_diamond() {
+        let subtasks = build_subtasks(&[
+            ("a", &[]),
+            ("b", &["a"]),
+            ("c", &["a"]),
+            ("d", &["b", "c"]),
+        ]);
+        let order = AgentOrchestrator::topological_sort(&subtasks);
+        let groups = AgentOrchestrator::compute_parallel_groups(&subtasks, &order);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0], vec!["a"]);
+        assert!(groups[1].contains(&"b".to_string()));
+        assert!(groups[1].contains(&"c".to_string()));
+        assert_eq!(groups[2], vec!["d"]);
+    }
+
+    #[test]
+    fn parallel_groups_mixed() {
+        // a, b independent; c depends on a; d depends on b
+        let subtasks = build_subtasks(&[
+            ("a", &[]),
+            ("b", &[]),
+            ("c", &["a"]),
+            ("d", &["b"]),
+        ]);
+        let order = AgentOrchestrator::topological_sort(&subtasks);
+        let groups = AgentOrchestrator::compute_parallel_groups(&subtasks, &order);
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].contains(&"a".to_string()));
+        assert!(groups[0].contains(&"b".to_string()));
+        assert!(groups[1].contains(&"c".to_string()));
+        assert!(groups[1].contains(&"d".to_string()));
+    }
+
+    // ── extract_result_text ──
+
+    #[test]
+    fn extract_result_text_string_content() {
+        let v = json!({"content": "hello world"});
+        assert_eq!(AgentOrchestrator::extract_result_text(Some(&v)), "hello world");
+    }
+
+    #[test]
+    fn extract_result_text_array_content() {
+        let v = json!({"content": [
+            {"type": "text", "text": "part1"},
+            {"type": "image"},
+            {"type": "text", "text": "part2"}
+        ]});
+        assert_eq!(AgentOrchestrator::extract_result_text(Some(&v)), "part1\npart2");
+    }
+
+    #[test]
+    fn extract_result_text_plain_string() {
+        let v = json!("just a string");
+        assert_eq!(AgentOrchestrator::extract_result_text(Some(&v)), "just a string");
+    }
+
+    #[test]
+    fn extract_result_text_none() {
+        assert_eq!(AgentOrchestrator::extract_result_text(None), "");
+    }
+
+    #[test]
+    fn extract_result_text_object_fallback() {
+        let v = json!({"key": "val"});
+        let text = AgentOrchestrator::extract_result_text(Some(&v));
+        assert!(text.contains("key"));
+    }
+
+    // ── failure helper ──
+
+    #[test]
+    fn failure_produces_failure_result() {
+        let r = AgentOrchestrator::failure("something broke");
+        assert_eq!(r.status, "failure");
+        assert_eq!(r.error.as_deref(), Some("something broke"));
+    }
+
+    // ── PlanProgress ──
+
+    #[test]
+    fn plan_progress_default() {
+        let p = PlanProgress::default();
+        assert_eq!(p.completed_count, 0);
+        assert_eq!(p.total_count, 0);
+        assert_eq!(p.failed_count, 0);
+    }
+}

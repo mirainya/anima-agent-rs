@@ -716,10 +716,15 @@ impl SuspensionCoordinator {
             .find(|record| matches!(record.status, SuspensionStatus::Active))?;
         let question_id = suspension.question_id.clone()?;
         let raw_question = suspension.raw_payload.clone();
+        let raw_type = raw_question.get("type").and_then(Value::as_str);
         let source_kind = if suspension.kind == SuspensionKind::ToolPermission
-            || raw_question.get("type").and_then(Value::as_str) == Some("tool_permission")
+            || raw_type == Some("tool_permission")
         {
             PendingQuestionSourceKind::ToolPermission
+        } else if suspension.kind == SuspensionKind::HumanApproval
+            || raw_type == Some("plan_approval")
+        {
+            PendingQuestionSourceKind::PlanApproval
         } else {
             PendingQuestionSourceKind::UpstreamQuestion
         };
@@ -1068,9 +1073,11 @@ impl SuspensionCoordinator {
             pending.source_kind,
             PendingQuestionSourceKind::UpstreamQuestion
                 | PendingQuestionSourceKind::SubtaskBlocked
+                | PendingQuestionSourceKind::PlanApproval
         ) {
             let kind = match pending.source_kind {
                 PendingQuestionSourceKind::SubtaskBlocked => SuspensionKind::SubtaskBlocked,
+                PendingQuestionSourceKind::PlanApproval => SuspensionKind::HumanApproval,
                 _ => SuspensionKind::Question,
             };
             self.emitter.upsert_suspension(
@@ -1132,5 +1139,277 @@ impl SuspensionCoordinator {
                     finished_at_ms: invocation.finished_at_ms,
                 },
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::{make_inbound, Bus, MakeInbound};
+    use crate::runtime::RuntimeStateStore;
+    use std::sync::Arc;
+
+    fn make_coordinator() -> SuspensionCoordinator {
+        let store = Arc::new(RuntimeStateStore::new());
+        let bus = Arc::new(Bus::create());
+        let emitter = Arc::new(RuntimeEventEmitter::new(
+            bus,
+            Arc::new(Mutex::new(Vec::new())),
+            store.clone(),
+        ));
+        SuspensionCoordinator::new(store, emitter)
+    }
+
+    fn test_inbound(_job_id: &str) -> InboundMessage {
+        make_inbound(MakeInbound {
+            channel: "test".into(),
+            sender_id: Some("user".into()),
+            chat_id: Some("chat".into()),
+            content: "test msg".into(),
+            ..Default::default()
+        })
+    }
+
+    fn make_test_question(job_id: &str, source_kind: PendingQuestionSourceKind) -> PendingQuestion {
+        let inbound = test_inbound(job_id);
+        PendingQuestion {
+            question_id: format!("q-{job_id}"),
+            job_id: job_id.to_string(),
+            opencode_session_id: "sess-1".into(),
+            question_kind: QuestionKind::Confirm,
+            prompt: "test prompt".into(),
+            options: vec!["yes".into(), "no".into()],
+            raw_question: json!({"type": "upstream_question"}),
+            decision_mode: QuestionDecisionMode::UserRequired,
+            risk_level: QuestionRiskLevel::High,
+            requires_user_confirmation: true,
+            source_kind,
+            continuation_token: None,
+            asked_at_ms: now_ms(),
+            answer_submitted: false,
+            answer_summary: None,
+            resolution_source: None,
+            inbound: Some(inbound),
+        }
+    }
+
+    // ── detect_pending_question ──
+
+    #[test]
+    fn detect_question_from_type_field() {
+        let result = json!({
+            "type": "question",
+            "question": {
+                "id": "q1",
+                "prompt": "Are you sure?",
+                "options": [{"value": "yes"}, {"value": "no"}]
+            }
+        });
+        let q = detect_pending_question(Some(&result), "sess-1").unwrap();
+        assert_eq!(q.question_id, "q1");
+        assert_eq!(q.prompt, "Are you sure?");
+        assert_eq!(q.options, vec!["yes", "no"]);
+    }
+
+    #[test]
+    fn detect_question_from_nested_question_field() {
+        let result = json!({
+            "question": {
+                "prompt": "Choose one",
+                "kind": "choice",
+                "options": ["a", "b", "c"]
+            }
+        });
+        let q = detect_pending_question(Some(&result), "sess-1").unwrap();
+        assert_eq!(q.question_kind, QuestionKind::Choice);
+        assert_eq!(q.options, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn detect_question_returns_none_for_non_question() {
+        let result = json!({"content": "hello"});
+        assert!(detect_pending_question(Some(&result), "sess-1").is_none());
+    }
+
+    #[test]
+    fn detect_question_returns_none_for_none() {
+        assert!(detect_pending_question(None, "sess-1").is_none());
+    }
+
+    // ── classify helpers ──
+
+    #[test]
+    fn classify_question_kind_from_kind_field() {
+        assert_eq!(
+            classify_question_kind(&json!({"kind": "confirm"}), &[]),
+            QuestionKind::Confirm
+        );
+        assert_eq!(
+            classify_question_kind(&json!({"kind": "input"}), &[]),
+            QuestionKind::Input
+        );
+    }
+
+    #[test]
+    fn classify_question_kind_defaults_to_choice_with_options() {
+        assert_eq!(
+            classify_question_kind(&json!({}), &["a".into(), "b".into()]),
+            QuestionKind::Choice
+        );
+    }
+
+    #[test]
+    fn classify_requires_user_confirmation_for_dangerous_prompts() {
+        assert!(classify_question_requires_user_confirmation(
+            "delete all files",
+            &[]
+        ));
+        assert!(classify_question_requires_user_confirmation(
+            "deploy to production",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn classify_does_not_require_confirmation_for_safe_prompts() {
+        assert!(!classify_question_requires_user_confirmation(
+            "what color do you prefer",
+            &[]
+        ));
+    }
+
+    // ── SuspensionCoordinator store/clear ──
+
+    #[test]
+    fn store_and_retrieve_question() {
+        let coord = make_coordinator();
+        let q = make_test_question("job-1", PendingQuestionSourceKind::UpstreamQuestion);
+        coord.store_question("job-1".into(), q.clone());
+        let retrieved = coord.pending_questions.lock().get("job-1").cloned();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().question_id, "q-job-1");
+    }
+
+    #[test]
+    fn clear_question_removes_from_cache() {
+        let coord = make_coordinator();
+        let q = make_test_question("job-2", PendingQuestionSourceKind::UpstreamQuestion);
+        coord.store_question("job-2".into(), q);
+        coord.clear_question("job-2");
+        assert!(coord.pending_questions.lock().get("job-2").is_none());
+    }
+
+    // ── submit_answer ──
+
+    #[test]
+    fn submit_answer_marks_as_submitted() {
+        let coord = make_coordinator();
+        let q = make_test_question("job-3", PendingQuestionSourceKind::UpstreamQuestion);
+        coord.store_question("job-3".into(), q.clone());
+        let result = coord.submit_answer(
+            "job-3",
+            &QuestionAnswerInput {
+                question_id: "q-job-3".into(),
+                source: "user".into(),
+                answer_type: "text".into(),
+                answer: "yes".into(),
+            },
+            "answered yes".into(),
+        );
+        let updated = result.unwrap();
+        assert!(updated.answer_submitted);
+        assert_eq!(updated.answer_summary.as_deref(), Some("answered yes"));
+    }
+
+    #[test]
+    fn submit_answer_rejects_wrong_question_id() {
+        let coord = make_coordinator();
+        let q = make_test_question("job-4", PendingQuestionSourceKind::UpstreamQuestion);
+        coord.store_question("job-4".into(), q);
+        let result = coord.submit_answer(
+            "job-4",
+            &QuestionAnswerInput {
+                question_id: "wrong-id".into(),
+                source: "user".into(),
+                answer_type: "text".into(),
+                answer: "yes".into(),
+            },
+            "".into(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn submit_answer_rejects_nonexistent_job() {
+        let coord = make_coordinator();
+        let result = coord.submit_answer(
+            "ghost",
+            &QuestionAnswerInput {
+                question_id: "q".into(),
+                source: "user".into(),
+                answer_type: "text".into(),
+                answer: "yes".into(),
+            },
+            "".into(),
+        );
+        assert!(result.is_err());
+    }
+
+    // ── source_kind string helpers ──
+
+    #[test]
+    fn source_kind_str_roundtrip() {
+        assert_eq!(source_kind_str(&PendingQuestionSourceKind::PlanApproval), "plan_approval");
+        assert_eq!(source_kind_str(&PendingQuestionSourceKind::ToolPermission), "tool_permission");
+        assert_eq!(source_kind_str(&PendingQuestionSourceKind::SubtaskBlocked), "subtask_blocked");
+        assert_eq!(source_kind_str(&PendingQuestionSourceKind::UpstreamQuestion), "upstream_question");
+    }
+
+    #[test]
+    fn question_kind_str_values() {
+        assert_eq!(question_kind_str(&QuestionKind::Confirm), "confirm");
+        assert_eq!(question_kind_str(&QuestionKind::Choice), "choice");
+        assert_eq!(question_kind_str(&QuestionKind::Input), "input");
+    }
+
+    #[test]
+    fn permission_risk_mapping() {
+        assert_eq!(
+            permission_risk_to_question_risk(&PermissionRiskLevel::Low),
+            QuestionRiskLevel::Low
+        );
+        assert_eq!(
+            permission_risk_to_question_risk(&PermissionRiskLevel::High),
+            QuestionRiskLevel::High
+        );
+    }
+
+    // ── store_question suspension kind mapping ──
+
+    #[test]
+    fn store_question_maps_plan_approval_to_human_approval_suspension() {
+        let coord = make_coordinator();
+        let q = make_test_question("job-pa", PendingQuestionSourceKind::PlanApproval);
+        coord.store_question("job-pa".into(), q);
+        let snapshot = coord.runtime_state_store.snapshot();
+        let has_human_approval = snapshot
+            .suspensions
+            .values()
+            .any(|s| s.kind == SuspensionKind::HumanApproval);
+        assert!(has_human_approval);
+    }
+
+    #[test]
+    fn store_question_maps_tool_permission_to_tool_permission_suspension() {
+        let coord = make_coordinator();
+        let mut q = make_test_question("job-tp", PendingQuestionSourceKind::ToolPermission);
+        q.raw_question = json!({"type": "tool_permission", "invocation_id": "inv-1"});
+        coord.store_question("job-tp".into(), q);
+        let snapshot = coord.runtime_state_store.snapshot();
+        let has_tool_perm = snapshot
+            .suspensions
+            .values()
+            .any(|s| s.kind == SuspensionKind::ToolPermission);
+        assert!(has_tool_perm);
     }
 }
