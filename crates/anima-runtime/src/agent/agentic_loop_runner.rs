@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::sync::Arc;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::bus::{
@@ -9,6 +10,8 @@ use crate::execution::agentic_loop::{run_agentic_loop, AgenticLoopConfig, Agenti
 use crate::prompt::PromptAssembler;
 use crate::streaming::types::{ContentBlock, ContentDelta, StreamEvent};
 use crate::support::now_ms;
+
+use crate::orchestrator::llm_decompose::extract_json_array;
 
 use super::context_types::InitialAgenticLoopRunPreparation;
 use super::core::CoreAgent;
@@ -36,7 +39,7 @@ impl CoreAgent {
 
         let system_prompt = {
             let mut asm = PromptAssembler::new();
-            asm.add_text("identity", "你是 Anima 智能助手。", 0);
+            asm.add_text("identity", &self.prompts.read().agentic_loop_system, 0);
             asm.add_section(crate::prompt::sections::completion_status_section());
             Some(asm.build().text)
         };
@@ -117,7 +120,14 @@ impl CoreAgent {
         started: u64,
         loop_result: crate::execution::agentic_loop::AgenticLoopResult,
     ) -> TaskResult {
-        self.append_transcript_messages(inbound_msg, &loop_result.messages);
+        let skip_initial_user = if loop_result.messages.first().map(|m| &m.role)
+            == Some(&crate::messages::types::MessageRole::User)
+        {
+            &loop_result.messages[1..]
+        } else {
+            &loop_result.messages
+        };
+        self.append_transcript_messages(inbound_msg, skip_initial_user);
         let duration_ms = now_ms().saturating_sub(started);
         make_task_result(MakeTaskResult {
             task_id: Uuid::new_v4().to_string(),
@@ -178,6 +188,18 @@ impl CoreAgent {
             &preparation.config,
         ) {
             Ok(AgenticLoopOutcome::Completed(loop_result)) => {
+                // Check if the agentic loop output looks like a multi-task decomposition plan.
+                // This happens when try_llm_decompose failed but the AI still produced a plan.
+                if let Some(orch_result) = self.try_dispatch_as_orchestration(
+                    &loop_result.final_text,
+                    inbound_msg,
+                    opencode_session_id,
+                ) {
+                    debug!(
+                        "[agentic_loop] detected multi-task plan in loop output, dispatched via orchestrator"
+                    );
+                    return orch_result;
+                }
                 self.finalize_completed_agentic_loop_run(inbound_msg, started, loop_result)
             }
             Ok(AgenticLoopOutcome::Suspended(suspension)) => self
@@ -194,6 +216,93 @@ impl CoreAgent {
                     started,
                     &runtime_error,
                 )
+            }
+        }
+    }
+
+    /// Try to parse the agentic loop output as a multi-task decomposition plan.
+    /// If successful, execute it via the orchestrator and return the result.
+    fn try_dispatch_as_orchestration(
+        &self,
+        final_text: &str,
+        inbound_msg: &InboundMessage,
+        session_id: &str,
+    ) -> Option<TaskResult> {
+        let text = final_text.trim();
+        // Extract JSON array from text — it may be preceded by reasoning blocks etc.
+        let json_str = extract_json_array(text)?;
+
+        let specs: Vec<serde_json::Value> = serde_json::from_str(json_str).ok()?;
+        // Must have more than 1 subtask to be a decomposition plan
+        if specs.len() <= 1 {
+            return None;
+        }
+        // Validate that items look like subtask specs (must have "name" and "description")
+        let all_valid = specs.iter().all(|s| {
+            s.get("name").and_then(|v| v.as_str()).filter(|v| !v.is_empty()).is_some()
+                && s.get("description").and_then(|v| v.as_str()).filter(|v| !v.is_empty()).is_some()
+        });
+        if !all_valid {
+            return None;
+        }
+        // The JSON array must dominate the text — reject if there's too much surrounding prose
+        let non_json_len = text.len().saturating_sub(json_str.len());
+        if non_json_len > 200 {
+            return None;
+        }
+        if !all_valid {
+            return None;
+        }
+
+        debug!(
+            "[agentic_loop] final_text contains {} subtask specs, building plan directly",
+            specs.len()
+        );
+
+        // Build the orchestration plan directly from the parsed specs,
+        // instead of calling try_llm_decompose again (which may have already failed).
+        let plan = self.orchestrator.build_plan_from_parsed_specs(
+            json_str,
+            &inbound_msg.content,
+            &inbound_msg.id,
+            &inbound_msg.id,
+        );
+        let plan = match plan {
+            Some(p) => Arc::new(p),
+            None => {
+                warn!("[agentic_loop] failed to build plan from parsed specs");
+                return None;
+            }
+        };
+
+        if plan.subtasks.len() <= 1 {
+            return None;
+        }
+
+        self.emitter.publish(
+            "orchestration_selected",
+            inbound_msg,
+            json!({
+                "plan_type": "single",
+                "selected_plan_type": "orchestration-v1",
+                "reason": "agentic_loop_fallback_decompose",
+                "subtask_count": plan.subtasks.len(),
+            }),
+        );
+
+        let result = self.orchestrator.execute_existing_plan(
+            plan,
+            &inbound_msg.content,
+            &inbound_msg.id,
+            session_id,
+            |event, payload| self.emitter.publish(event, inbound_msg, payload),
+        );
+
+        match result {
+            Ok(r) => Some(r),
+            Err(e) => {
+                warn!("[agentic_loop] orchestrator execution failed: {e}");
+                None
             }
         }
     }

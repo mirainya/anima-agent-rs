@@ -57,7 +57,10 @@ impl HttpChannel {
         let client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
-            .expect("http client should build");
+            .unwrap_or_else(|e| {
+                tracing::warn!("http client builder failed ({e}), using default");
+                Client::new()
+            });
         Self {
             config,
             client,

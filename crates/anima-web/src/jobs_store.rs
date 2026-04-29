@@ -42,4 +42,17 @@ impl JobStore {
     pub fn review_for(&self, job_id: &str) -> Option<JobReviewView> {
         self.reviews.get(job_id).cloned()
     }
+
+    pub fn remove_by_chat_id(&mut self, chat_id: &str) {
+        let job_ids: Vec<String> = self
+            .accepted
+            .iter()
+            .filter(|(_, j)| j.chat_id.as_deref() == Some(chat_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &job_ids {
+            self.accepted.remove(id);
+            self.reviews.remove(id);
+        }
+    }
 }

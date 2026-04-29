@@ -3,6 +3,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::core::{AgentOrchestrator, OrchestrationPlan, PlanProgress, SubTask};
@@ -36,28 +37,19 @@ impl AgentOrchestrator {
         request: &str,
         session_id: &str,
     ) -> Option<Vec<LlmSubtaskSpec>> {
-        let provider = self.provider.as_ref()?;
+        let provider = match self.provider.as_ref() {
+            Some(p) => p,
+            None => {
+                warn!("[llm_decompose] no provider configured, skipping decomposition");
+                return None;
+            }
+        };
 
-        let prompt = format!(
-            "你是任务分解引擎。分析用户请求，判断是否需要拆解为多个子任务。\n\n\
-             用户请求: {request}\n\n\
-             ## 判断标准\n\
-             以下情况不需要拆解，直接返回空数组 []：\n\
-             - 简单问答、闲聊、知识查询\n\
-             - 单步操作（如：翻译一段话、解释一个概念、写一个函数）\n\
-             - 请求本身已经足够具体，不需要分工协作\n\n\
-             以下情况需要拆解：\n\
-             - 请求包含多个独立或有依赖关系的工作项\n\
-             - 需要不同专业能力协作完成（如设计+实现+测试）\n\
-             - 工作量大到需要分阶段推进\n\n\
-             ## 输出格式\n\
-             输出 JSON 数组，每个元素包含:\n\
-             - name: 子任务名称（英文短横线命名）\n\
-             - task_type: 类型（design/frontend/backend/testing/data-collection/analysis/generic）\n\
-             - specialist_type: 专家类型（designer/frontend-dev/backend-dev/tester/data-engineer/analyst/default）\n\
-             - dependencies: 依赖的子任务 name 数组（禁止循环依赖）\n\
-             - description: 简短描述\n\n\
-             约束：子任务数量不超过 6 个。只输出 JSON 数组，不要其他内容。"
+        let prompts = self.prompts.read();
+        let prompt = prompts.task_decompose.replace("{request}", request);
+        debug!(
+            "[llm_decompose] sending decompose request, prompt_len={}",
+            prompt.len()
         );
 
         let chat_request = ChatRequest {
@@ -65,10 +57,17 @@ impl AgentOrchestrator {
                 role: ChatRole::User,
                 content: vec![ContentBlock::Text { text: prompt }],
             }],
+            max_tokens: Some(4096),
             metadata: json!({ "session_id": session_id }),
             ..Default::default()
         };
-        let response = provider.chat(chat_request).ok()?;
+        let response = match provider.chat(chat_request) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("[llm_decompose] provider.chat failed: {e}");
+                return None;
+            }
+        };
 
         let text = response
             .content
@@ -80,11 +79,44 @@ impl AgentOrchestrator {
             .unwrap_or("")
             .trim();
 
-        let json_str = extract_json_array(text)?;
-        let mut specs: Vec<LlmSubtaskSpec> = serde_json::from_str(json_str).ok()?;
+        debug!(
+            "[llm_decompose] raw LLM response (first 500 chars): {}",
+            &text[..text.len().min(500)]
+        );
+
+        let json_str = match extract_json_array(text) {
+            Some(s) => s,
+            None => {
+                warn!(
+                    "[llm_decompose] failed to extract JSON array from response: {}",
+                    &text[..text.len().min(200)]
+                );
+                return None;
+            }
+        };
+
+        let specs: Vec<LlmSubtaskSpec> = match serde_json::from_str(json_str) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    "[llm_decompose] JSON parse failed: {e}, json_str: {}",
+                    &json_str[..json_str.len().min(300)]
+                );
+                return None;
+            }
+        };
+
         if specs.is_empty() {
+            debug!("[llm_decompose] LLM returned empty array, no decomposition needed");
             return None;
         }
+
+        let count = specs.len().min(6);
+        debug!(
+            "[llm_decompose] decomposed into {count} subtasks: {:?}",
+            specs.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        let mut specs = specs;
         specs.truncate(6);
         Some(specs)
     }
@@ -149,9 +181,26 @@ impl AgentOrchestrator {
             created_at: now_ms(),
         }
     }
+
+    /// Build an OrchestrationPlan from a pre-parsed JSON array string.
+    /// Used as a fallback when the agentic loop output contains subtask specs.
+    pub fn build_plan_from_parsed_specs(
+        &self,
+        json_str: &str,
+        request: &str,
+        trace_id: &str,
+        parent_job_id: &str,
+    ) -> Option<OrchestrationPlan> {
+        let mut specs: Vec<LlmSubtaskSpec> = serde_json::from_str(json_str).ok()?;
+        if specs.is_empty() {
+            return None;
+        }
+        specs.truncate(6);
+        Some(self.build_plan_from_llm_specs(specs, request, trace_id, parent_job_id))
+    }
 }
 
-fn extract_json_array(text: &str) -> Option<&str> {
+pub(crate) fn extract_json_array(text: &str) -> Option<&str> {
     let start = text.find('[')?;
     let mut depth = 0;
     for (i, ch) in text[start..].char_indices() {

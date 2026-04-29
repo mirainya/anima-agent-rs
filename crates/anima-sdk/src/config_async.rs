@@ -75,9 +75,9 @@ pub async fn write_log(
     }
 
     let mut body = Map::new();
-    body.insert("service".into(), params.get("service").cloned().unwrap());
-    body.insert("level".into(), params.get("level").cloned().unwrap());
-    body.insert("message".into(), params.get("message").cloned().unwrap());
+    body.insert("service".into(), utils::require_param(params, "service")?);
+    body.insert("level".into(), utils::require_param(params, "level")?);
+    body.insert("message".into(), utils::require_param(params, "message")?);
     if let Some(extra) = params.get("extra") {
         body.insert("extra".into(), extra.clone());
     }

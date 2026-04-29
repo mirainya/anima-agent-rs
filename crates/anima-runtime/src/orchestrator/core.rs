@@ -7,6 +7,7 @@
 //! - 同时提供静态方法 `execute_plan` / `execute_single_task` 用于直接执行 ExecutionPlan
 
 use crate::agent::detect_pending_question;
+use crate::agent::runtime_error::AgentError;
 use crate::provider::Provider;
 use crate::agent::types::{
     make_task, make_task_result, ExecutionPlan, ExecutionPlanKind, MakeTask, MakeTaskResult, Task,
@@ -209,6 +210,7 @@ pub struct AgentOrchestrator {
     running: AtomicBool,
     metrics: Mutex<OrchestratorMetrics>,
     pub(crate) provider: Option<Arc<dyn Provider>>,
+    pub(crate) prompts: parking_lot::RwLock<Arc<anima_types::config::PromptsConfig>>,
 }
 
 impl AgentOrchestrator {
@@ -227,12 +229,17 @@ impl AgentOrchestrator {
             running: AtomicBool::new(false),
             metrics: Mutex::new(OrchestratorMetrics::default()),
             provider: None,
+            prompts: parking_lot::RwLock::new(Arc::new(anima_types::config::PromptsConfig::default())),
         }
     }
 
     pub fn with_llm(mut self, provider: Arc<dyn Provider>) -> Self {
         self.provider = Some(provider);
         self
+    }
+
+    pub fn set_prompts(&self, prompts: Arc<anima_types::config::PromptsConfig>) {
+        *self.prompts.write() = prompts;
     }
 
     fn runtime_run_id(job_id: &str) -> String {
@@ -736,22 +743,52 @@ impl AgentOrchestrator {
         trace_id: &str,
         parent_job_id: &str,
         session_id: &str,
-        mut publish_event: F,
-    ) -> Result<OrchestrationExecutionResult, String>
+        publish_event: F,
+    ) -> Result<OrchestrationExecutionResult, AgentError>
     where
         F: FnMut(&str, Value),
     {
-        let started = now_ms();
         if request.contains("[orchestration-fail]") {
-            return Err("forced orchestration fallback".into());
+            return Err(AgentError::OrchestrationForcedFallback);
         }
 
         let plan = Arc::new(self.decompose_task(request, trace_id, parent_job_id, Some(session_id)));
         let was_decomposed = plan.subtasks.len() > 1
             || plan.matched_rule.is_some();
         if !was_decomposed {
-            return Err("llm_no_decomposition".into());
+            return Err(AgentError::OrchestrationNoDecomposition);
         }
+        self.execute_orchestration_plan_impl(plan, request, parent_job_id, session_id, publish_event)
+    }
+
+    /// Execute a pre-built OrchestrationPlan (used by agentic loop fallback).
+    pub fn execute_existing_plan<F>(
+        &self,
+        plan: Arc<OrchestrationPlan>,
+        request: &str,
+        parent_job_id: &str,
+        session_id: &str,
+        publish_event: F,
+    ) -> Result<TaskResult, AgentError>
+    where
+        F: FnMut(&str, Value),
+    {
+        self.execute_orchestration_plan_impl(plan, request, parent_job_id, session_id, publish_event)
+            .map(|r| r.result)
+    }
+
+    fn execute_orchestration_plan_impl<F>(
+        &self,
+        plan: Arc<OrchestrationPlan>,
+        request: &str,
+        parent_job_id: &str,
+        session_id: &str,
+        mut publish_event: F,
+    ) -> Result<OrchestrationExecutionResult, AgentError>
+    where
+        F: FnMut(&str, Value),
+    {
+        let started = now_ms();
         let lowered_tasks = plan
             .execution_order
             .iter()
@@ -992,7 +1029,7 @@ impl AgentOrchestrator {
         session_id: &str,
         execution_context: &mut OrchestrationExecutionContext,
         publish_event: &mut F,
-    ) -> Result<Option<TaskResult>, String>
+    ) -> Result<Option<TaskResult>, AgentError>
     where
         F: FnMut(&str, Value),
     {
@@ -1032,7 +1069,7 @@ impl AgentOrchestrator {
         execution_mode: &str,
         execution_context: &mut OrchestrationExecutionContext,
         publish_event: &mut F,
-    ) -> Result<Option<TaskResult>, String>
+    ) -> Result<Option<TaskResult>, AgentError>
     where
         F: FnMut(&str, Value),
     {
@@ -1488,6 +1525,7 @@ impl AgentOrchestrator {
                 plan,
                 lowered_tasks,
                 &execution_context.subtask_results,
+                &self.prompts.read().context_infer,
             ) {
                 return Some(question);
             }
@@ -1717,7 +1755,9 @@ impl AgentOrchestrator {
                 }
 
                 if failed {
-                    return fail_result.unwrap();
+                    if let Some(r) = fail_result {
+                        return r;
+                    }
                 }
             }
         }

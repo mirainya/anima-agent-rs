@@ -116,6 +116,10 @@ pub(crate) fn extract_response_text(response: Option<&Value>) -> String {
         return chunks.join("\n");
     }
 
+    if let Some(text) = response.get("text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+
     if let Some(content) = response.get("content").and_then(Value::as_str) {
         return content.to_string();
     }

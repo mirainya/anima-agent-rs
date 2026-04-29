@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::event_emitter::RuntimeEventEmitter;
+use super::runtime_error::AgentError;
 use crate::bus::InboundMessage;
 use crate::execution::agentic_loop::{AgenticLoopSuspension, SuspendedToolInvocation};
 use crate::execution::turn_coordinator::prepare_question_asked_payload;
@@ -1039,16 +1040,17 @@ impl SuspensionCoordinator {
         job_id: &str,
         answer: &QuestionAnswerInput,
         answer_summary: String,
-    ) -> Result<PendingQuestion, String> {
+    ) -> Result<PendingQuestion, AgentError> {
         let mut pending = self
             .question_state(job_id, true)
-            .ok_or_else(|| format!("No pending question for job: {job_id}"))?;
+            .ok_or_else(|| AgentError::NoPendingQuestion(job_id.into()))?;
 
         if pending.question_id != answer.question_id {
-            return Err(format!(
-                "Question ID mismatch for job {job_id}: expected {}, got {}",
-                pending.question_id, answer.question_id
-            ));
+            return Err(AgentError::QuestionIdMismatch {
+                job_id: job_id.into(),
+                expected: pending.question_id.clone(),
+                got: answer.question_id.clone(),
+            });
         }
 
         pending.answer_submitted = true;
@@ -1059,7 +1061,7 @@ impl SuspensionCoordinator {
             .insert(job_id.to_string(), pending.clone());
 
         let inbound = pending.inbound.as_ref().ok_or_else(|| {
-            format!("Missing inbound context for pending question on job: {job_id}")
+            AgentError::MissingInboundContext(job_id.into())
         })?;
 
         if matches!(

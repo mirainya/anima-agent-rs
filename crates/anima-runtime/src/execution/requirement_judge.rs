@@ -70,6 +70,7 @@ impl RequirementProgressState {
 pub fn judge_requirement(
     ctx: &RequirementJudgeContext,
     provider: Option<&dyn Provider>,
+    prompts: Option<&anima_types::config::PromptsConfig>,
 ) -> RequirementJudgement {
     let question = detect_pending_question(ctx.raw_result.as_ref(), &ctx.opencode_session_id);
     if let Some(question) = question {
@@ -91,13 +92,18 @@ pub fn judge_requirement(
         return RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
             reason: "上游返回了可由主 agent 继续处理的结构化问题".into(),
             missing_requirements: vec![question.prompt.clone()],
-            followup_prompt: build_question_followup_prompt(&ctx.original_user_request, &question),
+            followup_prompt: build_question_followup_prompt(
+                &ctx.original_user_request,
+                &question,
+                prompts.map(|p| p.question_followup.as_str()),
+            ),
             result_fingerprint: fingerprint,
         }));
     }
 
     let response_text = extract_response_text(ctx.raw_result.as_ref());
     let normalized = normalize_text(&response_text);
+    let result_tmpl = prompts.map(|p| p.result_followup.as_str());
     if response_text.trim().is_empty() {
         return RequirementJudgement::NeedsAgentFollowup(Box::new(AgentFollowupPlan {
             reason: "上游成功返回，但缺少可交付结果".into(),
@@ -106,6 +112,7 @@ pub fn judge_requirement(
                 &ctx.original_user_request,
                 &response_text,
                 "请继续推进，直到明确说明需求是否已经完成；若仍缺信息，只在确实必须依赖用户时提出结构化 question。",
+                result_tmpl,
             ),
             result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
         }));
@@ -124,6 +131,7 @@ pub fn judge_requirement(
                 &ctx.original_user_request,
                 &response_text,
                 "你刚刚重复了前一轮结果。请基于原始需求继续推进，输出新增结论；如果必须依赖用户，请返回结构化 question。",
+                result_tmpl,
             ),
             result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
         }));
@@ -142,6 +150,7 @@ pub fn judge_requirement(
                         &ctx.original_user_request,
                         &response_text,
                         "请继续推进，直到任务完整完成。",
+                        result_tmpl,
                     ),
                     result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
                 }));
@@ -152,8 +161,9 @@ pub fn judge_requirement(
 
     // Layer 2: lightweight LLM judgement
     if let Some(provider) = provider {
+        let judge_tmpl = prompts.map(|p| p.requirement_judge.as_str());
         if let Some(satisfied) =
-            llm_judge_requirement(provider, &ctx.original_user_request, &response_text)
+            llm_judge_requirement(provider, &ctx.original_user_request, &response_text, judge_tmpl)
         {
             if satisfied {
                 debug!("requirement judge: LLM says satisfied");
@@ -167,6 +177,7 @@ pub fn judge_requirement(
                         &ctx.original_user_request,
                         &response_text,
                         "请继续推进，直到完整满足用户的原始请求。",
+                        result_tmpl,
                     ),
                     result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
                 }));
@@ -184,6 +195,7 @@ pub fn judge_requirement(
                 &ctx.original_user_request,
                 &response_text,
                 "请不要只描述限制或保守结论。若能继续分析/执行，请继续推进；只有确实缺少用户外部信息时才返回结构化 question。",
+                result_tmpl,
             ),
             result_fingerprint: fingerprint_result(ctx.raw_result.as_ref()),
         }));
@@ -209,14 +221,20 @@ fn llm_judge_requirement(
     provider: &dyn Provider,
     original_request: &str,
     response_text: &str,
+    template: Option<&str>,
 ) -> Option<bool> {
     let preview: String = response_text.chars().take(500).collect();
-    let prompt = format!(
-        "你是需求完成度评估器。判断以下 AI 回复是否完整满足了用户的原始请求。\n\n\
-         用户请求：{original_request}\n\n\
-         AI 回复摘要（前 500 字）：{preview}\n\n\
-         只回复 JSON：{{\"satisfied\": true/false, \"reason\": \"一句话原因\"}}"
-    );
+    let prompt = if let Some(tmpl) = template {
+        tmpl.replace("{request}", original_request)
+            .replace("{reply_preview}", &preview)
+    } else {
+        format!(
+            "你是需求完成度评估器。判断以下 AI 回复是否完整满足了用户的原始请求。\n\n\
+             用户请求：{original_request}\n\n\
+             AI 回复摘要（前 500 字）：{preview}\n\n\
+             只回复 JSON：{{\"satisfied\": true/false, \"reason\": \"一句话原因\"}}"
+        )
+    };
     let request = ChatRequest {
         messages: vec![ChatMessage {
             role: ChatRole::User,
@@ -251,32 +269,51 @@ pub fn fingerprint_result(result: Option<&Value>) -> String {
 fn build_question_followup_prompt(
     original_user_request: &str,
     question: &PendingQuestion,
+    template: Option<&str>,
 ) -> String {
-    let options = if question.options.is_empty() {
+    let options_str = if question.options.is_empty() {
         String::new()
     } else {
-        format!("\n可选项: {}", question.options.join(", "))
+        question.options.join(", ")
     };
-    format!(
-        "用户原始请求: {original_user_request}\n\n\
-         上游提出了一个问题: {}{options}\n\n\
-         请根据用户原始请求的上下文，尝试推断出合理答案并继续执行。\
-         如果确实无法推断，请返回结构化 question 给用户。",
-        question.prompt
-    )
+    if let Some(tmpl) = template {
+        tmpl.replace("{request}", original_user_request)
+            .replace("{question}", &question.prompt)
+            .replace("{options}", &options_str)
+    } else {
+        let options_display = if question.options.is_empty() {
+            String::new()
+        } else {
+            format!("\n可选项: {options_str}")
+        };
+        format!(
+            "用户原始请求: {original_user_request}\n\n\
+             上游提出了一个问题: {}{options_display}\n\n\
+             请根据用户原始请求的上下文，尝试推断出合理答案并继续执行。\
+             如果确实无法推断，请返回结构化 question 给用户。",
+            question.prompt
+        )
+    }
 }
 
 fn build_result_followup_prompt(
     original_user_request: &str,
     response_text: &str,
     instruction: &str,
+    template: Option<&str>,
 ) -> String {
     let preview: String = response_text.chars().take(300).collect();
-    format!(
-        "用户原始请求: {original_user_request}\n\n\
-         上一轮结果摘要: {preview}\n\n\
-         {instruction}"
-    )
+    if let Some(tmpl) = template {
+        tmpl.replace("{request}", original_user_request)
+            .replace("{result_preview}", &preview)
+            .replace("{instruction}", instruction)
+    } else {
+        format!(
+            "用户原始请求: {original_user_request}\n\n\
+             上一轮结果摘要: {preview}\n\n\
+             {instruction}"
+        )
+    }
 }
 
 fn normalize_text(text: &str) -> String {

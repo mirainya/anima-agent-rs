@@ -19,6 +19,8 @@ pub struct RuntimeStateSnapshot {
     pub recent_events: Vec<RuntimeDomainEventEnvelope>,
     pub projection_hints: HashMap<String, HashMap<String, Value>>,
     pub index: RuntimeTaskIndex,
+    #[serde(default)]
+    pub session_titles: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

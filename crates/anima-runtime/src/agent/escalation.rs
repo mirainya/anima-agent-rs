@@ -30,14 +30,9 @@ impl CoreAgent {
             }
         };
 
-        let prompt = format!(
-            "你是主调度 Agent。一个子任务执行时遇到阻塞，需要你判断能否从已有信息中推断出答案。\n\n\
-             用户原始请求: {}\n\n\
-             阻塞原因: {}\n\n\
-             如果你能从用户请求中推断出合理答案，请直接给出简短答案。\n\
-             如果信息不足无法判断，请只回复: CANNOT_RESOLVE",
-            inbound_msg.content, reason_desc
-        );
+        let prompt = self.prompts.read().escalation_resolve
+            .replace("{request}", &inbound_msg.content)
+            .replace("{reason}", &reason_desc);
 
         let chat_request = ChatRequest {
             messages: vec![ChatMessage {

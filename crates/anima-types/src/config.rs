@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::approval::ApprovalMode;
@@ -14,6 +14,7 @@ pub struct AnimaConfig {
     pub approval_mode: ApprovalMode,
     pub provider: ProviderConfig,
     pub permissions: PermissionConfig,
+    pub prompts: PromptsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -121,14 +122,129 @@ impl Default for ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PromptsConfig {
+    pub task_decompose: String,
+    pub context_infer: String,
+    pub escalation_resolve: String,
+    pub requirement_judge: String,
+    pub question_followup: String,
+    pub result_followup: String,
+    pub agentic_loop_system: String,
+    pub tool_resume_system: String,
+    pub message_classifier: String,
+    pub identity: String,
+}
+
+impl Default for PromptsConfig {
+    fn default() -> Self {
+        Self {
+            task_decompose: DEFAULT_TASK_DECOMPOSE_PROMPT.into(),
+            context_infer: DEFAULT_CONTEXT_INFER_PROMPT.into(),
+            escalation_resolve: DEFAULT_ESCALATION_RESOLVE_PROMPT.into(),
+            requirement_judge: DEFAULT_REQUIREMENT_JUDGE_PROMPT.into(),
+            question_followup: DEFAULT_QUESTION_FOLLOWUP_PROMPT.into(),
+            result_followup: DEFAULT_RESULT_FOLLOWUP_PROMPT.into(),
+            agentic_loop_system: DEFAULT_AGENTIC_LOOP_SYSTEM_PROMPT.into(),
+            tool_resume_system: DEFAULT_TOOL_RESUME_SYSTEM_PROMPT.into(),
+            message_classifier: DEFAULT_MESSAGE_CLASSIFIER_PROMPT.into(),
+            identity: DEFAULT_IDENTITY_PROMPT.into(),
+        }
+    }
+}
+
+pub const DEFAULT_TASK_DECOMPOSE_PROMPT: &str = "\
+你是任务分解引擎。分析用户请求，判断是否需要拆解为多个子任务。\n\n\
+用户请求: {request}\n\n\
+## 判断标准\n\
+### 必须拆解的情况（最高优先级）：\n\
+- 用户明确要求拆分/拆解/分成多个任务（如『拆成4个任务』『分别做』『并行执行』）\n\
+- 用户指定了具体的子任务数量或列举了多个独立工作项\n\
+- 此时严格按照用户指定的数量和内容拆分，每个子任务的 description 必须精确描述该子任务要做的具体事情\n\n\
+### 不需要拆解，直接返回空数组 []：\n\
+- 简单问答、闲聊、知识查询\n\
+- 单步操作（如：翻译一段话、解释一个概念、写一个函数）\n\
+- 请求本身已经足够具体，不需要分工协作\n\n\
+### 需要拆解：\n\
+- 请求包含多个独立或有依赖关系的工作项\n\
+- 需要不同专业能力协作完成（如设计+实现+测试）\n\
+- 工作量大到需要分阶段推进\n\n\
+## 输出格式\n\
+输出 JSON 数组，每个元素包含:\n\
+- name: 子任务名称（英文短横线命名）\n\
+- task_type: 类型（design/frontend/backend/testing/data-collection/analysis/generic）\n\
+- specialist_type: 专家类型（designer/frontend-dev/backend-dev/tester/data-engineer/analyst/default）\n\
+- dependencies: 依赖的子任务 name 数组（禁止循环依赖）\n\
+- description: 该子任务要执行的具体指令（必须足够具体，让执行者无需看原始请求就能完成）\n\n\
+约束：子任务数量不超过 6 个。只输出 JSON 数组，不要其他内容。";
+
+pub const DEFAULT_CONTEXT_INFER_PROMPT: &str = "\
+你是上下文完整性分析器。以下是多个子任务的执行结果，判断是否有多个子任务因缺少共享上下文信息而无法继续。\n\n\
+原始请求: {request}\n\n\
+子任务结果:\n{results}\n\n\
+请输出 JSON 对象:\n\
+- needs_question: bool — 是否需要向用户追问\n\
+- prompt: string — 追问内容（简洁精准，一个问题）\n\
+- options: string[] — 3-5 个常见选项\n\n\
+如果子任务结果充分、不需要追问，设 needs_question 为 false。\n\
+只输出 JSON 对象，不要其他内容。";
+
+pub const DEFAULT_ESCALATION_RESOLVE_PROMPT: &str = "\
+你是主调度 Agent。一个子任务执行时遇到阻塞，需要你判断能否从已有信息中推断出答案。\n\n\
+用户原始请求: {request}\n\n\
+阻塞原因: {reason}\n\n\
+如果你能从用户请求中推断出合理答案，请直接给出简短答案。\n\
+如果信息不足无法判断，请只回复: CANNOT_RESOLVE";
+
+pub const DEFAULT_REQUIREMENT_JUDGE_PROMPT: &str = "\
+你是需求完成度评估器。判断 AI 的回复是否完整满足了用户的原始请求。\n\n\
+用户请求: {request}\n\n\
+AI 回复（前500字）: {reply_preview}\n\n\
+输出 JSON: {{\"satisfied\": true/false, \"reason\": \"简短原因\"}}";
+
+pub const DEFAULT_QUESTION_FOLLOWUP_PROMPT: &str = "\
+上游返回了一个结构化问题，请尝试从用户原始请求的上下文中推断答案并继续执行。\n\
+如果确实无法推断，请返回结构化 question 给用户。\n\n\
+用户原始请求: {request}\n\n\
+问题: {question}\n\
+选项: {options}";
+
+pub const DEFAULT_RESULT_FOLLOWUP_PROMPT: &str = "\
+用户原始请求: {request}\n\n\
+上一轮结果（前300字）: {result_preview}\n\n\
+{instruction}";
+
+pub const DEFAULT_AGENTIC_LOOP_SYSTEM_PROMPT: &str = "你是 Anima 智能助手。";
+
+pub const DEFAULT_TOOL_RESUME_SYSTEM_PROMPT: &str = "你是 Anima 智能助手。";
+
+pub const DEFAULT_MESSAGE_CLASSIFIER_PROMPT: &str = r#"You are a task classifier. Analyze the user's message and classify it.
+
+RESPOND WITH ONLY A JSON OBJECT, NO OTHER TEXT.
+
+Classification types:
+1. "simple-chat" - General conversation, greetings, simple questions, asking about capabilities
+2. "complex-task" - Requests to write code, create files, build features, fix bugs, implement things
+
+Examples:
+- "hi" → {"type": "simple-chat", "confidence": 0.95, "reasoning": "greeting"}
+- "Write a function" → {"type": "complex-task", "confidence": 0.95, "reasoning": "code generation request"}
+
+User message: "#;
+
+pub const DEFAULT_IDENTITY_PROMPT: &str = "\
+You are {agent_name}, an AI assistant powered by Anima runtime. \
+Follow user instructions carefully and use available tools when needed.";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PermissionConfig {
     pub mode: String,
     pub rules: Vec<PermissionRuleConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PermissionRuleConfig {
     pub tool_pattern: String,
     pub decision: String,

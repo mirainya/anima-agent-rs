@@ -27,3 +27,11 @@ pub fn validate_required(params: &Map<String, Value>, required_keys: &[&str]) ->
         Err(AnimaError::MissingRequired(missing.join(", ")))
     }
 }
+
+pub fn require_param(params: &Map<String, Value>, key: &str) -> Result<Value> {
+    params
+        .get(key)
+        .filter(|v| !v.is_null())
+        .cloned()
+        .ok_or_else(|| AnimaError::MissingRequired(key.to_string()))
+}

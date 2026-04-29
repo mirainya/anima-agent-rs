@@ -17,6 +17,7 @@ use super::context_types::{
     ToolPermissionResumePreparation,
 };
 use super::core::CoreAgent;
+use super::runtime_error::AgentError;
 use super::runtime_helpers::truncate_preview;
 use super::runtime_ids::runtime_task_id;
 use super::suspension::{
@@ -32,7 +33,7 @@ impl CoreAgent {
         inbound: &InboundMessage,
         key: &str,
         pending: &PendingQuestion,
-    ) -> Result<PendingQuestion, String> {
+    ) -> Result<PendingQuestion, AgentError> {
         let continuation_ctx = self.assemble_turn_context(
             inbound,
             ContextAssemblyMode::QuestionContinuation,
@@ -57,12 +58,12 @@ impl CoreAgent {
                 "question_id": pending.question_id,
             }),
         )
-        .map_err(|err| err.internal_message)?;
+        .map_err(|err| AgentError::ContinuationFailed(err.internal_message))?;
 
         if continuation_result.status != "success" {
-            return Err(continuation_result
+            return Err(AgentError::ContinuationFailed(continuation_result
                 .error
-                .unwrap_or_else(|| "Continuation execution failed".to_string()));
+                .unwrap_or_else(|| "Continuation execution failed".to_string())));
         }
 
         let exec_ctx = ExecutionContext {
@@ -93,7 +94,7 @@ impl CoreAgent {
         key: &str,
         pending: &PendingQuestion,
         answer: &QuestionAnswerInput,
-    ) -> Result<PendingQuestion, String> {
+    ) -> Result<PendingQuestion, AgentError> {
         let reason_desc = pending
             .raw_question
             .get("kind")
@@ -127,11 +128,11 @@ impl CoreAgent {
                 "子任务阻塞恢复 — 用户已回答",
                 json!({ "question_id": pending.question_id }),
             )
-            .map_err(|err| err.internal_message)?;
+            .map_err(|err| AgentError::ContinuationFailed(err.internal_message))?;
         if result.status != "success" {
-            return Err(result
+            return Err(AgentError::ContinuationFailed(result
                 .error
-                .unwrap_or_else(|| "Subtask blocked continuation failed".into()));
+                .unwrap_or_else(|| "Subtask blocked continuation failed".into())));
         }
         let exec_ctx = ExecutionContext {
             memory_key: continuation_ctx.metadata.memory_key,
@@ -160,7 +161,7 @@ impl CoreAgent {
         job_id: &str,
         pending: &PendingQuestion,
         answer: &str,
-    ) -> Result<PendingQuestion, String> {
+    ) -> Result<PendingQuestion, AgentError> {
         self.resume_suspended_tool_permission(job_id, pending.clone(), answer)?;
         Ok(pending.clone())
     }
@@ -170,15 +171,15 @@ impl CoreAgent {
         job_id: &str,
         pending: &PendingQuestion,
         answer: &str,
-    ) -> Result<ToolPermissionResumePreparation, String> {
+    ) -> Result<ToolPermissionResumePreparation, AgentError> {
         let suspended = self
             .suspension
             .tool_invocation_state(&pending.question_id)
             .ok_or_else(|| {
-                format!(
+                AgentError::ContinuationFailed(format!(
                     "Missing suspended tool invocation for question: {}",
                     pending.question_id
-                )
+                ))
             })?;
         let allow = matches!(answer, "allow" | "ALLOW" | "Allow");
 
@@ -199,7 +200,7 @@ impl CoreAgent {
             trace_id: suspended.inbound.id.clone(),
             system_prompt: Some({
                 let mut asm = PromptAssembler::new();
-                asm.add_text("identity", "你是 Anima 智能助手。", 0);
+                asm.add_text("identity", &self.prompts.read().tool_resume_system, 0);
                 asm.add_section(crate::prompt::sections::completion_status_section());
                 asm.build().text
             }),
@@ -217,7 +218,7 @@ impl CoreAgent {
             self.hook_registry.as_deref(),
             &config,
         )
-        .map_err(|err| err.to_runtime_error().internal_message)?;
+        .map_err(|err| AgentError::ContinuationFailed(err.to_runtime_error().internal_message))?;
 
         self.upsert_runtime_suspension(
             &suspended.inbound,
@@ -277,7 +278,7 @@ impl CoreAgent {
         pending: &PendingQuestion,
         suspended: &SuspendedToolInvocationState,
         loop_result: &crate::execution::agentic_loop::AgenticLoopResult,
-    ) -> Result<(), String> {
+    ) -> Result<(), AgentError> {
         self.append_transcript_messages(&suspended.inbound, &loop_result.messages);
         self.emitter.publish(
             "question_resolved",
@@ -335,7 +336,7 @@ impl CoreAgent {
         pending: &PendingQuestion,
         suspended: SuspendedToolInvocationState,
         next_suspension: crate::execution::agentic_loop::AgenticLoopSuspension,
-    ) -> Result<(), String> {
+    ) -> Result<(), AgentError> {
         self.append_transcript_messages(&suspended.inbound, &next_suspension.messages);
         let next_question_id = Uuid::new_v4().to_string();
         let raw_question = json!({
@@ -555,7 +556,7 @@ impl CoreAgent {
         job_id: &str,
         pending: PendingQuestion,
         answer: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), AgentError> {
         let preparation = self.prepare_tool_permission_resume(job_id, &pending, answer)?;
         let suspended = preparation.suspended;
         let config = preparation.config;
@@ -569,7 +570,7 @@ impl CoreAgent {
             suspended.suspension.compact_count,
             &config,
         )
-        .map_err(|err| err.to_runtime_error().internal_message)?;
+        .map_err(|err| AgentError::ContinuationFailed(err.to_runtime_error().internal_message))?;
 
         self.handle_tool_permission_continuation_outcome(job_id, &pending, suspended, outcome)
     }
@@ -580,7 +581,7 @@ impl CoreAgent {
         pending: &PendingQuestion,
         suspended: SuspendedToolInvocationState,
         outcome: AgenticLoopOutcome,
-    ) -> Result<(), String> {
+    ) -> Result<(), AgentError> {
         match outcome {
             AgenticLoopOutcome::Completed(loop_result) => {
                 self.finish_tool_permission_continuation(job_id, pending, &suspended, &loop_result)
@@ -625,7 +626,7 @@ impl CoreAgent {
         key: &str,
         pending: &PendingQuestion,
         answer: &QuestionAnswerInput,
-    ) -> Result<PendingQuestion, String> {
+    ) -> Result<PendingQuestion, AgentError> {
         match pending.source_kind {
             PendingQuestionSourceKind::UpstreamQuestion => {
                 self.continue_upstream_question_answer(inbound, key, pending)
@@ -649,7 +650,7 @@ impl CoreAgent {
         key: &str,
         pending: &PendingQuestion,
         answer: &QuestionAnswerInput,
-    ) -> Result<PendingQuestion, String> {
+    ) -> Result<PendingQuestion, AgentError> {
         let verdict = answer.answer.trim();
         if verdict.starts_with("rejected") {
             let reason = verdict.strip_prefix("rejected:").unwrap_or("user rejected");
@@ -673,7 +674,7 @@ impl CoreAgent {
             .cloned()
             .unwrap_or_default();
         let plan: super::types::ExecutionPlan =
-            serde_json::from_value(plan_value).map_err(|e| format!("failed to restore plan: {e}"))?;
+            serde_json::from_value(plan_value).map_err(|e| AgentError::ContinuationFailed(format!("failed to restore plan: {e}")))?;
 
         let outcome = self.execute_initial_message_plan(
             inbound,
@@ -708,7 +709,7 @@ impl CoreAgent {
         &self,
         job_id: &str,
         answer: QuestionAnswerInput,
-    ) -> Result<PendingQuestion, String> {
+    ) -> Result<PendingQuestion, AgentError> {
         let pending = self.suspension.submit_answer(
             job_id,
             &answer,
@@ -716,7 +717,7 @@ impl CoreAgent {
         )?;
 
         let inbound = pending.inbound.clone().ok_or_else(|| {
-            format!("Missing inbound context for pending question on job: {job_id}")
+            AgentError::MissingInboundContext(job_id.into())
         })?;
         let key = memory_key(&inbound);
         self.publish_question_answer_submitted(&inbound, &key, &pending, &answer);

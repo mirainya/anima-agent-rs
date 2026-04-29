@@ -269,3 +269,23 @@ button {
   color: var(--text2);
   font-weight: 600;
 }
+
+/* Prompts editor */
+.prompts-list { display: flex; flex-direction: column; gap: 8px; }
+.prompt-item { border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.prompt-header { display: flex; justify-content: space-between; align-items: center; }
+.prompt-label { font-size: 13px; font-weight: 500; }
+.prompt-toggle {
+  font-size: 12px; color: var(--accent); background: none; border: none; cursor: pointer;
+}
+.prompt-textarea {
+  width: 100%; margin-top: 8px; padding: 8px; font-size: 12px; font-family: monospace;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  resize: vertical;
+}
+.prompt-actions { display: flex; gap: 8px; margin-top: 12px; }
+.prompt-btn {
+  padding: 6px 14px; font-size: 13px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); cursor: pointer;
+}
+.prompt-btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }

@@ -6,6 +6,7 @@
 //!
 //! 设计灵感来自 Clojure core.async 的 dropping-buffer 和 sliding-buffer。
 
+use crate::agent::runtime_error::AgentError;
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -56,18 +57,16 @@ impl<T> BoundedSender<T> {
     /// 根据策略发送消息
     /// - Dropping：满时静默丢弃新消息，返回 Ok
     /// - Sliding：满时先弹出旧消息腾出空间，再发送
-    pub fn send(&self, msg: T) -> Result<(), String> {
+    pub fn send(&self, msg: T) -> Result<(), AgentError> {
         match self.strategy {
             BufferStrategy::Dropping(_cap) => {
-                // 满时直接丢弃新消息，不阻塞发送方
                 if self.tx.len() >= self.strategy.capacity() {
                     self.record_drop();
                     return Ok(());
                 }
-                self.tx.send(msg).map_err(|e| e.to_string())
+                self.tx.send(msg).map_err(|e| AgentError::BusSendFailed(e.to_string()))
             }
             BufferStrategy::Sliding(_cap) => {
-                // 满时从接收端弹出最旧的消息，为新消息腾出空间
                 while self.tx.len() >= self.strategy.capacity() {
                     if self.rx.try_recv().is_ok() {
                         self.record_drop();
@@ -75,7 +74,7 @@ impl<T> BoundedSender<T> {
                         break;
                     }
                 }
-                self.tx.send(msg).map_err(|e| e.to_string())
+                self.tx.send(msg).map_err(|e| AgentError::BusSendFailed(e.to_string()))
             }
         }
     }

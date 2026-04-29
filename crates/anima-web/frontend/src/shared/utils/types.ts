@@ -240,6 +240,7 @@ export const sessionSummarySchema = z.object({
   history_len: z.number(),
   last_user_message_preview: z.string(),
   last_active: z.number(),
+  title: z.string().nullable().optional(),
 });
 
 export const sessionHistoryItemSchema = z.object({

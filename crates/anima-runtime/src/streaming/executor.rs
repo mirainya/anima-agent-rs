@@ -13,6 +13,7 @@ use super::types::{ContentBlock, ContentDelta, StreamEvent, TrackedToolState};
 use crate::agent::runtime_error::{RuntimeErrorKind, RuntimeErrorStage};
 use crate::agent::{TaskExecutorError, UnifiedStreamSource};
 use crate::execution::agentic_loop::{ParsedResponse, ParsedToolUse};
+use crate::provider::types::StopReason;
 use crate::tools::registry::ToolRegistry;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -404,10 +405,18 @@ where
         })
         .collect();
 
+    let resolved_stop_reason = match stop_reason.as_deref() {
+        Some("max_tokens") | Some("length") => StopReason::MaxTokens,
+        Some("tool_use") | Some("tool_calls") => StopReason::ToolUse,
+        Some("stop_sequence") => StopReason::StopSequence,
+        _ => StopReason::EndTurn,
+    };
+
     let parsed = ParsedResponse {
         text: text_buf.clone(),
         tool_uses,
         thinking: thinking.clone(),
+        stop_reason: resolved_stop_reason,
     };
 
     // 组装等效的 response Value（用于 build_assistant_msg）
@@ -519,10 +528,18 @@ pub fn consume_stream_events(
         })
         .collect();
 
+    let resolved_stop_reason = match stop_reason.as_deref() {
+        Some("max_tokens") | Some("length") => StopReason::MaxTokens,
+        Some("tool_use") | Some("tool_calls") => StopReason::ToolUse,
+        Some("stop_sequence") => StopReason::StopSequence,
+        _ => StopReason::EndTurn,
+    };
+
     let parsed = ParsedResponse {
         text: text_buf.clone(),
         tool_uses,
         thinking: thinking.clone(),
+        stop_reason: resolved_stop_reason,
     };
 
     let mut content_parts: Vec<Value> = Vec::new();

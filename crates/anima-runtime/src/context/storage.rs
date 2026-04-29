@@ -196,7 +196,9 @@ pub struct FileStorage {
 impl FileStorage {
     pub fn new(base_path: impl Into<String>) -> Self {
         let path = base_path.into();
-        let _ = std::fs::create_dir_all(&path);
+        if let Err(e) = std::fs::create_dir_all(&path) {
+            tracing::warn!("context storage: failed to create dir {path}: {e}");
+        }
         Self {
             base_path: path,
             metadata_cache: Mutex::new(IndexMap::new()),
@@ -240,7 +242,9 @@ impl ContextStorage for FileStorage {
         };
 
         if entry.is_expired() {
-            let _ = std::fs::remove_file(&path);
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::debug!("context storage: failed to remove expired {key}: {e}");
+            }
             return None;
         }
 
@@ -272,9 +276,13 @@ impl ContextStorage for FileStorage {
             "ttl_ms": opts.ttl_ms,
         });
 
-        let _ = std::fs::create_dir_all(&self.base_path);
+        if let Err(e) = std::fs::create_dir_all(&self.base_path) {
+            tracing::warn!("context storage: failed to create dir: {e}");
+        }
         let path = self.file_path(key);
-        let _ = std::fs::write(&path, serde_json::to_string_pretty(&stored).unwrap_or_default());
+        if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&stored).unwrap_or_default()) {
+            tracing::warn!("context storage: failed to write {key}: {e}");
+        }
 
         self.metadata_cache
             .lock()
@@ -343,7 +351,9 @@ impl ContextStorage for FileStorage {
                     .map(|e| e == "json")
                     .unwrap_or(false)
                 {
-                    let _ = std::fs::remove_file(entry.path());
+                    if let Err(e) = std::fs::remove_file(entry.path()) {
+                        tracing::debug!("context storage: failed to remove file during clear: {e}");
+                    }
                 }
             }
         }

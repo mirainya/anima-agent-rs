@@ -1,5 +1,5 @@
 use crate::{routes_commands, routes_queries, routes_static, AppState};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use std::sync::Arc;
 
@@ -17,8 +17,14 @@ pub fn create_routes() -> Router<Arc<AppState>> {
             "/api/sessions/{session_id}/send",
             post(routes_commands::send_message_for_session),
         )
+        .route(
+            "/api/sessions/{session_id}",
+            delete(routes_commands::delete_session)
+                .patch(routes_commands::rename_session),
+        )
         .route("/api/events", get(routes_queries::sse_events))
         .route("/api/status", get(routes_queries::system_status))
+        .route("/api/bus/health", get(routes_queries::bus_health))
         .route("/api/jobs", get(routes_queries::list_jobs))
         .route(
             "/api/jobs/{job_id}/review",
@@ -31,6 +37,10 @@ pub fn create_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/approval-mode",
             get(routes_commands::get_approval_mode).post(routes_commands::set_approval_mode),
+        )
+        .route(
+            "/api/prompts",
+            get(routes_commands::get_prompts).put(routes_commands::set_prompts),
         )
         .route(
             "/api/jobs/{job_id}/plan-verdict",

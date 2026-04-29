@@ -474,7 +474,7 @@ fn submit_answer_rejects_wrong_question_id() {
     let err = coordinator
         .submit_answer(&inbound.id, &answer, "answer".into())
         .unwrap_err();
-    assert!(err.contains("mismatch"), "error should mention mismatch: {err}");
+    assert!(err.to_string().contains("mismatch"), "error should mention mismatch: {err}");
 }
 
 #[test]
@@ -490,7 +490,7 @@ fn submit_answer_fails_for_nonexistent_job() {
     let err = coordinator
         .submit_answer("nonexistent-job", &answer, "answer".into())
         .unwrap_err();
-    assert!(err.contains("No pending question"));
+    assert!(err.to_string().contains("no pending question"));
 }
 
 #[test]

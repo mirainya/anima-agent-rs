@@ -102,19 +102,7 @@ pub fn quick_classify(message: &str) -> Option<AiClassificationResult> {
 
 // ── AI Classifier ───────────────────────────────────────────────────
 
-pub static DEFAULT_CLASSIFICATION_PROMPT: &str = r#"You are a task classifier. Analyze the user's message and classify it.
-
-RESPOND WITH ONLY A JSON OBJECT, NO OTHER TEXT.
-
-Classification types:
-1. "simple-chat" - General conversation, greetings, simple questions, asking about capabilities
-2. "complex-task" - Requests to write code, create files, build features, fix bugs, implement things
-
-Examples:
-- "hi" → {"type": "simple-chat", "confidence": 0.95, "reasoning": "greeting"}
-- "Write a function" → {"type": "complex-task", "confidence": 0.95, "reasoning": "code generation request"}
-
-User message: "#;
+pub static DEFAULT_CLASSIFICATION_PROMPT: &str = anima_types::config::DEFAULT_MESSAGE_CLASSIFIER_PROMPT;
 
 pub struct AiClassifier {
     pub id: String,

@@ -1,8 +1,9 @@
 use crate::jobs::{AcceptedJob, JobKind, JobReviewInput};
 use crate::AppState;
-use anima_runtime::agent::QuestionAnswerInput;
+use anima_runtime::agent::{AgentError, QuestionAnswerInput};
 use anima_types::approval::ApprovalMode;
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -82,7 +83,7 @@ async fn send_message_impl(
             "chat_id": session_id,
             "session_id": session_id,
         })),
-        Err(e) => Json(serde_json::json!({"ok": false, "accepted": false, "error": e})),
+        Err(e) => Json(serde_json::json!({"ok": false, "accepted": false, "error": e.to_string()})),
     }
 }
 
@@ -145,7 +146,7 @@ pub async fn answer_job_question(
             "ok": false,
             "job_id": job_id,
             "question_id": input.question_id,
-            "error": error,
+            "error": error.to_string(),
         })),
     }
 }
@@ -205,7 +206,7 @@ pub async fn submit_plan_verdict(
                     answer,
                 },
             ),
-            None => Err(format!("no pending plan approval for job {job_id}")),
+            None => Err(AgentError::NoPendingQuestion(job_id.clone())),
         }
     };
 
@@ -218,7 +219,80 @@ pub async fn submit_plan_verdict(
         Err(error) => Json(serde_json::json!({
             "ok": false,
             "job_id": job_id,
-            "error": error,
+            "error": error.to_string(),
         })),
     }
+}
+
+// ── Session Management ────────────────────────────────────────
+
+pub async fn delete_session(
+    Path(session_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let deleted_runs = {
+        let runtime = state.runtime.lock();
+        runtime.agent.delete_session(&session_id)
+    };
+    if deleted_runs == 0 {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "session not found",
+                "session_id": session_id,
+            })),
+        );
+    }
+    {
+        let mut jobs = state.jobs.lock();
+        jobs.remove_by_chat_id(&session_id);
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "session_id": session_id,
+            "deleted_runs": deleted_runs,
+        })),
+    )
+}
+
+#[derive(Deserialize)]
+pub struct RenameSessionRequest {
+    pub title: String,
+}
+
+pub async fn rename_session(
+    Path(session_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RenameSessionRequest>,
+) -> Json<serde_json::Value> {
+    {
+        let runtime = state.runtime.lock();
+        runtime.agent.set_session_title(&session_id, req.title.clone());
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "session_id": session_id,
+        "title": req.title,
+    }))
+}
+
+// ── Prompts Management ───────────────────────────────────────
+
+pub async fn get_prompts(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let prompts = state.runtime.lock().agent.prompts();
+    Json(serde_json::json!({ "ok": true, "prompts": *prompts }))
+}
+
+pub async fn set_prompts(
+    State(state): State<Arc<AppState>>,
+    Json(prompts): Json<anima_types::config::PromptsConfig>,
+) -> Json<serde_json::Value> {
+    state.runtime.lock().agent.set_prompts(prompts);
+    let updated = state.runtime.lock().agent.prompts();
+    Json(serde_json::json!({ "ok": true, "prompts": *updated }))
 }

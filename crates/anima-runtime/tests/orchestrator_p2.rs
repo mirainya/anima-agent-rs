@@ -1011,6 +1011,7 @@ fn llm_context_infer_generates_question() {
 
     let result = try_llm_infer_missing_context(
         &provider, "s1", &plan, &lowered, &subtask_results,
+        &anima_types::config::PromptsConfig::default().context_infer,
     );
 
     assert!(result.is_some());
@@ -1068,6 +1069,7 @@ fn llm_context_infer_fallback_on_invalid_response() {
 
     let result = try_llm_infer_missing_context(
         &provider, "s2", &plan, &lowered, &subtask_results,
+        &anima_types::config::PromptsConfig::default().context_infer,
     );
 
     // LLM returned invalid JSON → None (fallback path)

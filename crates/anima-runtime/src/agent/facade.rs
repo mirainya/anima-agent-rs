@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use super::core::{CoreAgent, CoreAgentStatus};
 use crate::worker::TaskExecutor;
+use super::runtime_error::AgentError;
 use super::suspension::{PendingQuestion, QuestionAnswerInput};
 use crate::worker::WorkerPool;
 use crate::bus::{Bus, InboundMessage};
@@ -90,31 +91,39 @@ impl Agent {
         let _ = self.bus.publish_inbound(inbound_msg);
     }
 
-    pub fn register_builtin_tools(&mut self) -> Result<(), String> {
+    pub fn register_builtin_tools(&mut self) -> Result<(), AgentError> {
         let core = Arc::get_mut(&mut self.core_agent)
-            .ok_or("cannot mutate shared core_agent — ensure no other Arc references exist")?;
+            .ok_or(AgentError::ArcMutationConflict("core_agent"))?;
         core.register_builtin_tools()
     }
 
-    pub fn set_hook_registry(&mut self, registry: HookRegistry) -> Result<(), String> {
+    pub fn set_hook_registry(&mut self, registry: HookRegistry) -> Result<(), AgentError> {
         let core = Arc::get_mut(&mut self.core_agent)
-            .ok_or("cannot mutate shared core_agent — ensure no other Arc references exist")?;
+            .ok_or(AgentError::ArcMutationConflict("core_agent"))?;
         core.set_hook_registry(registry);
         Ok(())
     }
 
-    pub fn set_permission_checker(&mut self, checker: PermissionChecker) -> Result<(), String> {
+    pub fn set_permission_checker(&mut self, checker: PermissionChecker) -> Result<(), AgentError> {
         let core = Arc::get_mut(&mut self.core_agent)
-            .ok_or("cannot mutate shared core_agent — ensure no other Arc references exist")?;
+            .ok_or(AgentError::ArcMutationConflict("core_agent"))?;
         core.set_permission_checker(checker);
         Ok(())
     }
 
-    pub fn set_provider(&mut self, provider: Arc<dyn Provider>) -> Result<(), String> {
+    pub fn set_provider(&mut self, provider: Arc<dyn Provider>) -> Result<(), AgentError> {
         let core = Arc::get_mut(&mut self.core_agent)
-            .ok_or("cannot mutate shared core_agent — ensure no other Arc references exist")?;
+            .ok_or(AgentError::ArcMutationConflict("core_agent"))?;
         core.set_provider(provider);
         Ok(())
+    }
+
+    pub fn set_prompts(&self, prompts: anima_types::config::PromptsConfig) {
+        self.core_agent.set_prompts(prompts);
+    }
+
+    pub fn prompts(&self) -> Arc<anima_types::config::PromptsConfig> {
+        self.core_agent.prompts()
     }
 
     pub fn core_agent(&self) -> Arc<CoreAgent> {
@@ -148,7 +157,7 @@ impl Agent {
         &self,
         job_id: &str,
         answer: QuestionAnswerInput,
-    ) -> Result<PendingQuestion, String> {
+    ) -> Result<PendingQuestion, AgentError> {
         self.core_agent.submit_question_answer(job_id, answer)
     }
 
@@ -159,5 +168,13 @@ impl Agent {
     #[doc(hidden)]
     pub fn evict_resume_state_cache_for_testing(&self, job_id: &str) {
         self.core_agent.evict_resume_state_cache_for_testing(job_id);
+    }
+
+    pub fn delete_session(&self, chat_id: &str) -> usize {
+        self.core_agent.runtime_state_store.delete_session(chat_id)
+    }
+
+    pub fn set_session_title(&self, chat_id: &str, title: String) {
+        self.core_agent.runtime_state_store.set_session_title(chat_id, title);
     }
 }

@@ -1,3 +1,4 @@
+use crate::agent::runtime_error::AgentError;
 use crate::agent::types::{make_task, MakeTask, TaskResult};
 use crate::bus::InboundMessage;
 use crate::classifier::rule::{AgentClassifier, ClassificationDecision, ClassificationKind};
@@ -284,15 +285,15 @@ impl IntelligentRouter {
         classification: &ClassificationResult,
         content: &str,
         session_id: &str,
-    ) -> Result<TaskResult, String> {
+    ) -> Result<TaskResult, AgentError> {
         let confidence = classification.confidence;
         let threshold = self.config.classification_threshold;
 
         if confidence < threshold && !self.config.fallback_to_general {
-            return Err(format!(
-                "Classification confidence {:.2} below threshold {:.2}",
-                confidence, threshold
-            ));
+            return Err(AgentError::ClassificationBelowThreshold {
+                confidence,
+                threshold,
+            });
         }
 
         let specialist_id = classification.task_type.specialist();
@@ -377,7 +378,7 @@ impl IntelligentRouter {
                     status: ProcessStatus::Error,
                     classification: Some(classification),
                     specialist_result: None,
-                    error: Some(e),
+                    error: Some(e.to_string()),
                     processing_time_ms: now_ms().saturating_sub(start),
                 }
             }

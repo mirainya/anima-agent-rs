@@ -23,6 +23,7 @@ pub use self::core::{
     CoreAgent, CoreAgentStatus, ExecutionStageDurations, ExecutionSummary,
     RuntimeFailureSnapshot, RuntimeFailureStatus, RuntimeTimelineEvent, SessionContext,
 };
+pub use runtime_error::AgentError;
 pub use crate::worker::{
     CurrentTaskInfo, RuntimeEventPublisher, SdkTaskExecutor, TaskExecutor, TaskExecutorError,
     UnifiedStreamLine, UnifiedStreamSource, WorkerAgent, WorkerMetrics, WorkerPool,

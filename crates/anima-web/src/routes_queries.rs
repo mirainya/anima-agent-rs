@@ -77,3 +77,29 @@ pub async fn system_status(State(state): State<Arc<AppState>>) -> Json<serde_jso
         "jobs": snapshot.jobs,
     }))
 }
+
+pub async fn bus_health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let telemetry = state.bus.telemetry_snapshot();
+    Json(serde_json::json!({
+        "inbound": {
+            "queue_depth": telemetry.inbound_queue_depth,
+            "dropped_total": telemetry.inbound_dropped_total,
+            "last_drop_at_ms": telemetry.inbound_last_drop_at_ms,
+        },
+        "outbound": {
+            "queue_depth": telemetry.outbound_queue_depth,
+            "dropped_total": telemetry.outbound_dropped_total,
+            "last_drop_at_ms": telemetry.outbound_last_drop_at_ms,
+        },
+        "internal": {
+            "queue_depth": telemetry.internal_queue_depth,
+            "dropped_total": telemetry.internal_dropped_total,
+            "last_drop_at_ms": telemetry.internal_last_drop_at_ms,
+        },
+        "control": {
+            "queue_depth": telemetry.control_queue_depth,
+            "dropped_total": telemetry.control_dropped_total,
+            "last_drop_at_ms": telemetry.control_last_drop_at_ms,
+        },
+    }))
+}

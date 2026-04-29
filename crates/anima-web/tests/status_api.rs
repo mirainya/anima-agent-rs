@@ -3373,7 +3373,7 @@ fn question_answer_api_rejects_job_without_real_pending_question() {
     assert!(payload["error"]
         .as_str()
         .unwrap_or("")
-        .contains("No pending question"));
+        .contains("no pending question"));
 
     state.runtime.lock().stop();
 }

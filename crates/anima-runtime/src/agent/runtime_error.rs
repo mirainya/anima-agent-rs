@@ -1,5 +1,73 @@
 use super::context_types::RuntimeErrorInfo;
 use crate::tools::result::ToolError;
+use std::fmt;
+
+/// Typed error for agent-layer operations, replacing `Result<_, String>`.
+#[derive(Debug, Clone)]
+pub enum AgentError {
+    /// Arc::get_mut failed — another reference exists.
+    ArcMutationConflict(&'static str),
+    /// Upstream API call failed (wraps RuntimeError.internal_message).
+    ExecutionFailed(String),
+    /// Continuation after question/answer/auto-resolve failed.
+    ContinuationFailed(String),
+    /// No pending question found for the given job.
+    NoPendingQuestion(String),
+    /// Question ID mismatch when answering.
+    QuestionIdMismatch {
+        job_id: String,
+        expected: String,
+        got: String,
+    },
+    /// Missing inbound context for a pending question.
+    MissingInboundContext(String),
+    /// Orchestrator: forced fallback (test sentinel).
+    OrchestrationForcedFallback,
+    /// Orchestrator: LLM decided no decomposition needed.
+    OrchestrationNoDecomposition,
+    /// Classification confidence below threshold.
+    ClassificationBelowThreshold { confidence: f64, threshold: f64 },
+    /// Bus channel send failed.
+    BusSendFailed(String),
+}
+
+impl fmt::Display for AgentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ArcMutationConflict(target) => {
+                write!(f, "cannot mutate shared {target} — ensure no other Arc references exist")
+            }
+            Self::ExecutionFailed(msg) => write!(f, "{msg}"),
+            Self::ContinuationFailed(msg) => write!(f, "{msg}"),
+            Self::NoPendingQuestion(job_id) => {
+                write!(f, "no pending question for job: {job_id}")
+            }
+            Self::QuestionIdMismatch {
+                job_id,
+                expected,
+                got,
+            } => write!(
+                f,
+                "question ID mismatch for job {job_id}: expected {expected}, got {got}"
+            ),
+            Self::MissingInboundContext(job_id) => {
+                write!(f, "missing inbound context for pending question on job: {job_id}")
+            }
+            Self::OrchestrationForcedFallback => write!(f, "forced orchestration fallback"),
+            Self::OrchestrationNoDecomposition => write!(f, "llm_no_decomposition"),
+            Self::ClassificationBelowThreshold {
+                confidence,
+                threshold,
+            } => write!(
+                f,
+                "classification confidence {confidence:.2} below threshold {threshold:.2}"
+            ),
+            Self::BusSendFailed(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for AgentError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeErrorStage {

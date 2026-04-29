@@ -15,6 +15,7 @@ pub struct SessionListItem {
     pub history_len: usize,
     pub last_user_message_preview: String,
     pub last_active: u64,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,6 +87,7 @@ pub fn build_session_summaries_from_runtime(snapshot: &RuntimeStateSnapshot) -> 
                 history_len: 0,
                 last_user_message_preview: String::new(),
                 last_active: run.updated_at_ms,
+                title: snapshot.session_titles.get(&chat_id).cloned(),
             });
         item.last_active = item.last_active.max(run.updated_at_ms);
     }
@@ -108,6 +110,7 @@ pub fn build_session_summaries_from_runtime(snapshot: &RuntimeStateSnapshot) -> 
                 history_len: 0,
                 last_user_message_preview: String::new(),
                 last_active: message.appended_at_ms,
+                title: snapshot.session_titles.get(&chat_id).cloned(),
             });
         item.history_len += 1;
         item.last_active = item.last_active.max(message.appended_at_ms);

@@ -6,10 +6,11 @@
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::thread;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::provider::{ChatRequest, ChatResponse, Provider, ProviderError};
-use crate::provider::types::{ChatMessage, ChatRole};
+use crate::provider::types::{ChatMessage, ChatRole, StopReason};
 use crate::agent::runtime_error::{RuntimeError, RuntimeErrorKind, RuntimeErrorStage};
 use crate::hooks::HookRegistry;
 use crate::messages::compact::{compact_if_needed, CompactConfig};
@@ -199,6 +200,8 @@ pub struct ParsedResponse {
     pub tool_uses: Vec<ParsedToolUse>,
     /// 模型的思考过程
     pub thinking: Option<String>,
+    /// 停止原因
+    pub stop_reason: StopReason,
 }
 
 /// 解析后的单个工具调用
@@ -217,12 +220,24 @@ pub struct ParsedToolUse {
 pub fn parse_response(response: &Value) -> Result<ParsedResponse, AgenticLoopError> {
     let content = response.get("content");
 
+    let stop_reason = response
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .map(|s| match s {
+            "max_tokens" | "length" => StopReason::MaxTokens,
+            "tool_use" | "tool_calls" => StopReason::ToolUse,
+            "stop_sequence" => StopReason::StopSequence,
+            _ => StopReason::EndTurn,
+        })
+        .unwrap_or(StopReason::EndTurn);
+
     // 格式1: content 是字符串
     if let Some(Value::String(text)) = content {
         return Ok(ParsedResponse {
             text: text.clone(),
             tool_uses: vec![],
             thinking: None,
+            stop_reason,
         });
     }
 
@@ -276,6 +291,7 @@ pub fn parse_response(response: &Value) -> Result<ParsedResponse, AgenticLoopErr
             text: text_parts.join("\n"),
             tool_uses,
             thinking,
+            stop_reason,
         });
     }
 
@@ -285,6 +301,7 @@ pub fn parse_response(response: &Value) -> Result<ParsedResponse, AgenticLoopErr
             text: text.to_string(),
             tool_uses: vec![],
             thinking: None,
+            stop_reason,
         });
     }
 
@@ -459,6 +476,7 @@ fn parse_chat_response(response: &ChatResponse) -> Result<ParsedResponse, Agenti
         text: text_parts.join("\n"),
         tool_uses,
         thinking,
+        stop_reason: response.stop_reason.clone(),
     })
 }
 
@@ -652,7 +670,26 @@ fn execute_tool_segment(
 
         let mut outcomes = handles
             .into_iter()
-            .map(|handle| handle.join().expect("tool execution worker panicked"))
+            .enumerate()
+            .map(|(i, handle)| match handle.join() {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    let tool_use_id = segment.get(i).map(|s| s.tool_use.id.clone()).unwrap_or_default();
+                    let tool_name = segment.get(i).map(|s| s.tool_use.name.clone()).unwrap_or_default();
+                    IndexedToolOutcome {
+                        index: i,
+                        tool_use_id: tool_use_id.clone(),
+                        outcome: SingleToolExecutionOutcome::Completed {
+                            invocation: ToolInvocationRecord::new(
+                                uuid::Uuid::new_v4().to_string(),
+                                tool_name,
+                                Some(tool_use_id),
+                            ),
+                            result: ToolResult::error("tool execution thread panicked"),
+                        },
+                    }
+                }
+            })
             .collect::<Vec<_>>();
         outcomes.sort_by_key(|item| item.index);
         outcomes
@@ -801,6 +838,7 @@ pub fn continue_agentic_loop(
     mut compact_count: usize,
     config: &AgenticLoopConfig,
 ) -> Result<AgenticLoopOutcome, AgenticLoopError> {
+    let mut truncated_text_parts: Vec<String> = Vec::new();
     loop {
         if iterations >= config.max_iterations {
             let final_text = extract_last_assistant_text(&messages);
@@ -852,8 +890,33 @@ pub fn continue_agentic_loop(
         };
 
         if parsed.tool_uses.is_empty() {
+            if parsed.stop_reason == StopReason::MaxTokens {
+                warn!(
+                    "[agentic_loop] response truncated by max_tokens at iteration {}, injecting continuation",
+                    iterations + 1
+                );
+                truncated_text_parts.push(parsed.text);
+                messages.push(InternalMsg {
+                    role: MessageRole::User,
+                    blocks: vec![ContentBlock::Text {
+                        text: "Your previous response was cut off. Please continue from where you left off.".into(),
+                    }],
+                    message_id: Uuid::new_v4().to_string(),
+                    tool_use_id: None,
+                    filtered: false,
+                    metadata: json!({}),
+                });
+                iterations += 1;
+                continue;
+            }
+            let final_text = if truncated_text_parts.is_empty() {
+                parsed.text
+            } else {
+                truncated_text_parts.push(parsed.text);
+                truncated_text_parts.join("")
+            };
             return Ok(AgenticLoopOutcome::Completed(AgenticLoopResult {
-                final_text: parsed.text,
+                final_text,
                 messages,
                 iterations: iterations + 1,
                 hit_limit: false,

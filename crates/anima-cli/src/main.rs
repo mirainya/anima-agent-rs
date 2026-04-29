@@ -224,10 +224,14 @@ fn start_cli(opts: &CliOptions, config: &AnimaConfig) -> std::io::Result<()> {
         .with_sdk_directory_enabled(false)
         .build();
     runtime.start();
-    let result = runtime
-        .cli_channel()
-        .expect("cli channel should exist when enabled")
-        .run_stdin_loop();
+    let result = match runtime.cli_channel() {
+        Some(cli) => cli.run_stdin_loop(),
+        None => {
+            eprintln!("error: CLI channel not available");
+            runtime.stop();
+            return Err(std::io::Error::other("CLI channel not available"));
+        }
+    };
     runtime.stop();
     println!("\nGoodbye!");
     result

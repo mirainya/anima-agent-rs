@@ -44,13 +44,9 @@ pub fn execute_command(
     session_id: &str,
     params: &Map<String, Value>,
 ) -> Result<Value> {
-    utils::validate_required(params, &["arguments", "command"])?;
     let mut body = Map::new();
-    body.insert(
-        "arguments".into(),
-        params.get("arguments").cloned().unwrap(),
-    );
-    body.insert("command".into(), params.get("command").cloned().unwrap());
+    body.insert("arguments".into(), utils::require_param(params, "arguments")?);
+    body.insert("command".into(), utils::require_param(params, "command")?);
     if let Some(agent) = params.get("agent") {
         body.insert("agent".into(), agent.clone());
     }
@@ -73,10 +69,9 @@ pub fn run_shell_command(
     session_id: &str,
     params: &Map<String, Value>,
 ) -> Result<Value> {
-    utils::validate_required(params, &["agent", "command"])?;
     let body = json!({
-        "agent": params.get("agent").cloned().unwrap(),
-        "command": params.get("command").cloned().unwrap(),
+        "agent": utils::require_param(params, "agent")?,
+        "command": utils::require_param(params, "command")?,
     });
     utils::handle_response(http::post_request(
         client,
@@ -91,12 +86,8 @@ pub fn revert_message(
     session_id: &str,
     params: &Map<String, Value>,
 ) -> Result<Value> {
-    utils::validate_required(params, &["message-id"])?;
     let mut body = Map::new();
-    body.insert(
-        "messageID".into(),
-        params.get("message-id").cloned().unwrap(),
-    );
+    body.insert("messageID".into(), utils::require_param(params, "message-id")?);
     if let Some(part_id) = params.get("part-id") {
         body.insert("partID".into(), part_id.clone());
     }
@@ -151,7 +142,7 @@ pub fn send_prompt_with_agent(
 ) -> Result<Value> {
     let mut normalized = match normalize_message(message)? {
         Value::Object(map) => map,
-        _ => unreachable!(),
+        _ => return Err(AnimaError::InvalidMessageFormat),
     };
     if let Some(agent) = agent {
         normalized.insert("agent".into(), Value::String(agent.to_string()));

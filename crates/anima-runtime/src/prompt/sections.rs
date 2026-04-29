@@ -10,10 +10,8 @@ use super::types::{EnvironmentInfo, PromptSection};
 pub(crate) fn identity_section(agent_name: &str) -> PromptSection {
     PromptSection {
         id: "identity".into(),
-        content: format!(
-            "You are {agent_name}, an AI assistant powered by Anima runtime. \
-             Follow user instructions carefully and use available tools when needed."
-        ),
+        content: anima_types::config::DEFAULT_IDENTITY_PROMPT
+            .replace("{agent_name}", agent_name),
         order: 0,
     }
 }

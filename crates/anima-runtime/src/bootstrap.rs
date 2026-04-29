@@ -22,6 +22,7 @@ pub struct RuntimeBootstrapBuilder {
     runtime_state_store: Option<SharedRuntimeStateStore>,
     provider_config: Option<anima_types::config::ProviderConfig>,
     permission_config: Option<anima_types::config::PermissionConfig>,
+    prompts_config: Option<anima_types::config::PromptsConfig>,
 }
 
 impl Default for RuntimeBootstrapBuilder {
@@ -37,6 +38,7 @@ impl Default for RuntimeBootstrapBuilder {
             runtime_state_store: None,
             provider_config: None,
             permission_config: None,
+            prompts_config: None,
         }
     }
 }
@@ -51,9 +53,18 @@ impl RuntimeBootstrapBuilder {
         let runtime_state_store: SharedRuntimeStateStore = match config.runtime.store.as_str() {
             "sqlite" => {
                 let db_path = std::path::PathBuf::from(state_path).with_extension("db");
-                Arc::new(SqliteStateStore::open(&db_path).unwrap_or_else(|_| {
-                    SqliteStateStore::open_in_memory().expect("in-memory sqlite should not fail")
-                }))
+                match SqliteStateStore::open(&db_path) {
+                    Ok(store) => Arc::new(store),
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to open sqlite at {}: {e}, falling back to in-memory",
+                            db_path.display()
+                        );
+                        Arc::new(SqliteStateStore::open_in_memory().unwrap_or_else(|e2| {
+                            panic!("in-memory sqlite also failed: {e2}")
+                        }))
+                    }
+                }
             }
             _ => Arc::new(JsonStateStore::with_persistence(
                 std::path::PathBuf::from(state_path),
@@ -70,6 +81,7 @@ impl RuntimeBootstrapBuilder {
             runtime_state_store: Some(runtime_state_store),
             provider_config: Some(config.provider.clone()),
             permission_config: Some(config.permissions.clone()),
+            prompts_config: Some(config.prompts.clone()),
         }
     }
 
@@ -159,11 +171,15 @@ impl RuntimeBootstrapBuilder {
             runtime_state_store,
         );
         if self.builtin_tools_enabled {
-            agent.register_builtin_tools().expect("register_builtin_tools failed: Arc has other references before agent start");
+            if let Err(e) = agent.register_builtin_tools() {
+                tracing::warn!("register_builtin_tools failed: {e}");
+            }
         }
         let mut hook_registry = HookRegistry::new();
         hook_registry.register_post_hook(Arc::new(StopHook));
-        agent.set_hook_registry(hook_registry).expect("set_hook_registry failed: Arc has other references before agent start");
+        if let Err(e) = agent.set_hook_registry(hook_registry) {
+            tracing::warn!("set_hook_registry failed: {e}");
+        }
         if let Some(ref pc) = self.permission_config {
             let mode = match pc.mode.as_str() {
                 "allow_all" => PermissionMode::AllowAll,
@@ -183,25 +199,34 @@ impl RuntimeBootstrapBuilder {
                     priority: rule.priority,
                 });
             }
-            let _ = agent.set_permission_checker(checker);
+            if let Err(e) = agent.set_permission_checker(checker) {
+                tracing::warn!("set_permission_checker failed: {e}");
+            }
         }
         if !has_custom_executor {
             if let Some(ref pc) = self.provider_config {
                 match pc.kind.as_str() {
                     "anthropic" => {
                         if let Ok(p) = AnthropicProvider::from_config(pc) {
-                            let _ = agent.set_provider(Arc::new(p) as Arc<dyn Provider>);
+                            if let Err(e) = agent.set_provider(Arc::new(p) as Arc<dyn Provider>) {
+                                tracing::warn!("set_provider (anthropic) failed: {e}");
+                            }
                         }
                     }
                     "openai" => {
                         if let Ok(p) = OpenAiCompatProvider::from_config(pc) {
-                            let _ = agent.set_provider(Arc::new(p) as Arc<dyn Provider>);
+                            if let Err(e) = agent.set_provider(Arc::new(p) as Arc<dyn Provider>) {
+                                tracing::warn!("set_provider (openai) failed: {e}");
+                            }
                         }
                     }
                     _ => {}
                 }
             }
             agent.enable_llm_judge();
+        }
+        if let Some(prompts) = self.prompts_config {
+            agent.set_prompts(prompts);
         }
 
         RuntimeBootstrap {

@@ -19,7 +19,7 @@ use super::context_types::{
     UpstreamTurnContext,
 };
 use super::core::CoreAgent;
-use super::runtime_error::classify_runtime_error;
+use super::runtime_error::{classify_runtime_error, AgentError};
 use super::runtime_helpers::{
     extract_response_text, infer_operation, infer_provider, truncate_preview,
 };
@@ -173,6 +173,7 @@ impl CoreAgent {
         let judgement = crate::execution::requirement_judge::judge_requirement(
             &requirement_preparation.judge_context,
             judge_provider.as_deref(),
+            Some(&*self.prompts.read()),
         );
         let turn_plan = crate::execution::turn_coordinator::plan_turn_outcome(
             judgement,
@@ -194,7 +195,7 @@ impl CoreAgent {
         &self,
         ctx: UpstreamTurnContext<'_>,
         turn_plan: TurnOutcomePlan,
-    ) -> Result<Option<PendingQuestion>, String> {
+    ) -> Result<Option<PendingQuestion>, AgentError> {
         match turn_plan {
             TurnOutcomePlan::Complete {
                 should_resolve_question,
@@ -481,7 +482,7 @@ impl CoreAgent {
         exec_ctx: &ExecutionContext,
         plan: &AgentFollowupPlan,
         preparation: &AgentFollowupPreparation,
-    ) -> Result<(), String> {
+    ) -> Result<(), AgentError> {
         self.update_followup_requirement_progress(inbound_msg, plan, preparation);
         self.record_execution_summary(
             inbound_msg,
@@ -524,7 +525,7 @@ impl CoreAgent {
             "主 agent 触发自动 followup，派发给 worker 继续推进",
             json!({}),
         )
-        .map_err(|err| err.internal_message)?;
+        .map_err(|err| AgentError::ExecutionFailed(err.internal_message))?;
 
         if followup_result.status != "success" {
             let error_info =
@@ -571,7 +572,7 @@ impl CoreAgent {
         worker_id: Option<String>,
         task_duration_ms: u64,
         plan: AgentFollowupPlan,
-    ) -> Result<(), String> {
+    ) -> Result<(), AgentError> {
         let preparation = self.prepare_agent_followup(
             inbound_msg,
             exec_ctx,
@@ -606,7 +607,7 @@ impl CoreAgent {
         &self,
         ctx: UpstreamTurnContext<'_>,
         branch: crate::execution::turn_coordinator::CompletedBranchData,
-    ) -> Result<Option<PendingQuestion>, String> {
+    ) -> Result<Option<PendingQuestion>, AgentError> {
         if let Some(resolved_payload) = branch.resolved_question.as_ref() {
             if let Some(pending) = ctx.resolved_question {
                 self.publish_resolved_question(
@@ -695,7 +696,7 @@ impl CoreAgent {
         &self,
         ctx: UpstreamTurnContext<'_>,
         branch: crate::execution::turn_coordinator::WaitingUserInputBranchData,
-    ) -> Result<Option<PendingQuestion>, String> {
+    ) -> Result<Option<PendingQuestion>, AgentError> {
         if let Some(resolved_payload) = branch.resolved_question.as_ref() {
             if let Some(resolved) = ctx.resolved_question {
                 self.publish_resolved_question(
@@ -780,7 +781,7 @@ impl CoreAgent {
         &self,
         ctx: UpstreamTurnContext<'_>,
         plan: AgentFollowupPlan,
-    ) -> Result<Option<PendingQuestion>, String> {
+    ) -> Result<Option<PendingQuestion>, AgentError> {
         self.schedule_agent_followup(
             ctx.inbound_msg,
             ctx.exec_ctx,
@@ -798,7 +799,7 @@ impl CoreAgent {
         result: crate::agent::types::TaskResult,
         source: SuccessSource,
         resolved_question: Option<&PendingQuestion>,
-    ) -> Result<Option<PendingQuestion>, String> {
+    ) -> Result<Option<PendingQuestion>, AgentError> {
         if let Some(blocked_value) = result.blocked_reason.as_ref() {
             if let Ok(reason) =
                 serde_json::from_value::<crate::tasks::SubtaskBlockedReason>(blocked_value.clone())
@@ -911,7 +912,7 @@ impl CoreAgent {
         exec_ctx: &ExecutionContext,
         reason: &crate::tasks::SubtaskBlockedReason,
         resolved: &str,
-    ) -> Result<Option<PendingQuestion>, String> {
+    ) -> Result<Option<PendingQuestion>, AgentError> {
         let reason_desc = match reason {
             crate::tasks::SubtaskBlockedReason::MissingParameter { name, .. } => {
                 format!("缺失参数 `{name}`")
@@ -948,11 +949,11 @@ impl CoreAgent {
                 "子任务阻塞自动恢复",
                 json!({ "auto_resolved": true }),
             )
-            .map_err(|err| err.internal_message)?;
+            .map_err(|err| AgentError::ExecutionFailed(err.internal_message))?;
         if result.status != "success" {
-            return Err(result
+            return Err(AgentError::ExecutionFailed(result
                 .error
-                .unwrap_or_else(|| "Auto-resolved continuation failed".into()));
+                .unwrap_or_else(|| "Auto-resolved continuation failed".into())));
         }
         let new_exec_ctx = ExecutionContext {
             memory_key: continuation_ctx.metadata.memory_key,

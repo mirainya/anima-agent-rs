@@ -1,5 +1,6 @@
 import { useStatusQuery } from '@/shared/api/status';
 import { formatDurationShort, shortId } from '@/shared/utils/format';
+import { PromptsEditor } from '@/features/runtime/PromptsEditor';
 
 export function SettingsPage() {
   const { data: status, isLoading } = useStatusQuery();
@@ -57,6 +58,8 @@ export function SettingsPage() {
           <dt>丢弃总数</dt><dd>{warnings.bus_drop_total}</dd>
         </dl>
       </section>
+
+      <PromptsEditor />
     </div>
   );
 }

@@ -9,7 +9,7 @@ use crate::support::{make_api_cache_key, now_ms};
 
 use super::context_types::{InitialExecutionOutcome, InitialPlanDispatchContext};
 use super::core::CoreAgent;
-use super::runtime_error::RuntimeError;
+use super::runtime_error::{AgentError, RuntimeError};
 use super::runtime_helpers::truncate_preview;
 use super::runtime_ids::execution_kind_label;
 use super::types::ExecutionPlan;
@@ -205,7 +205,7 @@ impl CoreAgent {
                 );
                 ("orchestration-v1".to_string(), execution.result)
             }
-            Err(ref error) if error != "llm_no_decomposition" => {
+            Err(ref error) if !matches!(error, AgentError::OrchestrationNoDecomposition) => {
                 let orch_plan_type = "orchestration-v1".to_string();
                 self.emitter.publish(
                     "orchestration_selected",
@@ -224,7 +224,7 @@ impl CoreAgent {
                         "memory_key": key,
                         "plan_type": orch_plan_type,
                         "fallback_plan_type": plan.plan_type.clone(),
-                        "reason": error,
+                        "reason": error.to_string(),
                     }),
                 );
                 let result = self.execute_initial_plan(

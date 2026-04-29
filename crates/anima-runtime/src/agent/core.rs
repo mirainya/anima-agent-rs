@@ -85,6 +85,7 @@ pub struct CoreAgent {
     pub(crate) suspension: Arc<SuspensionCoordinator>,
     pub(crate) requirement: Arc<RequirementCoordinator>,
     pub(crate) approval_mode: Arc<Mutex<ApprovalMode>>,
+    pub(crate) prompts: parking_lot::RwLock<Arc<anima_types::config::PromptsConfig>>,
     pub(crate) running: AtomicBool,
     pub(crate) loop_handle: Mutex<Option<thread::JoinHandle<()>>>,
     pub(crate) control_handle: Mutex<Option<thread::JoinHandle<()>>>,
@@ -232,6 +233,7 @@ impl CoreAgent {
                 emitter.clone(),
             )),
             approval_mode: Arc::new(Mutex::new(ApprovalMode::default())),
+            prompts: parking_lot::RwLock::new(Arc::new(anima_types::config::PromptsConfig::default())),
             running: AtomicBool::new(false),
             loop_handle: Mutex::new(None),
             control_handle: Mutex::new(None),
@@ -244,6 +246,16 @@ impl CoreAgent {
 
     pub fn set_provider(&mut self, provider: Arc<dyn Provider>) {
         self.provider = provider;
+    }
+
+    pub fn set_prompts(&self, prompts: anima_types::config::PromptsConfig) {
+        let arc = Arc::new(prompts);
+        self.orchestrator.set_prompts(Arc::clone(&arc));
+        *self.prompts.write() = arc;
+    }
+
+    pub fn prompts(&self) -> Arc<anima_types::config::PromptsConfig> {
+        Arc::clone(&self.prompts.read())
     }
 
     pub(crate) fn upsert_runtime_run(
@@ -321,6 +333,17 @@ impl CoreAgent {
         self.ensure_context(inbound_msg, &key);
         let user_entry = json!({"role": "user", "content": inbound_msg.content.clone()});
         self.append_history(&key, user_entry.clone());
+        let user_internal = crate::messages::types::InternalMsg {
+            role: crate::messages::types::MessageRole::User,
+            blocks: vec![crate::messages::types::ContentBlock::Text {
+                text: inbound_msg.content.clone(),
+            }],
+            message_id: uuid::Uuid::new_v4().to_string(),
+            tool_use_id: None,
+            filtered: false,
+            metadata: json!({}),
+        };
+        self.append_transcript_messages(inbound_msg, &[user_internal]);
         let history_session_id = inbound_msg
             .chat_id
             .clone()

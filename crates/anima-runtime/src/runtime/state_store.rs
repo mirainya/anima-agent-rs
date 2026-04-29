@@ -14,10 +14,90 @@ use std::sync::Arc;
 
 const RUNTIME_STATE_PERSISTENCE_VERSION: u32 = 1;
 
+fn purge_session_from_snapshot(
+    snapshot: &mut RuntimeStateSnapshot,
+    chat_id: &str,
+) -> (Vec<String>, Vec<String>) {
+    let run_ids: Vec<String> = snapshot
+        .runs
+        .iter()
+        .filter(|(_, r)| r.chat_id.as_deref() == Some(chat_id))
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    let mut turn_ids = Vec::new();
+    for run_id in &run_ids {
+        snapshot.runs.remove(run_id);
+        snapshot.index.run_ids_by_job_id.retain(|_, v| v != run_id);
+
+        turn_ids.extend(
+            snapshot
+                .turns
+                .iter()
+                .filter(|(_, t)| &t.run_id == run_id)
+                .map(|(id, _)| id.clone()),
+        );
+    }
+
+    let mut task_ids = Vec::new();
+    let mut suspension_ids = Vec::new();
+    let mut tool_ids = Vec::new();
+    let mut requirement_ids = Vec::new();
+
+    for turn_id in &turn_ids {
+        snapshot.turns.remove(turn_id);
+    }
+
+    for (id, task) in &snapshot.tasks {
+        if run_ids.contains(&task.run_id) {
+            task_ids.push(id.clone());
+        }
+    }
+    for id in &task_ids {
+        snapshot.tasks.remove(id);
+    }
+
+    for (id, s) in &snapshot.suspensions {
+        if run_ids.contains(&s.run_id) {
+            suspension_ids.push(id.clone());
+        }
+    }
+    for id in &suspension_ids {
+        snapshot.suspensions.remove(id);
+    }
+
+    for (id, t) in &snapshot.tool_invocations {
+        if run_ids.contains(&t.run_id) {
+            tool_ids.push(id.clone());
+        }
+    }
+    for id in &tool_ids {
+        snapshot.tool_invocations.remove(id);
+    }
+
+    for (id, r) in &snapshot.requirements {
+        if run_ids.contains(&r.run_id) {
+            requirement_ids.push(id.clone());
+        }
+    }
+    for id in &requirement_ids {
+        snapshot.requirements.remove(id);
+    }
+
+    snapshot.transcript.retain(|m| !run_ids.contains(&m.run_id));
+    snapshot.session_titles.remove(chat_id);
+
+    (run_ids, turn_ids)
+}
+
 pub trait StateStore: Send + Sync {
     fn append(&self, event: RuntimeDomainEvent) -> u64;
     fn snapshot(&self) -> RuntimeStateSnapshot;
     fn next_sequence(&self) -> u64;
+
+    fn delete_session(&self, chat_id: &str) -> usize;
+    fn set_session_title(&self, chat_id: &str, title: String);
+    fn delete_session_title(&self, chat_id: &str);
 }
 
 // ---------------------------------------------------------------------------
@@ -111,11 +191,51 @@ impl StateStore for JsonStateStore {
     fn next_sequence(&self) -> u64 {
         self.inner.lock().next_sequence
     }
-}
 
-// ---------------------------------------------------------------------------
-// SQLite backend
-// ---------------------------------------------------------------------------
+    fn delete_session(&self, chat_id: &str) -> usize {
+        let mut inner = self.inner.lock();
+        let (run_ids, _) = purge_session_from_snapshot(&mut inner.snapshot, chat_id);
+        let count = run_ids.len();
+        if count > 0 {
+            if let Some(path) = &self.persistence_path {
+                let persisted = PersistedRuntimeState {
+                    version: RUNTIME_STATE_PERSISTENCE_VERSION,
+                    next_sequence: inner.next_sequence,
+                    snapshot: inner.snapshot.clone(),
+                };
+                let _ = Self::persist_state(path, &persisted);
+            }
+        }
+        count
+    }
+
+    fn set_session_title(&self, chat_id: &str, title: String) {
+        let mut inner = self.inner.lock();
+        inner.snapshot.session_titles.insert(chat_id.to_string(), title);
+        if let Some(path) = &self.persistence_path {
+            let persisted = PersistedRuntimeState {
+                version: RUNTIME_STATE_PERSISTENCE_VERSION,
+                next_sequence: inner.next_sequence,
+                snapshot: inner.snapshot.clone(),
+            };
+            let _ = Self::persist_state(path, &persisted);
+        }
+    }
+
+    fn delete_session_title(&self, chat_id: &str) {
+        let mut inner = self.inner.lock();
+        if inner.snapshot.session_titles.remove(chat_id).is_some() {
+            if let Some(path) = &self.persistence_path {
+                let persisted = PersistedRuntimeState {
+                    version: RUNTIME_STATE_PERSISTENCE_VERSION,
+                    next_sequence: inner.next_sequence,
+                    snapshot: inner.snapshot.clone(),
+                };
+                let _ = Self::persist_state(path, &persisted);
+            }
+        }
+    }
+}
 
 const TABLES: &[&str] = &[
     "runs", "turns", "tasks", "suspensions", "tool_invocations",
@@ -211,6 +331,12 @@ impl SqliteStateStore {
             }
         }
 
+        for (id, data) in store.get_all("meta").map_err(|e| e.to_string())? {
+            if let Some(chat_id) = id.strip_prefix("session_title:") {
+                snap.session_titles.insert(chat_id.to_string(), data);
+            }
+        }
+
         Ok(snap)
     }
 
@@ -272,11 +398,59 @@ impl StateStore for SqliteStateStore {
     fn next_sequence(&self) -> u64 {
         self.inner.lock().next_sequence
     }
-}
 
-// ---------------------------------------------------------------------------
-// Aliases (backward compat)
-// ---------------------------------------------------------------------------
+    fn delete_session(&self, chat_id: &str) -> usize {
+        let mut inner = self.inner.lock();
+        let (run_ids, turn_ids) = purge_session_from_snapshot(&mut inner.snapshot, chat_id);
+        let count = run_ids.len();
+        for run_id in &run_ids {
+            let _ = self.store.delete("runs", run_id);
+        }
+        for id in &turn_ids {
+            let _ = self.store.delete("turns", id);
+        }
+        // tasks/suspensions/tool_invocations/requirements already removed from snapshot
+        // by purge_session_from_snapshot; delete from sqlite by scanning store
+        for table in &["tasks", "suspensions", "tool_invocations", "requirements"] {
+            if let Ok(rows) = self.store.get_all(table) {
+                for (id, data) in rows {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                        if let Some(rid) = val.get("run_id").and_then(|v| v.as_str()) {
+                            if run_ids.contains(&rid.to_string()) {
+                                let _ = self.store.delete(table, &id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(rows) = self.store.get_all_ordered("transcript") {
+            for (id, data) in rows {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                    if let Some(rid) = val.get("run_id").and_then(|v| v.as_str()) {
+                        if run_ids.contains(&rid.to_string()) {
+                            let _ = self.store.delete("transcript", &id);
+                        }
+                    }
+                }
+            }
+        }
+        let _ = self.store.delete("meta", &format!("session_title:{chat_id}"));
+        count
+    }
+
+    fn set_session_title(&self, chat_id: &str, title: String) {
+        let mut inner = self.inner.lock();
+        inner.snapshot.session_titles.insert(chat_id.to_string(), title.clone());
+        let _ = self.store.upsert("meta", &format!("session_title:{chat_id}"), &title);
+    }
+
+    fn delete_session_title(&self, chat_id: &str) {
+        let mut inner = self.inner.lock();
+        inner.snapshot.session_titles.remove(chat_id);
+        let _ = self.store.delete("meta", &format!("session_title:{chat_id}"));
+    }
+}
 
 pub type RuntimeStateStore = JsonStateStore;
 pub type SharedRuntimeStateStore = Arc<dyn StateStore>;

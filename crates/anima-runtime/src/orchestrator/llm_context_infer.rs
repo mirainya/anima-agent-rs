@@ -21,6 +21,7 @@ pub fn try_llm_infer_missing_context(
     plan: &OrchestrationPlan,
     lowered_tasks: &[LoweredTask],
     subtask_results: &Value,
+    prompt_template: &str,
 ) -> Option<Value> {
     let mut result_summaries = Vec::new();
     for lowered in lowered_tasks {
@@ -39,18 +40,9 @@ pub fn try_llm_infer_missing_context(
     }
 
     let joined = result_summaries.join("\n\n");
-    let prompt = format!(
-        "你是上下文完整性分析器。以下是多个子任务的执行结果，判断是否有多个子任务因缺少共享上下文信息而无法继续。\n\n\
-         原始请求: {}\n\n\
-         子任务结果:\n{}\n\n\
-         请输出 JSON 对象:\n\
-         - needs_question: bool — 是否需要向用户追问\n\
-         - prompt: string — 追问内容（简洁精准，一个问题）\n\
-         - options: string[] — 3-5 个常见选项\n\n\
-         如果子任务结果充分、不需要追问，设 needs_question 为 false。\n\
-         只输出 JSON 对象，不要其他内容。",
-        plan.original_request, joined
-    );
+    let prompt = prompt_template
+        .replace("{request}", &plan.original_request)
+        .replace("{results}", &joined);
 
     let chat_request = ChatRequest {
         messages: vec![ChatMessage {

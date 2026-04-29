@@ -152,13 +152,15 @@ impl CoreAgent {
             total_ms: ctx.total_ms,
             cache_hit: ctx.cache_hit,
         };
-        let _ = self.handle_upstream_result(
+        if let Err(e) = self.handle_upstream_result(
             ctx.inbound_msg,
             &exec_ctx,
             result,
             SuccessSource::Initial,
             None,
-        );
+        ) {
+            tracing::warn!(session_id = %ctx.inbound_msg.chat_id.as_deref().unwrap_or("?"), "handle_upstream_result failed: {e}");
+        }
     }
 
     pub(crate) fn finish_failed_inbound_processing(

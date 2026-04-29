@@ -7,6 +7,7 @@
 //! - internal（内部）：组件间通信，使用 Sliding 策略
 //! - control（控制）：生命周期管理信号，使用 Sliding 策略
 
+use crate::agent::runtime_error::AgentError;
 use crate::bus::bounded::{
     bounded_channel_full, BoundedReceiver, BoundedSender, BufferStrategy,
 };
@@ -115,31 +116,32 @@ impl Bus {
         let internal_last_drop_at_ms = Arc::new(AtomicU64::new(0));
         let control_last_drop_at_ms = Arc::new(AtomicU64::new(0));
 
-        let make_hook = |stamp: Arc<AtomicU64>| -> crate::bus::bounded::DropHook {
+        let make_hook = |channel_name: &'static str, stamp: Arc<AtomicU64>| -> crate::bus::bounded::DropHook {
             Arc::new(move || {
                 stamp.store(now_ms(), Ordering::SeqCst);
+                tracing::warn!(channel = channel_name, "bus message dropped (channel full)");
             })
         };
 
         let (inbound_tx, inbound_rx) = bounded_channel_full(
             BufferStrategy::Dropping(config.inbound_capacity),
             Some(inbound_dropped_total.clone()),
-            Some(make_hook(inbound_last_drop_at_ms.clone())),
+            Some(make_hook("inbound", inbound_last_drop_at_ms.clone())),
         );
         let (outbound_tx, outbound_rx) = bounded_channel_full(
             BufferStrategy::Sliding(config.outbound_capacity),
             Some(outbound_dropped_total.clone()),
-            Some(make_hook(outbound_last_drop_at_ms.clone())),
+            Some(make_hook("outbound", outbound_last_drop_at_ms.clone())),
         );
         let (internal_tx, internal_rx) = bounded_channel_full(
             BufferStrategy::Sliding(config.internal_capacity),
             Some(internal_dropped_total.clone()),
-            Some(make_hook(internal_last_drop_at_ms.clone())),
+            Some(make_hook("internal", internal_last_drop_at_ms.clone())),
         );
         let (control_tx, control_rx) = bounded_channel_full(
             BufferStrategy::Sliding(config.control_capacity),
             Some(control_dropped_total.clone()),
-            Some(make_hook(control_last_drop_at_ms.clone())),
+            Some(make_hook("control", control_last_drop_at_ms.clone())),
         );
         Self {
             inbound_tx,
@@ -164,9 +166,9 @@ impl Bus {
 
     // ── Inbound (Dropping) ─────────────────────────────────────────
 
-    pub fn publish_inbound(&self, msg: InboundMessage) -> Result<(), String> {
+    pub fn publish_inbound(&self, msg: InboundMessage) -> Result<(), AgentError> {
         if self.is_closed() {
-            return Err("bus closed".into());
+            return Err(AgentError::BusSendFailed("bus closed".into()));
         }
         let before = self.inbound_dropped_total.load(Ordering::SeqCst);
         let result = self.inbound_tx.send(msg);
@@ -206,9 +208,9 @@ impl Bus {
 
     // ── Outbound (Sliding) ─────────────────────────────────────────
 
-    pub fn publish_outbound(&self, msg: OutboundMessage) -> Result<(), String> {
+    pub fn publish_outbound(&self, msg: OutboundMessage) -> Result<(), AgentError> {
         if self.is_closed() {
-            return Err("bus closed".into());
+            return Err(AgentError::BusSendFailed("bus closed".into()));
         }
         self.outbound_tx.send(msg)
     }
@@ -223,9 +225,9 @@ impl Bus {
 
     // ── Internal (Sliding) ─────────────────────────────────────────
 
-    pub fn publish_internal(&self, msg: InternalMessage) -> Result<(), String> {
+    pub fn publish_internal(&self, msg: InternalMessage) -> Result<(), AgentError> {
         if self.is_closed() {
-            return Err("bus closed".into());
+            return Err(AgentError::BusSendFailed("bus closed".into()));
         }
         self.internal_tx.send(msg)
     }
@@ -240,9 +242,9 @@ impl Bus {
 
     // ── Control (Sliding) ──────────────────────────────────────────
 
-    pub fn publish_control(&self, msg: ControlMessage) -> Result<(), String> {
+    pub fn publish_control(&self, msg: ControlMessage) -> Result<(), AgentError> {
         if self.is_closed() {
-            return Err("bus closed".into());
+            return Err(AgentError::BusSendFailed("bus closed".into()));
         }
         self.control_tx.send(msg)
     }

@@ -39,7 +39,14 @@ fn main() {
     sse::start_internal_bus_forwarder(bus.clone(), web_channel.clone());
 
     // 在独立的 tokio runtime 中运行 axum
-    let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+    let tokio_rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!("failed to create tokio runtime: {e}");
+            state.runtime.lock().stop();
+            std::process::exit(1);
+        }
+    };
     tokio_rt.block_on(async {
         let cors = CorsLayer::new()
             .allow_origin(Any)
@@ -52,10 +59,19 @@ fn main() {
             .with_state(state.clone());
 
         let addr = "0.0.0.0:3000";
-        tracing::info!("anima-web 启动在 http://localhost:3000");
 
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        axum::serve(listener, app).await.unwrap();
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!("failed to bind {addr}: {e}");
+                state.runtime.lock().stop();
+                std::process::exit(1);
+            }
+        };
+        tracing::info!("anima-web listening on http://{addr}");
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!("axum server error: {e}");
+        }
     });
 
     // 清理

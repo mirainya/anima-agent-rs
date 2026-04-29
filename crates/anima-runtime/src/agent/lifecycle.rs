@@ -6,15 +6,16 @@ use std::thread;
 use std::time::Duration;
 
 use super::core::{CoreAgent, CoreAgentStatus};
+use super::runtime_error::AgentError;
 use crate::bus::ControlSignal;
 use crate::hooks::HookRegistry;
 use crate::permissions::PermissionChecker;
 use crate::runtime::{build_projection, RuntimeProjectionView, RuntimeStateSnapshot};
 
 impl CoreAgent {
-    pub fn register_builtin_tools(&mut self) -> Result<(), String> {
+    pub fn register_builtin_tools(&mut self) -> Result<(), AgentError> {
         let registry = Arc::get_mut(&mut self.tool_registry)
-            .ok_or("cannot mutate shared tool_registry — ensure no other Arc references exist")?;
+            .ok_or(AgentError::ArcMutationConflict("tool_registry"))?;
         crate::tools::builtins::register_all(registry);
         Ok(())
     }
