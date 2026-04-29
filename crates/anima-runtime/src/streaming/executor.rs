@@ -785,6 +785,177 @@ mod tests {
         assert_eq!(parsed.text, "ok");
     }
 
+    // ---- StreamingToolExecutor 测试 ----
+
+    #[test]
+    fn test_tool_executor_start_and_stop() {
+        let registry = Arc::new(ToolRegistry::new());
+        let mut exec = StreamingToolExecutor::new(registry);
+        exec.on_tool_use_start(0, "tu_1".into(), "bash".into());
+        assert!(matches!(
+            exec.get_state(0),
+            Some(TrackedToolState::ReceivingInput { .. })
+        ));
+        exec.on_input_delta(0, r#"{"cmd":"ls"}"#);
+        let state = exec.on_tool_use_stop(0).unwrap();
+        assert!(matches!(state, TrackedToolState::ReadyToExecute { .. }));
+        if let TrackedToolState::ReadyToExecute { input, name, .. } = state {
+            assert_eq!(name, "bash");
+            assert_eq!(input, &json!({"cmd": "ls"}));
+        }
+    }
+
+    #[test]
+    fn test_tool_executor_malformed_json() {
+        let registry = Arc::new(ToolRegistry::new());
+        let mut exec = StreamingToolExecutor::new(registry);
+        exec.on_tool_use_start(0, "tu_bad".into(), "read".into());
+        exec.on_input_delta(0, r#"{"broken"#);
+        let state = exec.on_tool_use_stop(0).unwrap();
+        if let TrackedToolState::ReadyToExecute { input, .. } = state {
+            assert!(input.get("__parse_error").is_some());
+            assert!(input.get("__raw").is_some());
+        } else {
+            panic!("expected ReadyToExecute");
+        }
+    }
+
+    #[test]
+    fn test_tool_executor_tracked_indices() {
+        let registry = Arc::new(ToolRegistry::new());
+        let mut exec = StreamingToolExecutor::new(registry);
+        exec.on_tool_use_start(3, "a".into(), "x".into());
+        exec.on_tool_use_start(7, "b".into(), "y".into());
+        let mut indices = exec.tracked_indices();
+        indices.sort();
+        assert_eq!(indices, vec![3, 7]);
+    }
+
+    #[test]
+    fn test_tool_executor_nonexistent_index() {
+        let registry = Arc::new(ToolRegistry::new());
+        let mut exec = StreamingToolExecutor::new(Arc::clone(&registry));
+        assert!(exec.get_state(99).is_none());
+        assert!(exec.on_tool_use_stop(99).is_none());
+        exec.on_input_delta(99, "ignored");
+    }
+
+    // ---- StreamAccumulator thinking 测试 ----
+
+    #[test]
+    fn test_accumulator_thinking_drain() {
+        let mut acc = StreamAccumulator::new();
+        acc.on_thinking_start(0, "a");
+        acc.on_thinking_delta(0, "b");
+        let t = acc.drain_thinking().unwrap();
+        assert_eq!(t, "ab");
+        assert!(acc.drain_thinking().is_none());
+    }
+
+    #[test]
+    fn test_accumulator_thinking_multi_index_sorted() {
+        let mut acc = StreamAccumulator::new();
+        acc.on_thinking_start(2, "second");
+        acc.on_thinking_start(0, "first");
+        let t = acc.drain_thinking().unwrap();
+        assert_eq!(t, "first\nsecond");
+    }
+
+    #[test]
+    fn test_accumulator_empty_thinking() {
+        let mut acc = StreamAccumulator::new();
+        acc.on_thinking_start(0, "");
+        assert!(acc.drain_thinking().is_none());
+    }
+
+    // ---- consume_sse_stream 边界场景 ----
+
+    #[test]
+    fn test_consume_stream_error_event() {
+        let lines = make_lines(&[
+            r#"data: {"type":"message_start","message":{"id":"msg_e"}}"#,
+            r#"data: {"type":"error","error":{"type":"overloaded","message":"server busy"}}"#,
+        ]);
+        let result = consume_sse_stream(lines, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_consume_stop_reason_max_tokens() {
+        let lines = make_lines(&[
+            r#"data: {"type":"message_start","message":{"id":"msg_m"}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ]);
+        let (parsed, _) = consume_sse_stream(lines, None).unwrap();
+        assert_eq!(parsed.stop_reason, StopReason::MaxTokens);
+        assert_eq!(parsed.text, "partial");
+    }
+
+    #[test]
+    fn test_consume_stop_reason_tool_use() {
+        let lines = make_lines(&[
+            r#"data: {"type":"message_start","message":{"id":"msg_tu"}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"bash","input":{}}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\":\"ls\"}"}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ]);
+        let (parsed, rv) = consume_sse_stream(lines, None).unwrap();
+        assert_eq!(parsed.stop_reason, StopReason::ToolUse);
+        assert_eq!(parsed.tool_uses.len(), 1);
+        assert_eq!(parsed.tool_uses[0].name, "bash");
+        let content = rv["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_use");
+    }
+
+    #[test]
+    fn test_consume_empty_stream() {
+        let lines = make_lines(&[]);
+        let (parsed, _) = consume_sse_stream(lines, None).unwrap();
+        assert_eq!(parsed.text, "");
+        assert!(parsed.tool_uses.is_empty());
+        assert_eq!(parsed.stop_reason, StopReason::EndTurn);
+    }
+
+    #[test]
+    fn test_consume_text_with_tool_mixed() {
+        let lines = make_lines(&[
+            r#"data: {"type":"message_start","message":{"id":"msg_mix"}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_1","name":"bash","input":{}}}"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"x\":1}"}}"#,
+            r#"data: {"type":"content_block_stop","index":1}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ]);
+        let (parsed, rv) = consume_sse_stream(lines, None).unwrap();
+        assert_eq!(parsed.text, "hello ");
+        assert_eq!(parsed.tool_uses.len(), 1);
+        let content = rv["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn test_consume_data_no_space_after_colon() {
+        let lines = make_lines(&[
+            r#"data:{"type":"message_start","message":{"id":"msg_ns"}}"#,
+            r#"data:{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"data:{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}"#,
+            r#"data:{"type":"content_block_stop","index":0}"#,
+            r#"data:{"type":"message_stop"}"#,
+        ]);
+        let (parsed, _) = consume_sse_stream(lines, None).unwrap();
+        assert_eq!(parsed.text, "ok");
+    }
+
     #[test]
     fn test_thinking_block_accumulation() {
         let lines = make_lines(&[
